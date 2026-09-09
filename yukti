@@ -209,7 +209,7 @@ for e in json.loads(raw):
         f=e.get("frame",{}); print(int(f.get("x",0)+f.get("width",0)/2), int(f.get("y",0)+f.get("height",0)/2)); break
 ' "$1"; }
 tap(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { atap "$1" "$2"; return; }; paths; idb ui tap --udid "$(U)" "${1:?x}" "${2:?y}"; }
-tap_text(){ local xy; xy="$(find_el "$1")"; [ -n "$xy" ] || die "no element matching '$1'"; tap $xy; }
+tap_text(){ local xy; xy="$(scroll_to "$1")"; [ -n "$xy" ] || die "no element matching '$1'"; tap $xy; }  # auto-scrolls off-screen elements into view
 tap_text_optional(){ local xy; xy="$(find_el "$1")"; [ -n "$xy" ] && { tap $xy; ok "optional tap '$1'"; } || warn "optional '$1' not present — skipped"; }
 # Auto-dismiss the interstitials that derail flows (Save Password, notifications, promos…)
 dismiss(){ local L xy; for L in "Not Now" "Not now" "Maybe Later" "Later" "Skip for now" "Skip" "No thanks" "No Thanks" "Got it"; do
@@ -219,6 +219,12 @@ type_str(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { atype "$1"; return; }; p
 clear_field(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { aclear "$1" "$2"; return; }; paths; local x="${1:?x}" y="${2:?y}" i; idb ui tap --udid "$(U)" "$x" "$y"; sleep .4; idb ui tap --udid "$(U)" 360 "$y"; sleep .3; for i in $(seq 1 32); do idb ui key --udid "$(U)" 42 >/dev/null 2>&1; done; }
 assert_text(){ paths; ui | grep -qi -- "$1" && ok "assert: '$1' present" || die "assert FAILED: '$1' not on screen"; }
 wait_s(){ sleep "${1:-2}"; }
+scroll(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { apaths; if [ "${1:-down}" = up ]; then adb shell input swipe 200 300 200 700 300; else adb shell input swipe 200 700 200 300 300; fi; return; }
+  paths; if [ "${1:-down}" = up ]; then idb ui swipe --udid "$(U)" 200 320 200 720; else idb ui swipe --udid "$(U)" 200 720 200 320; fi; }
+# a11y reports FULL-CONTENT coords; taps need ON-SCREEN coords. Scroll a label into the viewport.
+scroll_to(){ local lbl="$1" i xy y; for i in $(seq 1 8); do xy="$(find_el "$lbl")"
+    if [ -n "$xy" ]; then y="${xy##* }"; if [ "$y" -lt 840 ] && [ "$y" -gt 60 ]; then printf '%s' "$xy"; return 0; fi; fi
+    scroll down; sleep 0.6; done; find_el "$lbl"; }
 
 # ── deterministic flow runner: a JSON list of steps ──────────────────────────
 # step keys: launch|wait|screenshot|tap[x,y]|tapText|type|clearText[x,y]|assertText
@@ -233,6 +239,8 @@ flow(){
         tap)         tap "$x" "$y";;
         tapText)     say "tap '$val'"; tap_text "$val";;
         optionalTapText) tap_text_optional "$val";;
+        scroll)      scroll "${val:-down}";;
+        scrollToText) scroll_to "$val" >/dev/null;;
         dismiss)     dismiss;;
         clearText)   clear_field "$x" "$y";;
         type)        say "type ${#val} chars"; type_str "$val";;
@@ -278,9 +286,10 @@ ${B}yukti v$YUKTI_VERSION${R} — YUKTI — smart mobile-app QA automation for R
   yukti tap <x> <y>         tap
   yukti type "<text>"       type (char-by-char = reliable; idb bulk-type drops chars)
   yukti clear <x> <y>       clear a text field
+  yukti scroll <up|down>   scroll the screen · yukti scroll-to "<label>" scroll a label into view
   yukti dismiss             auto-dismiss common modals (Not Now / Skip / OK / Close…)
 
-  flow steps: wait · screenshot · tap · tapText · optionalTapText · dismiss · type · clearText · assertText · launch
+  flow steps: wait · screenshot · tap · tapText · optionalTapText · scroll · scrollToText · dismiss · type · clearText · assertText · launch
   config: \$YUKTI_CONFIG or ./yukti.config.json  ·  cross-platform: set variant "platform":"android"
 EOF
 }
@@ -302,6 +311,8 @@ case "$cmd" in
   find) find_el "$@";;
   tap) tap "$@";;
   "tap-text"|tapText) tap_text "$@";;
+  scroll) scroll "$@";;
+  "scroll-to"|scrollToText) scroll_to "$@";;
   dismiss) dismiss;;
   type) type_str "$@";;
   clear) clear_field "$@";;
