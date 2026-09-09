@@ -93,6 +93,23 @@
   <span class="pill" id="aipill">AI-heal: —</span>
 </header>
 
+<div id="buildbar" style="display:flex;gap:8px;align-items:center;padding:8px 12px;border-bottom:1px solid #222;flex-wrap:wrap;background:#0d0d0d;font-size:12px">
+  <span class="sub">Build</span>
+  <select id="variant" title="variant from yukti.config.json"
+          style="padding:4px;border:1px solid #333;border-radius:4px;background:#111;color:#eee"></select>
+  <input id="gitref" placeholder="branch/tag — e.g. release/1.24.30"
+         style="width:230px;padding:4px;border:1px solid #333;border-radius:4px;background:#111;color:#eee">
+  <button class="p mini" onclick="buildLaunch()">⚙ Build &amp; Launch</button>
+  <span class="sub" id="appver">version: —</span>
+  <span style="flex:1"></span>
+  <span class="sub">Creds</span>
+  <input id="temail" placeholder="test email" autocomplete="off"
+         style="width:150px;padding:4px;border:1px solid #333;border-radius:4px;background:#111;color:#eee">
+  <input id="tpass" type="password" placeholder="test password" autocomplete="off"
+         style="width:130px;padding:4px;border:1px solid #333;border-radius:4px;background:#111;color:#eee">
+  <button class="mini" onclick="saveCreds()">Set</button>
+</div>
+
 <main>
   <!-- LEFT: flow list -->
   <section class="col left">
@@ -200,7 +217,59 @@ async function boot(){
     ai.textContent='AI-heal: '+(h.ai_configured?'on':'off');
     ai.className='pill '+(h.ai_configured?'ok':'off');
   }catch(e){ logLine('✗ cannot reach server: '+e); }
-  loadFlows(); refreshScreen(); startPolling();
+  loadFlows(); loadVariants(); refreshScreen(); startPolling();
+}
+
+// ── build / variant / creds (visual — no terminal exports) ─────────────────
+async function loadVariants(){
+  try{
+    const d=await (await fetch('/api/variants')).json();
+    const sel=document.getElementById('variant'); sel.innerHTML='';
+    (d.variants||[]).forEach(v=>{
+      const o=document.createElement('option'); o.value=v.name;
+      o.textContent=v.name+' ('+v.platform+')';
+      if(v.name===d.active) o.selected=true;
+      sel.appendChild(o);
+    });
+    const ver=d.app_version&&d.app_version.version;
+    document.getElementById('appver').textContent='version: '+(ver||'—');
+    if(d.creds_set) document.getElementById('temail').placeholder='✓ creds set';
+  }catch(e){ /* server may not expose variants yet */ }
+}
+async function saveCreds(){
+  const testEmail=document.getElementById('temail').value.trim();
+  const testPassword=document.getElementById('tpass').value;
+  const variant=document.getElementById('variant').value;
+  const r=await (await fetch('/api/config',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({testEmail,testPassword,variant})})).json();
+  logLine(r.ok?('✓ creds set for '+(testEmail||'(cleared)')):'✗ set failed');
+}
+async function buildLaunch(){
+  const variant=document.getElementById('variant').value;
+  const gitRef=document.getElementById('gitref').value.trim();
+  await saveCreds();
+  const st=document.getElementById('runstatus'); st.className='status'; st.textContent='building…';
+  logLine('── build & launch '+variant+(gitRef?(' @ '+gitRef):'')+' ──');
+  const resp=await fetch('/api/up',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({variant,gitRef})});
+  if(!resp.body){ logLine('✗ no stream'); return; }
+  const reader=resp.body.getReader(); const dec=new TextDecoder(); let buf='';
+  while(true){
+    const {value,done}=await reader.read(); if(done) break;
+    buf+=dec.decode(value,{stream:true}); let idx;
+    while((idx=buf.indexOf('\n\n'))>=0){
+      const chunk=buf.slice(0,idx); buf=buf.slice(idx+2);
+      let ev='message', data=[];
+      chunk.split('\n').forEach(l=>{ if(l.startsWith('event: '))ev=l.slice(7); else if(l.startsWith('data: '))data.push(l.slice(6)); });
+      const payload=data.join('\n');
+      if(ev==='done'){ try{const o=JSON.parse(payload);
+        st.className='status '+(o.status==='passed'?'passed':'failed');
+        st.textContent=o.status==='passed'?('running '+(o.variant||'')):'build failed';
+        logLine((o.status==='passed'?'✓ up: ':'✗ ')+(o.variant||'')+' '+o.status);
+        loadVariants(); refreshScreen(); }catch(e){ logLine(payload); } }
+      else { if(payload) logLine(payload); }
+    }
+  }
 }
 
 function startPolling(){

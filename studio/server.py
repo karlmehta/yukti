@@ -54,9 +54,15 @@ DEVICE_PT_H = int(os.environ.get("YUKTI_DEVICE_PT_H", "874"))
 
 
 # ── yukti CLI wrapper ────────────────────────────────────────────────────────
+# Set visually from the Studio UI (no terminal exports): test creds + the active
+# build variant. Merged into every CLI call's environment.
+RUN_ENV = {}
+
+
 def yukti_env():
     env = dict(os.environ)
     env["YUKTI_CONFIG"] = YUKTI_CONFIG
+    env.update({k: v for k, v in RUN_ENV.items() if v})
     return env
 
 
@@ -148,6 +154,53 @@ def list_flows():
     return out
 
 
+def read_config():
+    try:
+        with open(YUKTI_CONFIG) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def list_variants():
+    """Variant names + display info from the project's yukti config."""
+    cfg = read_config()
+    out = []
+    for name, v in (cfg.get("variants") or {}).items():
+        out.append({
+            "name": name,
+            "platform": v.get("platform", "ios"),
+            "scheme": v.get("scheme", ""),
+            "configuration": v.get("configuration", ""),
+            "bundleId": v.get("bundleId") or v.get("package", ""),
+        })
+    return out
+
+
+def app_version():
+    """Best-effort current app version from the project's app.json / package.json."""
+    cfg = read_config()
+    root = cfg.get("projectRoot") or "."
+    if not os.path.isabs(root):
+        root = os.path.join(os.path.dirname(os.path.abspath(YUKTI_CONFIG)), root)
+    for rel, path_keys in (
+        ("app.json", (("expo", "version"), ("version",))),
+        ("package.json", (("version",),)),
+    ):
+        try:
+            with open(os.path.join(root, rel)) as f:
+                data = json.load(f)
+            for keys in path_keys:
+                node = data
+                for k in keys:
+                    node = node.get(k) if isinstance(node, dict) else None
+                if isinstance(node, str):
+                    return {"version": node, "source": rel}
+        except Exception:
+            continue
+    return {"version": None, "source": None}
+
+
 # ── HTTP handler ─────────────────────────────────────────────────────────────
 class Handler(BaseHTTPRequestHandler):
     server_version = "YuktiStudio/1.0"
@@ -204,6 +257,13 @@ class Handler(BaseHTTPRequestHandler):
                 )
             if route == "/api/flows":
                 return self._json({"flows": list_flows()})
+            if route == "/api/variants":
+                return self._json({
+                    "variants": list_variants(),
+                    "active": RUN_ENV.get("YUKTI_VARIANT", ""),
+                    "app_version": app_version(),
+                    "creds_set": bool(RUN_ENV.get("TEST_EMAIL")),
+                })
             if route == "/api/flow":
                 return self._get_flow(qs)
             if route == "/api/screen":
@@ -223,6 +283,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._run_flow()
             if route == "/api/run-suite":
                 return self._run_suite()
+            if route == "/api/config":
+                return self._set_config()
+            if route == "/api/up":
+                return self._up()
             if route == "/api/tap":
                 return self._tap()
             if route == "/api/type":
@@ -475,6 +539,90 @@ class Handler(BaseHTTPRequestHandler):
                 "loops": loop_i,
                 "failures": [f for f, s in results if s != "passed"],
             }))
+
+    def _set_config(self):
+        """Store test creds + active variant visually (no terminal exports).
+        Body: {testEmail, testPassword, variant}. Creds stay in server memory
+        (localhost only) — never written to disk."""
+        body = self._read_body()
+        if "testEmail" in body:
+            RUN_ENV["TEST_EMAIL"] = (body.get("testEmail") or "").strip()
+        if "testPassword" in body:
+            RUN_ENV["TEST_PASSWORD"] = body.get("testPassword") or ""
+        if "variant" in body:
+            RUN_ENV["YUKTI_VARIANT"] = (body.get("variant") or "").strip()
+        return self._json({
+            "ok": True,
+            "active": RUN_ENV.get("YUKTI_VARIANT", ""),
+            "creds_set": bool(RUN_ENV.get("TEST_EMAIL")),
+        })
+
+    def _up(self):
+        """Build + boot + install + launch a variant, streaming logs via SSE.
+        Body: {variant, gitRef?}. gitRef (branch/tag, e.g. release/1.24.30) is
+        checked out in the project root first so any app version can be tested
+        from the UI. This is the visual replacement for `yukti up <variant>`."""
+        body = self._read_body()
+        variant = (body.get("variant") or RUN_ENV.get("YUKTI_VARIANT") or "").strip()
+        git_ref = (body.get("gitRef") or "").strip()
+        if not variant:
+            return self._json({"error": "variant required"}, 400)
+
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "close")
+        self.end_headers()
+
+        def emit(event, data):
+            try:
+                self.wfile.write(("event: %s\n" % event).encode("utf-8"))
+                for line in str(data).splitlines() or [""]:
+                    self.wfile.write(("data: %s\n" % line).encode("utf-8"))
+                self.wfile.write(b"\n")
+                self.wfile.flush()
+            except Exception:
+                pass
+
+        # Optional: check out a specific app version (branch/tag) before building.
+        if git_ref:
+            cfg = read_config()
+            root = cfg.get("projectRoot") or "."
+            if not os.path.isabs(root):
+                root = os.path.join(os.path.dirname(os.path.abspath(YUKTI_CONFIG)), root)
+            emit("log", "▸ git checkout %s  (in %s)" % (git_ref, root))
+            try:
+                p = subprocess.run(["git", "-C", root, "checkout", git_ref],
+                                   capture_output=True, text=True, timeout=60)
+                emit("log", (p.stdout + p.stderr).strip())
+                if p.returncode != 0:
+                    emit("done", json.dumps({"status": "failed", "step": "checkout"}))
+                    return
+            except Exception as e:
+                emit("done", json.dumps({"status": "error", "error": str(e)}))
+                return
+
+        RUN_ENV["YUKTI_VARIANT"] = variant
+        emit("log", "▸ yukti up %s  (build + boot + install + launch)" % variant)
+        try:
+            proc = subprocess.Popen(
+                [YUKTI_BIN, "up", variant],
+                cwd=YUKTI_ROOT, env=yukti_env(),
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                bufsize=1, universal_newlines=True,
+            )
+        except Exception as e:
+            emit("done", json.dumps({"status": "error", "error": str(e)}))
+            return
+        for line in iter(proc.stdout.readline, ""):
+            emit("log", line.rstrip("\n"))
+        proc.stdout.close()
+        rc = proc.wait()
+        emit("done", json.dumps({
+            "status": "passed" if rc == 0 else "failed",
+            "code": rc, "variant": variant,
+            "app_version": app_version(),
+        }))
 
     def _tap(self):
         body = self._read_body()
