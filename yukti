@@ -231,8 +231,11 @@ scroll_to(){ local lbl="$1" i xy y; for i in $(seq 1 8); do xy="$(find_el "$lbl"
 flow(){
   local f="${1:?usage: yukti flow <file.json>}"; [ -f "$f" ] || die "no flow file '$f'"; paths
   say "running flow: $f"
-  "$PY" -c 'import json,sys,os;[print("\t".join([s.get("do",""),os.path.expandvars(str(s.get("value",""))),str(s.get("x","")),str(s.get("y",""))])) for s in json.load(open(sys.argv[1]))["steps"]]' "$f" \
-  | while IFS=$'\t' read -r do_ val x y; do
+  "$PY" -c 'import json,sys,os;[print("\x1f".join([s.get("do",""),os.path.expandvars(str(s.get("value",""))),str(s.get("x","")),str(s.get("y",""))])) for s in json.load(open(sys.argv[1]))["steps"]]' "$f" \
+  | while IFS=$'\x1f' read -r do_ val x y; do
+      set +e   # best-effort steps (dismiss/optionalTapText) return non-zero when
+               # a label is absent; only an explicit `die` (assert fail / missing
+               # required element) must stop the flow — not a benign miss.
       case "$do_" in
         wait)        wait_s "${val:-2}";;
         screenshot)  ok "shot → $(shot "$val")";;
