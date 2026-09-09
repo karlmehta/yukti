@@ -97,6 +97,12 @@
   <!-- LEFT: flow list -->
   <section class="col left">
     <h2>Test Cases</h2>
+    <div class="row" style="gap:6px;margin-bottom:8px">
+      <button class="p mini" style="flex:1" onclick="runSuite()">▶ Run All</button>
+      <label class="sub" style="display:flex;align-items:center;gap:4px">loops
+        <input id="suiteloops" type="number" min="0" value="1" title="0 = continuous soak"
+               style="width:52px;padding:3px;border:1px solid #333;border-radius:4px;background:#111;color:#eee"></label>
+    </div>
     <div id="flowlist"><div class="empty">loading…</div></div>
     <div class="hr"></div>
     <button class="p" style="width:100%" onclick="newFlow()">+ New / Record Flow</button>
@@ -270,6 +276,41 @@ async function runFlow(file){
           logLine((o.status==='passed'?'✓':'✗')+' flow '+o.status);
         }catch(e){ logLine(payload); }
       } else { if(payload) logLine(payload); }
+    }
+  }
+  refreshScreen();
+}
+
+// ── run whole suite (SSE stream) ───────────────────────────────────────────
+async function runSuite(){
+  const loops=parseInt(document.getElementById('suiteloops').value||'1',10);
+  const st=document.getElementById('runstatus'); st.className='status'; st.textContent='running…';
+  logLine('── run ALL flows'+(loops<=0?' (continuous)':' ×'+loops)+' ──');
+  const resp=await fetch('/api/run-suite',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({loops})});
+  if(!resp.body){ logLine('✗ no stream'); return; }
+  const reader=resp.body.getReader(); const dec=new TextDecoder(); let buf='';
+  while(true){
+    const {value,done}=await reader.read(); if(done) break;
+    buf+=dec.decode(value,{stream:true});
+    let idx;
+    while((idx=buf.indexOf('\n\n'))>=0){
+      const chunk=buf.slice(0,idx); buf=buf.slice(idx+2);
+      let ev='message', data=[];
+      chunk.split('\n').forEach(l=>{
+        if(l.startsWith('event: ')) ev=l.slice(7);
+        else if(l.startsWith('data: ')) data.push(l.slice(6));
+      });
+      const payload=data.join('\n');
+      if(ev==='flow-start'){ try{const o=JSON.parse(payload); logLine('▸ '+o.file);}catch(e){} }
+      else if(ev==='flow-done'){ try{const o=JSON.parse(payload);
+        logLine((o.status==='passed'?'  ✓ ':'  ✗ ')+o.file+' — '+o.status); }catch(e){} }
+      else if(ev==='done'){ try{const o=JSON.parse(payload);
+        st.className='status '+(o.status==='passed'?'passed':'failed');
+        st.textContent=o.passed+'/'+o.total+' passed';
+        logLine('══ suite '+o.status.toUpperCase()+': '+o.passed+' passed, '+o.failed+' failed'
+          +(o.failures&&o.failures.length?(' → '+o.failures.join(', ')):'')); }catch(e){ logLine(payload); } }
+      else { if(payload) logLine(payload); }
     }
   }
   refreshScreen();

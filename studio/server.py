@@ -29,7 +29,9 @@ from urllib.parse import urlparse, parse_qs
 STUDIO_DIR = os.path.dirname(os.path.abspath(__file__))
 YUKTI_ROOT = os.path.dirname(STUDIO_DIR)                 # ~/workspace/yukti
 YUKTI_BIN = os.path.join(YUKTI_ROOT, "yukti")           # the CLI, absolute
-FLOWS_DIR = os.path.join(YUKTI_ROOT, "flows")
+# Flows live in the yukti repo by default, but a project can point Studio at its
+# own (private, git-ignored) flow suite without copying it into this public repo.
+FLOWS_DIR = os.environ.get("YUKTI_FLOWS_DIR", os.path.join(YUKTI_ROOT, "flows"))
 INDEX_HTML = os.path.join(STUDIO_DIR, "index.html")
 PORT = int(os.environ.get("YUKTI_STUDIO_PORT", "8787"))
 
@@ -219,6 +221,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._save_flow()
             if route == "/api/run":
                 return self._run_flow()
+            if route == "/api/run-suite":
+                return self._run_suite()
             if route == "/api/tap":
                 return self._tap()
             if route == "/api/type":
@@ -391,6 +395,86 @@ class Handler(BaseHTTPRequestHandler):
             "done",
             json.dumps({"status": "passed" if rc == 0 else "failed", "code": rc}),
         )
+
+    def _run_suite(self):
+        """Run every flow in FLOWS_DIR in order and stream results via SSE.
+
+        Body (all optional):
+          loops: int   — repeat the whole suite N times (default 1; use for a
+                          continuous soak run). 0 or negative = run until the
+                          client disconnects.
+          only:  [str] — restrict to these flow filenames (default: all).
+        Parallel across flows needs multiple booted simulators (one screen can
+        only run one flow at a time); shard the suite across sims by launching
+        one Studio per sim with YUKTI_FLOWS_DIR pointed at a per-shard subset.
+        """
+        body = self._read_body()
+        loops = int(body.get("loops", 1) or 1)
+        only = body.get("only") or None
+        flows = [f["file"] for f in list_flows()]
+        if only:
+            only_set = set(only)
+            flows = [f for f in flows if f in only_set]
+
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "close")
+        self.end_headers()
+
+        def emit(event, data):
+            try:
+                self.wfile.write(("event: %s\n" % event).encode("utf-8"))
+                for line in str(data).splitlines() or [""]:
+                    self.wfile.write(("data: %s\n" % line).encode("utf-8"))
+                self.wfile.write(b"\n")
+                self.wfile.flush()
+                return True
+            except Exception:
+                return False
+
+        emit("log", "▸ suite: %d flow(s) × %s loop(s)"
+             % (len(flows), "∞" if loops <= 0 else loops))
+        results = []
+        loop_i = 0
+        try:
+            while loops <= 0 or loop_i < loops:
+                loop_i += 1
+                emit("log", "── loop %d ──" % loop_i)
+                for fn in flows:
+                    path = os.path.join(FLOWS_DIR, fn)
+                    emit("flow-start", json.dumps({"file": fn, "loop": loop_i}))
+                    try:
+                        proc = subprocess.Popen(
+                            [YUKTI_BIN, "flow", path],
+                            cwd=YUKTI_ROOT, env=yukti_env(),
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            bufsize=1, universal_newlines=True,
+                        )
+                    except Exception as e:
+                        emit("flow-done", json.dumps(
+                            {"file": fn, "status": "error", "error": str(e)}))
+                        results.append((fn, "error"))
+                        continue
+                    for line in iter(proc.stdout.readline, ""):
+                        if not emit("log", line.rstrip("\n")):
+                            proc.kill()
+                            return  # client disconnected — stop the soak
+                    proc.stdout.close()
+                    rc = proc.wait()
+                    status = "passed" if rc == 0 else "failed"
+                    results.append((fn, status))
+                    emit("flow-done", json.dumps(
+                        {"file": fn, "status": status, "code": rc}))
+        finally:
+            passed = sum(1 for _, s in results if s == "passed")
+            failed = sum(1 for _, s in results if s != "passed")
+            emit("done", json.dumps({
+                "status": "passed" if failed == 0 else "failed",
+                "total": len(results), "passed": passed, "failed": failed,
+                "loops": loop_i,
+                "failures": [f for f, s in results if s != "passed"],
+            }))
 
     def _tap(self):
         body = self._read_body()
