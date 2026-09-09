@@ -1,0 +1,6 @@
+# YUKTI runtime artifacts
+*.png
+*.mp4
+yukti.config.json
+.env.local
+artifacts/

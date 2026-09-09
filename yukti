@@ -1,0 +1,311 @@
+#!/usr/bin/env bash
+# ─────────────────────────────────────────────────────────────────────────────
+# yukti — a portable local iOS-Simulator QA rig for React Native / Expo apps.
+#
+#   build → sign → boot → install → launch → drive.  No cloud device farm.
+#
+# Two ways to run tests, and AI is OPTIONAL:
+#   • Deterministic flows   →  `yukti flow flows/login.json`   (zero AI, CI-ready)
+#   • AI-driven exploration →  any agent (Claude Code / OpenAI computer-use)
+#                              drives the primitives below (shot/ui/find/tap/type)
+#
+# The whole rig is Apple tools + idb. Expo/EAS is an optional adapter, not a dep.
+#
+# MIT licensed. https://github.com/<you>/yukti
+# ─────────────────────────────────────────────────────────────────────────────
+set -euo pipefail
+
+YUKTI_VERSION="0.1.0"
+CONFIG="${YUKTI_CONFIG:-yukti.config.json}"
+PY="/usr/bin/python3"                       # system python: reliable expat + json
+NODE22="/opt/homebrew/opt/node@22/bin"      # RN/Metro pins node 22; sys node may be broken
+IDB_BIN="$HOME/Library/Python/3.9/bin"      # fb-idb CLI install location
+
+# ── pretty ───────────────────────────────────────────────────────────────────
+c(){ printf '\033[%sm' "$1"; }; R=$(c 0); B=$(c '1;36'); G=$(c '1;32'); Y=$(c '1;33'); E=$(c '1;31')
+say(){ printf '%s▸%s %s\n' "$B" "$R" "$*"; }
+ok(){  printf '%s✓%s %s\n' "$G" "$R" "$*"; }
+warn(){ printf '%s!%s %s\n' "$Y" "$R" "$*"; }
+die(){ printf '%s✗%s %s\n' "$E" "$R" "$*" >&2; exit 1; }
+
+need_config(){ [ -f "$CONFIG" ] || die "no config at '$CONFIG' — run 'yukti init' or set YUKTI_CONFIG"; }
+
+# ── config reader (dotted path; prints scalars raw, lists/objects as JSON) ─────
+cfg(){ need_config; "$PY" - "$CONFIG" "$1" "${2:-}" <<'PY'
+import json,sys
+d=json.load(open(sys.argv[1])); default=sys.argv[3] if len(sys.argv)>3 else ""
+cur=d
+try:
+    for k in sys.argv[2].split('.'):
+        cur=cur[k]
+except (KeyError,TypeError):
+    print(default); sys.exit(0)
+print(cur if not isinstance(cur,(list,dict)) else json.dumps(cur))
+PY
+}
+
+app_dir(){ ROOT="$(cfg projectRoot .)"; cd "$ROOT" 2>/dev/null || die "projectRoot '$ROOT' not found"; }
+paths(){ export PATH="$NODE22:$IDB_BIN:/opt/homebrew/bin:$PATH"; }
+udid_file(){ echo "${TMPDIR:-/tmp}/yukti-udid"; }
+booted(){ xcrun simctl list devices 2>/dev/null | grep -m1 Booted | grep -oE '[0-9A-F-]{36}' || true; }
+plat_of(){ cfg "variants.$1.platform" ios; }
+
+# ── Android backend (adb + uiautomator + gradle) ─────────────────────────────
+# 1:1 mirror of the iOS path. Implemented; validate on a Mac with the Android SDK.
+# Android debug APKs are auto-signed with the debug key — none of the iOS signing/
+# keychain/arch pain applies. Config per variant: platform:"android", package,
+# gradleTask (default assembleDebug); global android.avd for the emulator.
+ANDROID_SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Library/Android/sdk}}"
+apaths(){ export PATH="$NODE22:$ANDROID_SDK/platform-tools:$ANDROID_SDK/emulator:$ANDROID_SDK/cmdline-tools/latest/bin:/opt/homebrew/bin:$PATH"; }
+
+build_android(){ local V="$1"; app_dir; apaths
+  local task apk env; task="$(cfg variants.$V.gradleTask assembleDebug)"; env="$(cfg variants.$V.envFile)"
+  [ -n "$env" ] && [ -f "$env" ] && cp "$env" .env.local && ok "env: $env → .env.local"
+  say "gradle $task"; ( cd android && ./gradlew "$task" ) || die "gradle build failed"
+  apk="$(find android/app/build/outputs/apk -name '*.apk' 2>/dev/null | head -1)"
+  [ -n "$apk" ] || die "no APK produced"; echo "$apk" > "${TMPDIR:-/tmp}/yukti-apk-$V"; ok "built: $apk"; }
+boot_android(){ apaths; local avd; avd="$(cfg android.avd Pixel_7_API_34)"
+  if ! adb devices 2>/dev/null | grep -q emulator; then say "starting emulator $avd"; ( "$ANDROID_SDK/emulator/emulator" -avd "$avd" -no-boot-anim >/dev/null 2>&1 & ); fi
+  adb wait-for-device; until [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = 1 ]; do sleep 2; done; ok "emulator booted"; }
+install_android(){ apaths; local V="$1"; adb install -r "$(cat "${TMPDIR:-/tmp}/yukti-apk-$V")" && ok "installed"; }
+launch_android(){ apaths; local pkg; pkg="$(cfg variants.$1.package)"; adb shell monkey -p "$pkg" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1 && ok "launched $pkg"; }
+ashot(){ apaths; local o="${1:-${TMPDIR:-/tmp}/yukti-shot.png}"; adb exec-out screencap -p > "$o" && echo "$o"; }
+aui(){ apaths; adb shell uiautomator dump /sdcard/yk.xml >/dev/null 2>&1; adb shell cat /sdcard/yk.xml 2>/dev/null; }
+afind(){ apaths; aui | "$PY" -c '
+import sys,re
+q=sys.argv[1].lower(); xml=sys.stdin.read()
+for m in re.finditer(r"<node[^>]*>", xml):
+    tag=m.group(0);
+    def a(n):
+        mm=re.search(n+r"=\"([^\"]*)\"",tag); return mm.group(1) if mm else ""
+    lbl=(a("text") or a("content-desc")).lower()
+    if q in lbl and lbl:
+        b=re.search(r"bounds=\"\[(\d+),(\d+)\]\[(\d+),(\d+)\]\"",tag)
+        if b: x1,y1,x2,y2=map(int,b.groups()); print((x1+x2)//2,(y1+y2)//2); break
+' "$1"; }
+atap(){ apaths; adb shell input tap "$1" "$2"; }
+atype(){ apaths; adb shell input text "$(printf '%s' "$1" | sed 's/ /%s/g')"; }
+aclear(){ apaths; adb shell input tap "$1" "$2"; local i; for i in $(seq 1 40); do adb shell input keyevent 67 >/dev/null 2>&1; done; }
+
+# ── doctor: verify/report the toolchain ──────────────────────────────────────
+doctor(){
+  paths; local bad=0
+  say "yukti v$YUKTI_VERSION — environment check"
+  if xcrun simctl help >/dev/null 2>&1; then ok "Xcode + simctl"; else die "Full Xcode required (not just CLT). Install Xcode, then: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer"; fi
+  xcrun simctl list runtimes 2>/dev/null | grep -qi ios && ok "iOS simulator runtime" || { warn "no iOS runtime — installing"; xcodebuild -downloadPlatform iOS; }
+  command -v node >/dev/null && ok "node $(node -v)" || { warn "node@22 missing"; bad=1; echo "   brew install node@22"; }
+  command -v pod  >/dev/null && ok "cocoapods $(pod --version)" || { warn "cocoapods missing"; bad=1; echo "   brew install cocoapods"; }
+  command -v idb  >/dev/null && ok "idb (UI driver)" || { warn "idb missing"; bad=1; echo "   brew trust facebook/fb && brew install idb-companion && $PY -m pip install --user fb-idb"; }
+  [ "$(cfg easEnabled false)" = "True" -o "$(cfg easEnabled false)" = "true" ] && { command -v npx >/dev/null && ok "npx (for EAS adapter)"; }
+  [ $bad -eq 0 ] && ok "ready" || die "install the tools above, then re-run 'yukti doctor'"
+}
+
+# ── device-only-lib scan: static frameworks lacking an arm64-simulator slice ──
+# (These break arm64 sim linking; exclude them from iOS autolinking for the rig.)
+scan(){
+  app_dir; say "scanning ios/Pods for device-only frameworks (no arm64-sim slice)…"
+  find ios/Pods -type f -path "*.framework/*" ! -path "*.xcframework/*" 2>/dev/null | while read -r f; do
+    file "$f" 2>/dev/null | grep -q "Mach-O" || continue
+    lipo -info "$f" 2>/dev/null | grep -q arm64 || continue
+    vtool -show-build "$f" 2>/dev/null | grep -qi SIMULATOR || echo "  device-only: $(echo "$f" | sed -E 's#.*/Pods/([^/]+)/.*#\1#')"
+  done | sort -u
+  warn "add the npm packages that vendor these to config .excludeIosAutolink[]"
+}
+
+# ── write react-native.config.js to drop device-only libs from iOS autolinking ─
+write_rn_excludes(){
+  app_dir; local ex; ex="$(cfg excludeIosAutolink '[]')"
+  [ "$ex" = "[]" ] && return 0
+  [ -f react-native.config.js ] && [ ! -f .yukti.rnconfig.bak ] && cp react-native.config.js .yukti.rnconfig.bak
+  "$PY" - "$ex" > react-native.config.js <<'PY'
+import json,sys
+pkgs=json.loads(sys.argv[1])
+deps=",\n".join(f"    {json.dumps(p)}: {{ platforms: {{ ios: null }} }}" for p in pkgs)
+print("// AUTO-GENERATED by yukti — device-only libs w/o arm64-sim slice, excluded for sim builds.\n"
+      "module.exports = {\n  dependencies: {\n"+deps+"\n  },\n};")
+PY
+  ok "react-native.config.js excludes: $(echo "$ex" | "$PY" -c 'import json,sys;print(", ".join(json.load(sys.stdin)))')"
+}
+
+# ── build a signed arm64 simulator .app for a variant ────────────────────────
+build(){
+  local V="${1:?usage: yukti build <variant>}"
+  [ "$(plat_of "$V")" = android ] && { build_android "$V"; return; }
+  app_dir; paths
+  local scheme cfgn env dd
+  scheme="$(cfg variants.$V.scheme)";        [ -n "$scheme" ] || die "unknown variant '$V'"
+  cfgn="$(cfg variants.$V.configuration)"
+  env="$(cfg variants.$V.envFile)"
+  dd="ios/.yukti-build/$V"
+  say "building '$V'  (scheme='$scheme' config='$cfgn')"
+  [ -n "$env" ] && [ -f "$env" ] && cp "$env" .env.local && ok "env: $env → .env.local" || warn "no envFile for '$V' (config .variants.$V.envFile)"
+  write_rn_excludes
+  ( cd ios && pod install >/dev/null 2>&1 ) && ok "pods installed"
+  local appvar; appvar="$(cfg variants.$V.appVariant "$V")"
+  NODE_ENV="$(cfg variants.$V.nodeEnv development)" APP_VARIANT="$appvar" EXPO_VARIANT_EXPLICIT=1 \
+  xcodebuild -workspace "$(cfg workspace)" -scheme "$scheme" -configuration "$cfgn" \
+    -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath "$dd" \
+    ARCHS=arm64 ONLY_ACTIVE_ARCH=NO EXCLUDED_ARCHS=x86_64 \
+    CODE_SIGN_IDENTITY="-" CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM="" PROVISIONING_PROFILE_SPECIFIER="" \
+    build >/dev/null || die "xcodebuild failed — run without >/dev/null to see errors, or 'yukti scan' for device-only libs"
+  # NB: ad-hoc CODE_SIGN_IDENTITY="-" keeps entitlements (keychain) so Firebase/auth works.
+  #     CODE_SIGNING_ALLOWED=NO would strip them → -34018 keychain → login 401s.
+  local app; app="$(find "$dd/Build/Products" -maxdepth 2 -name '*.app' | head -1)"
+  [ -n "$app" ] || die "build produced no .app"
+  echo "$app" > "${TMPDIR:-/tmp}/yukti-app-$V"
+  ok "built: $app"
+}
+
+# ── pull an OFFICIAL simulator build from EAS (optional adapter) ──────────────
+pull_eas(){
+  local V="${1:?usage: yukti pull <variant>}"; app_dir; paths
+  [ -f /tmp/expotoken ] || [ -n "${EXPO_TOKEN:-}" ] || die "set EXPO_TOKEN (or /tmp/expotoken) for the EAS adapter"
+  local tok profile; tok="${EXPO_TOKEN:-$(cat /tmp/expotoken)}"; profile="$(cfg variants.$V.easProfile simulator)"
+  say "triggering EAS simulator build (profile='$profile') — cloud, ~15 min"
+  EXPO_TOKEN="$tok" npx eas-cli build --platform ios --profile "$profile" --non-interactive --wait || die "eas build failed (does eas.json have a '$profile' profile with ios.simulator=true?)"
+  local url; url="$(EXPO_TOKEN="$tok" npx eas-cli build:list --platform ios --limit 1 --json --non-interactive 2>/dev/null | "$PY" -c 'import json,sys;print(json.load(sys.stdin)[0]["artifacts"]["applicationArchiveUrl"])')"
+  say "downloading $url"; curl -sL "$url" -o /tmp/yukti-eas.tar.gz
+  local out="ios/.yukti-build/eas-$V"; rm -rf "$out"; mkdir -p "$out"; tar -xzf /tmp/yukti-eas.tar.gz -C "$out"
+  local app; app="$(find "$out" -maxdepth 2 -name '*.app' | head -1)"
+  [ -n "$app" ] || die "EAS archive had no .app (was it a device .ipa? need a simulator profile)"
+  echo "$app" > "${TMPDIR:-/tmp}/yukti-app-$V"; ok "pulled: $app"
+}
+
+# ── simulator lifecycle ──────────────────────────────────────────────────────
+boot(){
+  [ "${YUKTI_PLATFORM:-ios}" = android ] && { boot_android; return; }
+  paths; local dev rt u
+  dev="$(cfg simulator.device 'iPhone 16 Pro')"
+  u="$(xcrun simctl list devices | grep -m1 "$dev (" | grep -oE '[0-9A-F-]{36}' || true)"
+  if [ -z "$u" ]; then
+    rt="$(xcrun simctl list runtimes | grep -i ios | grep -oE 'com.apple.CoreSimulator.SimRuntime.iOS[^ ]*' | tail -1)"
+    local dt; dt="$(xcrun simctl list devicetypes | grep -oE "com.apple.CoreSimulator.SimDeviceType.$(echo "$dev" | tr ' ' '-')" | head -1)"
+    u="$(xcrun simctl create "yukti-$dev" "$dt" "$rt")"; ok "created $dev"
+  fi
+  xcrun simctl boot "$u" 2>/dev/null || true
+  xcrun simctl bootstatus "$u" -b >/dev/null 2>&1 || true
+  open -a Simulator
+  echo "$u" > "$(udid_file)"; ok "booted $dev ($u)"
+}
+install(){ local V="${1:?variant}"; [ "$(plat_of "$V")" = android ] && { install_android "$V"; return; }; paths; local u a; u="$(cat "$(udid_file)")"; a="$(cat "${TMPDIR:-/tmp}/yukti-app-$V")"
+  xcrun simctl install "$u" "$a" && ok "installed $(basename "$a")"; }
+launch(){ local V="${1:?variant}"; [ "$(plat_of "$V")" = android ] && { launch_android "$V"; return; }; paths; local u b; u="$(cat "$(udid_file)")"; b="$(cfg variants.$V.bundleId)"
+  xcrun simctl launch "$u" "$b" && ok "launched $b"; }
+up(){ local V="${1:?usage: yukti up <variant>}"; export YUKTI_PLATFORM="$(plat_of "$V")"; build "$V"; boot; install "$V"; launch "$V"; ok "up: '$V' running — drive with 'yukti shot' / 'yukti flow'"; }
+
+# ── drive primitives (used by flows AND by AI agents) ────────────────────────
+U(){ cat "$(udid_file)" 2>/dev/null || booted; }
+idb_ready(){ paths; idb connect "$(U)" >/dev/null 2>&1 || true; }
+shot(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { ashot "$@"; return; }; paths; xcrun simctl io "$(U)" screenshot "${1:-${TMPDIR:-/tmp}/yukti-shot.png}" >/dev/null 2>&1 && echo "${1:-${TMPDIR:-/tmp}/yukti-shot.png}"; }
+ui(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { aui; return; }; idb_ready; local u out i; u="$(U)"; for i in 1 2 3 4; do out="$(idb ui describe-all --udid "$u" 2>/dev/null)"; [ -n "$out" ] && { printf '%s' "$out"; return 0; }; sleep 0.6; done; printf '%s' "$out"; }
+find_el(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { afind "$1"; return; }; paths; ui | "$PY" -c '
+import json,sys
+q=sys.argv[1].lower()
+raw=sys.stdin.read().strip()
+if not raw: sys.exit(0)
+for e in json.loads(raw):
+    lbl=str(e.get("AXLabel") or e.get("AXValue") or "")
+    if q in lbl.lower():
+        f=e.get("frame",{}); print(int(f.get("x",0)+f.get("width",0)/2), int(f.get("y",0)+f.get("height",0)/2)); break
+' "$1"; }
+tap(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { atap "$1" "$2"; return; }; paths; idb ui tap --udid "$(U)" "${1:?x}" "${2:?y}"; }
+tap_text(){ local xy; xy="$(find_el "$1")"; [ -n "$xy" ] || die "no element matching '$1'"; tap $xy; }
+tap_text_optional(){ local xy; xy="$(find_el "$1")"; [ -n "$xy" ] && { tap $xy; ok "optional tap '$1'"; } || warn "optional '$1' not present — skipped"; }
+# Auto-dismiss the interstitials that derail flows (Save Password, notifications, promos…)
+dismiss(){ local L xy; for L in "Not Now" "Not now" "Maybe Later" "Later" "Skip for now" "Skip" "No thanks" "No Thanks" "Got it"; do
+    xy="$(find_el "$L")"; [ -n "$xy" ] && { tap $xy; sleep 0.6; ok "dismissed '$L'"; }
+  done; }  # only SAFE interstitial labels — never Cancel/Close/OK (those navigate/confirm)
+type_str(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { atype "$1"; return; }; paths; local s="${1:?text}" i; for ((i=0;i<${#s};i++)); do idb ui text --udid "$(U)" "${s:$i:1}" >/dev/null 2>&1; sleep 0.12; done; }  # char-by-char = reliable
+clear_field(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { aclear "$1" "$2"; return; }; paths; local x="${1:?x}" y="${2:?y}" i; idb ui tap --udid "$(U)" "$x" "$y"; sleep .4; idb ui tap --udid "$(U)" 360 "$y"; sleep .3; for i in $(seq 1 32); do idb ui key --udid "$(U)" 42 >/dev/null 2>&1; done; }
+assert_text(){ paths; ui | grep -qi -- "$1" && ok "assert: '$1' present" || die "assert FAILED: '$1' not on screen"; }
+wait_s(){ sleep "${1:-2}"; }
+
+# ── deterministic flow runner: a JSON list of steps ──────────────────────────
+# step keys: launch|wait|screenshot|tap[x,y]|tapText|type|clearText[x,y]|assertText
+flow(){
+  local f="${1:?usage: yukti flow <file.json>}"; [ -f "$f" ] || die "no flow file '$f'"; paths
+  say "running flow: $f"
+  "$PY" -c 'import json,sys,os;[print("\t".join([s.get("do",""),os.path.expandvars(str(s.get("value",""))),str(s.get("x","")),str(s.get("y",""))])) for s in json.load(open(sys.argv[1]))["steps"]]' "$f" \
+  | while IFS=$'\t' read -r do_ val x y; do
+      case "$do_" in
+        wait)        wait_s "${val:-2}";;
+        screenshot)  ok "shot → $(shot "$val")";;
+        tap)         tap "$x" "$y";;
+        tapText)     say "tap '$val'"; tap_text "$val";;
+        optionalTapText) tap_text_optional "$val";;
+        dismiss)     dismiss;;
+        clearText)   clear_field "$x" "$y";;
+        type)        say "type ${#val} chars"; type_str "$val";;
+        assertText)  assert_text "$val";;
+        launch)      launch "$val";;
+        *) warn "unknown step '$do_'";;
+      esac
+    done
+  ok "flow complete: $f"
+}
+
+init(){ [ -f "$CONFIG" ] && die "$CONFIG exists"; cat > "$CONFIG" <<'JSON'
+{
+  "projectRoot": ".",
+  "workspace": "ios/YourApp.xcworkspace",
+  "simulator": { "device": "iPhone 16 Pro" },
+  "excludeIosAutolink": [],
+  "easEnabled": false,
+  "variants": {
+    "qa":   { "scheme": "YourApp",     "configuration": "Release", "bundleId": "com.you.app",     "envFile": ".env.qa",         "appVariant": "development", "nodeEnv": "development", "easProfile": "simulator" },
+    "prod": { "scheme": "YourApp",     "configuration": "Release", "bundleId": "com.you.app",     "envFile": ".env.production", "appVariant": "production",  "nodeEnv": "production",  "easProfile": "simulator" }
+  }
+}
+JSON
+  ok "wrote $CONFIG — edit it, then 'yukti doctor' and 'yukti up qa'"; }
+
+usage(){ cat <<EOF
+${B}yukti v$YUKTI_VERSION${R} — YUKTI — smart mobile-app QA automation for React Native / Expo
+
+  yukti doctor              check/guide the toolchain (Xcode, node@22, cocoapods, idb)
+  yukti init                write a starter yukti.config.json
+  yukti scan                list device-only frameworks (no arm64-sim slice) to exclude
+  yukti build <variant>     build a signed arm64 simulator .app (local)
+  yukti pull  <variant>     pull an OFFICIAL simulator build from EAS (needs EXPO_TOKEN)
+  yukti boot                create/boot the simulator
+  yukti up    <variant>     build + boot + install + launch  (one shot)
+  yukti flow  <file.json>   run a deterministic flow (Talos test-case engine — no AI, CI-ready)
+
+  drive primitives (for flows or an AI agent — Claude Code / OpenAI):
+  yukti shot [file]         screenshot the sim (an agent reads the PNG)
+  yukti ui                  accessibility tree (JSON, coords in points)
+  yukti find "<label>"      -> "x y" center of the first element matching label
+  yukti tap <x> <y>         tap
+  yukti type "<text>"       type (char-by-char = reliable; idb bulk-type drops chars)
+  yukti clear <x> <y>       clear a text field
+  yukti dismiss             auto-dismiss common modals (Not Now / Skip / OK / Close…)
+
+  flow steps: wait · screenshot · tap · tapText · optionalTapText · dismiss · type · clearText · assertText · launch
+  config: \$YUKTI_CONFIG or ./yukti.config.json  ·  cross-platform: set variant "platform":"android"
+EOF
+}
+
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  doctor) doctor;;
+  init) init;;
+  scan) scan;;
+  build) build "$@";;
+  pull) pull_eas "$@";;
+  boot) boot;;
+  install) install "$@";;
+  launch) launch "$@";;
+  up) up "$@";;
+  flow) flow "$@";;
+  shot) shot "$@";;
+  ui) ui;;
+  find) find_el "$@";;
+  tap) tap "$@";;
+  "tap-text"|tapText) tap_text "$@";;
+  dismiss) dismiss;;
+  type) type_str "$@";;
+  clear) clear_field "$@";;
+  assert) assert_text "$@";;
+  ""|-h|--help|help) usage;;
+  *) die "unknown command '$cmd' — see 'yukti help'";;
+esac

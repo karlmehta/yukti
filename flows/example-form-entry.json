@@ -1,0 +1,13 @@
+{
+  "name": "Example: enter a number + save + verify persistence",
+  "note": "Template for number-entry/persistence/calculation checks. Customize labels/coords for your app.",
+  "steps": [
+    { "do": "tapText", "value": "Log" }, { "do": "wait", "value": 2 },
+    { "do": "tapText", "value": "Add Entry" }, { "do": "wait", "value": 2 },
+    { "do": "dismiss" },
+    { "do": "tap", "x": 206, "y": 500 }, { "do": "type", "value": "165" },
+    { "do": "screenshot", "value": "entered.png" },
+    { "do": "tapText", "value": "Save" }, { "do": "wait", "value": 3 },
+    { "do": "assertText", "value": "165" }
+  ]
+}

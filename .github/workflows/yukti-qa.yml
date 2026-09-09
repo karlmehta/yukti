@@ -1,0 +1,79 @@
+# YUKTI mobile QA — runs deterministic simulator flows on every build.
+# Drop this into your React Native / Expo app repo (.github/workflows/).
+# It builds a signed simulator app, boots a sim, runs the YUKTI flows, and
+# uploads screenshots + a video as artifacts. No BrowserStack, no device farm.
+#
+# Required repo secrets: TEST_EMAIL, TEST_PASSWORD  (a dedicated QA/test account).
+# Optional: EXPO_TOKEN  (only if you use `yukti pull` for official EAS builds).
+
+name: YUKTI QA (iOS Simulator)
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: "Build variant to test (must exist in yukti.config.json)"
+        default: "qa"
+
+concurrency:
+  group: yukti-qa-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  simulator-qa:
+    runs-on: macos-15          # macOS runners ship Xcode + iOS simulators
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [qa]          # add "prod" once a prod TEST account exists
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+
+      - name: Toolchain (node@22, cocoapods, idb)
+        run: |
+          brew install node@22 cocoapods || true
+          brew trust facebook/fb && brew install idb-companion || true
+          /usr/bin/python3 -m pip install --user fb-idb
+          echo "/opt/homebrew/opt/node@22/bin" >> "$GITHUB_PATH"
+          echo "$HOME/Library/Python/3.9/bin" >> "$GITHUB_PATH"
+
+      - name: Install JS deps
+        run: npm ci
+
+      - name: Fetch YUKTI
+        run: git clone --depth 1 https://github.com/karlmehta/yukti .yukti
+
+      - name: Build + boot + launch (${{ matrix.variant }})
+        env:
+          YUKTI_CONFIG: yukti.config.json
+        run: .yukti/yukti up ${{ matrix.variant }}
+
+      - name: Run flows
+        env:
+          YUKTI_CONFIG: yukti.config.json
+          TEST_EMAIL: ${{ secrets.TEST_EMAIL }}
+          TEST_PASSWORD: ${{ secrets.TEST_PASSWORD }}
+        run: |
+          mkdir -p artifacts
+          xcrun simctl io booted recordVideo artifacts/run.mp4 &  # best-effort capture
+          REC=$!
+          set +e; fail=0
+          for f in flows/*.json; do
+            echo "::group::flow $f"; .yukti/yukti flow "$f" || fail=1; echo "::endgroup::"
+          done
+          kill $REC 2>/dev/null || true
+          cp /tmp/*.png artifacts/ 2>/dev/null || true
+          exit $fail
+
+      - name: Upload screenshots + video
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: yukti-qa-${{ matrix.variant }}
+          path: artifacts/
+          retention-days: 14

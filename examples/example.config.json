@@ -1,0 +1,36 @@
+{
+  "projectRoot": ".",
+  "workspace": "ios/YourApp.xcworkspace",
+  "simulator": { "device": "iPhone 16 Pro" },
+  "android": { "avd": "Pixel_7_API_34" },
+  "excludeIosAutolink": [
+    "@some/device-only-native-module"
+  ],
+  "easEnabled": false,
+  "variants": {
+    "qa": {
+      "scheme": "YourApp",
+      "configuration": "Release",
+      "bundleId": "com.example.yourapp",
+      "envFile": ".env.qa",
+      "appVariant": "development",
+      "nodeEnv": "development",
+      "easProfile": "simulator"
+    },
+    "prod": {
+      "scheme": "YourApp",
+      "configuration": "Release",
+      "bundleId": "com.example.yourapp",
+      "envFile": ".env.production",
+      "appVariant": "production",
+      "nodeEnv": "production",
+      "easProfile": "simulator"
+    },
+    "android-qa": {
+      "platform": "android",
+      "package": "com.example.yourapp",
+      "gradleTask": "assembleDebug",
+      "envFile": ".env.qa"
+    }
+  }
+}

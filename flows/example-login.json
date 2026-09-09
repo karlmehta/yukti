@@ -1,0 +1,15 @@
+{
+  "name": "Example: login → home",
+  "note": "Template. Coords are POINTS (iPhone 16 Pro = 402x874). Prefer tapText over raw coords. Creds via env: TEST_EMAIL/TEST_PASSWORD (CI: GitHub secrets).",
+  "steps": [
+    { "do": "wait", "value": 16 },
+    { "do": "dismiss" },
+    { "do": "assertText", "value": "Welcome" },
+    { "do": "clearText", "x": 201, "y": 548 }, { "do": "tap", "x": 201, "y": 548 }, { "do": "type", "value": "${TEST_EMAIL}" },
+    { "do": "clearText", "x": 191, "y": 608 }, { "do": "tap", "x": 191, "y": 608 }, { "do": "type", "value": "${TEST_PASSWORD}" },
+    { "do": "tapText", "value": "Sign In" },
+    { "do": "wait", "value": 12 },
+    { "do": "dismiss" },
+    { "do": "screenshot", "value": "after-login.png" }
+  ]
+}

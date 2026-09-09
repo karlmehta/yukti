@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>YUKTI Studio</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2230; --line:#2a3140;
+    --txt:#e6edf3; --dim:#8b949e; --accent:#3fb6ff; --accent2:#7c5cff;
+    --ok:#3fb950; --err:#f85149; --warn:#d29922; --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;height:100%;background:var(--bg);color:var(--txt);
+    font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+  header{display:flex;align-items:center;gap:12px;padding:10px 16px;
+    border-bottom:1px solid var(--line);background:var(--panel)}
+  header .logo{font-weight:700;letter-spacing:.5px;font-size:16px}
+  header .logo b{color:var(--accent)}
+  header .meta{color:var(--dim);font:12px/1 var(--mono)}
+  header .spacer{flex:1}
+  .pill{font:11px/1 var(--mono);padding:4px 8px;border-radius:20px;
+    background:var(--panel2);border:1px solid var(--line);color:var(--dim)}
+  .pill.ok{color:var(--ok);border-color:#1e3a24}
+  .pill.off{color:var(--warn)}
+  main{display:grid;grid-template-columns:260px 1fr 340px;height:calc(100% - 49px)}
+  .col{overflow:auto;padding:12px}
+  .col.left{border-right:1px solid var(--line);background:var(--panel)}
+  .col.right{border-left:1px solid var(--line);background:var(--panel)}
+  h2{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--dim);
+    margin:4px 0 10px}
+  .flow{padding:9px 10px;border:1px solid var(--line);border-radius:8px;margin-bottom:8px;
+    background:var(--panel2)}
+  .flow .name{font-weight:600}
+  .flow .sub{color:var(--dim);font:11px/1.3 var(--mono);margin-top:3px}
+  .flow .row{display:flex;gap:6px;margin-top:8px}
+  button{font:12px/1 inherit;padding:6px 10px;border-radius:6px;cursor:pointer;
+    border:1px solid var(--line);background:var(--panel2);color:var(--txt)}
+  button:hover{border-color:var(--accent)}
+  button.p{background:var(--accent);color:#04131f;border-color:var(--accent);font-weight:600}
+  button.g{background:#12331c;color:var(--ok);border-color:#1e3a24}
+  button.d{background:#331515;color:var(--err);border-color:#4a1f1f}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  .stage{display:flex;flex-direction:column;height:100%;gap:10px}
+  .simwrap{flex:1;display:flex;align-items:center;justify-content:center;
+    background:#05070b;border:1px solid var(--line);border-radius:12px;position:relative;
+    overflow:hidden;min-height:200px}
+  #sim{max-height:100%;max-width:100%;image-rendering:auto;cursor:crosshair;
+    border-radius:6px;box-shadow:0 8px 40px rgba(0,0,0,.6)}
+  #sim.norec{cursor:default}
+  .simbadge{position:absolute;top:8px;left:8px;font:11px/1 var(--mono);
+    background:rgba(0,0,0,.6);padding:4px 8px;border-radius:6px;color:var(--dim)}
+  .recdot{position:absolute;top:8px;right:8px;display:none;align-items:center;gap:6px;
+    font:11px/1 var(--mono);background:rgba(0,0,0,.6);padding:4px 8px;border-radius:6px;color:var(--err)}
+  .recdot.on{display:flex}
+  .recdot .d{width:8px;height:8px;border-radius:50%;background:var(--err);animation:blink 1s infinite}
+  @keyframes blink{50%{opacity:.2}}
+  .tapflash{position:absolute;width:26px;height:26px;border:2px solid var(--accent);
+    border-radius:50%;margin:-13px 0 0 -13px;pointer-events:none;animation:flash .5s ease-out forwards}
+  @keyframes flash{from{transform:scale(.4);opacity:1}to{transform:scale(1.6);opacity:0}}
+  .bar{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+  .bar input{flex:1;min-width:120px}
+  input,textarea,select{background:#0b0f16;border:1px solid var(--line);color:var(--txt);
+    border-radius:6px;padding:7px 9px;font:13px/1.3 inherit}
+  input:focus,textarea:focus{outline:none;border-color:var(--accent)}
+  .log{height:150px;overflow:auto;background:#05070b;border:1px solid var(--line);
+    border-radius:8px;padding:8px 10px;font:12px/1.5 var(--mono);white-space:pre-wrap}
+  .log .l-ok{color:var(--ok)} .log .l-err{color:var(--err)} .log .l-warn{color:var(--warn)}
+  .log .l-info{color:var(--dim)}
+  .status{font:12px/1 var(--mono);padding:5px 9px;border-radius:6px;display:none}
+  .status.passed{display:inline-block;background:#12331c;color:var(--ok)}
+  .status.failed{display:inline-block;background:#331515;color:var(--err)}
+  .steps{list-style:none;margin:0;padding:0}
+  .step{display:flex;gap:6px;align-items:center;padding:6px 8px;border:1px solid var(--line);
+    border-radius:6px;margin-bottom:6px;background:var(--panel2);font:12px/1.3 var(--mono)}
+  .step .do{color:var(--accent);font-weight:600;min-width:78px}
+  .step .val{flex:1;color:var(--txt);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .step .mini{padding:2px 6px;font-size:11px}
+  .addrow{display:flex;gap:6px;margin:6px 0;flex-wrap:wrap}
+  .addrow input{flex:1;min-width:90px}
+  .hr{height:1px;background:var(--line);margin:14px 0}
+  .hint{color:var(--dim);font-size:11px;margin-top:6px}
+  .namebox{width:100%;margin-bottom:8px;font-weight:600}
+  .empty{color:var(--dim);font-size:12px;padding:8px;text-align:center}
+</style>
+</head>
+<body>
+<header>
+  <div class="logo"><b>YUKTI</b> Studio</div>
+  <div class="meta" id="cfgmeta">config: …</div>
+  <div class="spacer"></div>
+  <span class="pill" id="devpill">device: —</span>
+  <span class="pill" id="aipill">AI-heal: —</span>
+</header>
+
+<main>
+  <!-- LEFT: flow list -->
+  <section class="col left">
+    <h2>Test Cases</h2>
+    <div id="flowlist"><div class="empty">loading…</div></div>
+    <div class="hr"></div>
+    <button class="p" style="width:100%" onclick="newFlow()">+ New / Record Flow</button>
+  </section>
+
+  <!-- CENTER: simulator + log -->
+  <section class="col" style="padding:12px">
+    <div class="stage">
+      <div class="simwrap">
+        <img id="sim" class="norec" alt="simulator" />
+        <div class="simbadge" id="simbadge">simulator</div>
+        <div class="recdot" id="recdot"><span class="d"></span>REC</div>
+      </div>
+
+      <div class="bar">
+        <button class="g" id="recbtn" onclick="toggleRecord()">● Start Recording</button>
+        <button onclick="refreshScreen()">Refresh</button>
+        <button onclick="loadUi()">Show Elements</button>
+        <button onclick="doDismiss()">Dismiss modals</button>
+        <span id="runstatus" class="status"></span>
+      </div>
+
+      <div class="bar">
+        <input id="typebox" placeholder="type text into focused field…" />
+        <button onclick="doType()">Type</button>
+        <button onclick="healPrompt()">AI Heal</button>
+      </div>
+
+      <div class="log" id="log"></div>
+    </div>
+  </section>
+
+  <!-- RIGHT: editor / record controls -->
+  <section class="col right">
+    <h2>Flow Editor</h2>
+    <input class="namebox" id="editname" placeholder="flow name (file: my-flow.json)" />
+    <ul class="steps" id="steplist"><li class="empty">no steps — record or add below</li></ul>
+
+    <div class="hr"></div>
+    <h2>Add Step</h2>
+    <div class="addrow">
+      <button class="mini" onclick="addStep({do:'wait',value:2})">+ wait</button>
+      <button class="mini" onclick="addStep({do:'screenshot',value:'shot.png'})">+ screenshot</button>
+      <button class="mini" onclick="addDismiss()">+ dismiss</button>
+    </div>
+    <div class="addrow">
+      <input id="assertbox" placeholder="assertText value" />
+      <button class="mini" onclick="addAssert()">+ assert</button>
+    </div>
+    <div class="addrow">
+      <input id="taptextbox" placeholder="tapText label" />
+      <button class="mini" onclick="addTapText()">+ tapText</button>
+    </div>
+
+    <div class="hr"></div>
+    <div class="bar">
+      <button class="p" style="flex:1" onclick="saveFlow()">Save Flow</button>
+      <button onclick="clearEditor()">Clear</button>
+    </div>
+    <div class="hint">
+      Record mode: click the simulator to tap (mapped to device points). Typing in the
+      box appends a <code>type</code> step. Steps write to <code>flows/&lt;name&gt;.json</code>
+      — replay with Run.
+    </div>
+  </section>
+</main>
+
+<script>
+"use strict";
+let RECORDING=false;
+let STEPS=[];
+let PNG_W=0,PNG_H=0,PT_W=402,PT_H=874;
+let pollTimer=null;
+
+// ── logging ──────────────────────────────────────────────────────────────
+function logLine(text){
+  const el=document.getElementById('log');
+  let cls='l-info';
+  if(/✓|passed|complete|saved/i.test(text)) cls='l-ok';
+  else if(/✗|fail|error/i.test(text)) cls='l-err';
+  else if(/!|warn|skip/i.test(text)) cls='l-warn';
+  const line=document.createElement('div');
+  line.className=cls; line.textContent=text;
+  el.appendChild(line); el.scrollTop=el.scrollHeight;
+}
+
+// ── boot ─────────────────────────────────────────────────────────────────
+async function boot(){
+  try{
+    const h=await (await fetch('/api/health')).json();
+    document.getElementById('cfgmeta').textContent='config: '+h.config;
+    PT_W=h.device_pt[0]; PT_H=h.device_pt[1];
+    document.getElementById('devpill').textContent='device: '+PT_W+'×'+PT_H+' pt';
+    const ai=document.getElementById('aipill');
+    ai.textContent='AI-heal: '+(h.ai_configured?'on':'off');
+    ai.className='pill '+(h.ai_configured?'ok':'off');
+  }catch(e){ logLine('✗ cannot reach server: '+e); }
+  loadFlows(); refreshScreen(); startPolling();
+}
+
+function startPolling(){
+  if(pollTimer) clearInterval(pollTimer);
+  pollTimer=setInterval(()=>{ if(document.visibilityState==='visible') refreshScreen(); },1000);
+}
+
+// ── screenshot ────────────────────────────────────────────────────────────
+function refreshScreen(){
+  const img=document.getElementById('sim');
+  const url='/api/screen?t='+Date.now();
+  // fetch to read the device/png headers, then set the blob
+  fetch(url).then(r=>{
+    const st=r.headers.get('X-Yukti-Screen');
+    PNG_W=parseInt(r.headers.get('X-Yukti-Png-W')||'0',10);
+    PNG_H=parseInt(r.headers.get('X-Yukti-Png-H')||'0',10);
+    const ptw=r.headers.get('X-Yukti-Pt-W'); if(ptw) PT_W=parseInt(ptw,10);
+    const pth=r.headers.get('X-Yukti-Pt-H'); if(pth) PT_H=parseInt(pth,10);
+    document.getElementById('simbadge').textContent =
+      st==='ok' ? ('sim '+PNG_W+'×'+PNG_H+' px') : 'no simulator — run `yukti up`';
+    return r.blob();
+  }).then(b=>{
+    if(img.dataset.url) URL.revokeObjectURL(img.dataset.url);
+    const u=URL.createObjectURL(b); img.dataset.url=u; img.src=u;
+  }).catch(e=>{ document.getElementById('simbadge').textContent='screenshot error'; });
+}
+
+// ── flows list ──────────────────────────────────────────────────────────
+async function loadFlows(){
+  const box=document.getElementById('flowlist');
+  try{
+    const {flows}=await (await fetch('/api/flows')).json();
+    if(!flows.length){ box.innerHTML='<div class="empty">no flows yet</div>'; return; }
+    box.innerHTML='';
+    flows.forEach(f=>{
+      const d=document.createElement('div'); d.className='flow';
+      d.innerHTML=`<div class="name"></div><div class="sub"></div>
+        <div class="row"><button class="p mini">Run</button><button class="mini">Edit</button></div>`;
+      d.querySelector('.name').textContent=f.name;
+      d.querySelector('.sub').textContent=f.file+' · '+f.steps+' steps';
+      const [run,edit]=d.querySelectorAll('button');
+      run.onclick=()=>runFlow(f.file);
+      edit.onclick=()=>editFlow(f.file);
+      box.appendChild(d);
+    });
+  }catch(e){ box.innerHTML='<div class="empty">error loading flows</div>'; }
+}
+
+// ── run (SSE stream) ──────────────────────────────────────────────────────
+async function runFlow(file){
+  const st=document.getElementById('runstatus'); st.className='status'; st.textContent='';
+  logLine('── run '+file+' ──');
+  const resp=await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({name:file})});
+  if(!resp.body){ logLine('✗ no stream'); return; }
+  const reader=resp.body.getReader(); const dec=new TextDecoder(); let buf='';
+  while(true){
+    const {value,done}=await reader.read(); if(done) break;
+    buf+=dec.decode(value,{stream:true});
+    let idx;
+    while((idx=buf.indexOf('\n\n'))>=0){
+      const chunk=buf.slice(0,idx); buf=buf.slice(idx+2);
+      let ev='message', data=[];
+      chunk.split('\n').forEach(l=>{
+        if(l.startsWith('event: ')) ev=l.slice(7);
+        else if(l.startsWith('data: ')) data.push(l.slice(6));
+      });
+      const payload=data.join('\n');
+      if(ev==='done'){
+        try{ const o=JSON.parse(payload);
+          st.className='status '+(o.status==='passed'?'passed':'failed');
+          st.textContent=o.status.toUpperCase()+(o.code!=null?(' (exit '+o.code+')'):'');
+          logLine((o.status==='passed'?'✓':'✗')+' flow '+o.status);
+        }catch(e){ logLine(payload); }
+      } else { if(payload) logLine(payload); }
+    }
+  }
+  refreshScreen();
+}
+
+// ── editor ────────────────────────────────────────────────────────────────
+async function editFlow(file){
+  const data=await (await fetch('/api/flow?name='+encodeURIComponent(file))).json();
+  if(data.error){ logLine('✗ '+data.error); return; }
+  document.getElementById('editname').value=file.replace(/\.json$/,'');
+  STEPS=(data.steps||[]).map(s=>Object.assign({},s));
+  renderSteps();
+  logLine('editing '+file+' ('+STEPS.length+' steps)');
+}
+
+function newFlow(){ clearEditor(); document.getElementById('editname').focus();
+  logLine('new flow — name it, then record or add steps'); }
+
+function clearEditor(){ STEPS=[]; document.getElementById('editname').value=''; renderSteps(); }
+
+function renderSteps(){
+  const ul=document.getElementById('steplist');
+  if(!STEPS.length){ ul.innerHTML='<li class="empty">no steps — record or add below</li>'; return; }
+  ul.innerHTML='';
+  STEPS.forEach((s,i)=>{
+    const li=document.createElement('li'); li.className='step';
+    let val='';
+    if(s.do==='tap'||s.do==='clearText') val='('+s.x+', '+s.y+')';
+    else if(s.value!==undefined) val=String(s.value);
+    li.innerHTML=`<span class="do"></span><span class="val"></span>
+      <button class="mini">↑</button><button class="mini">↓</button><button class="mini d">✕</button>`;
+    li.querySelector('.do').textContent=s.do;
+    li.querySelector('.val').textContent=val;
+    li.querySelector('.val').title=val;
+    const [up,down,del]=li.querySelectorAll('button');
+    up.onclick=()=>move(i,-1); down.onclick=()=>move(i,1); del.onclick=()=>{STEPS.splice(i,1);renderSteps();};
+    ul.appendChild(li);
+  });
+}
+function move(i,d){ const j=i+d; if(j<0||j>=STEPS.length) return;
+  const t=STEPS[i]; STEPS[i]=STEPS[j]; STEPS[j]=t; renderSteps(); }
+function addStep(s){ STEPS.push(s); renderSteps(); }
+function addAssert(){ const v=document.getElementById('assertbox').value.trim();
+  if(!v) return; addStep({do:'assertText',value:v}); document.getElementById('assertbox').value=''; }
+function addTapText(){ const v=document.getElementById('taptextbox').value.trim();
+  if(!v) return; addStep({do:'tapText',value:v}); document.getElementById('taptextbox').value=''; }
+function addDismiss(){ addStep({do:'dismiss'}); }
+
+async function saveFlow(){
+  const name=document.getElementById('editname').value.trim();
+  if(!name){ logLine('✗ name the flow first'); return; }
+  const r=await (await fetch('/api/flow',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({name:name,steps:STEPS,displayName:name})})).json();
+  if(r.error){ logLine('✗ save: '+r.error); }
+  else { logLine('✓ saved '+r.file); loadFlows(); }
+}
+
+// ── record / drive ──────────────────────────────────────────────────────────
+function toggleRecord(){
+  RECORDING=!RECORDING;
+  const btn=document.getElementById('recbtn'), img=document.getElementById('sim');
+  document.getElementById('recdot').classList.toggle('on',RECORDING);
+  if(RECORDING){ btn.textContent='■ Stop Recording'; btn.className='d'; img.classList.remove('norec');
+    logLine('● recording — click the simulator to tap'); }
+  else { btn.textContent='● Start Recording'; btn.className='g'; img.classList.add('norec');
+    logLine('■ recording stopped — Save Flow to persist'); }
+}
+
+document.getElementById('sim').addEventListener('click',async e=>{
+  if(!RECORDING) return;
+  const img=e.target, rect=img.getBoundingClientRect();
+  // click position within the displayed image
+  const dx=e.clientX-rect.left, dy=e.clientY-rect.top;
+  // displayed → device points. Prefer PNG px ratio; fall back to display size.
+  const baseW=PNG_W||img.naturalWidth||rect.width;
+  const baseH=PNG_H||img.naturalHeight||rect.height;
+  const scaleX=rect.width/baseW, scaleY=rect.height/baseH;
+  // pixel in the source image
+  const pxX=dx/scaleX, pxY=dy/scaleY;
+  // px → points using device point size vs png px size
+  const ptX=Math.round(pxX*(PT_W/(PNG_W||baseW)));
+  const ptY=Math.round(pxY*(PT_H/(PNG_H||baseH)));
+  flash(e.clientX-rect.left,e.clientY-rect.top,img);
+  addStep({do:'tap',x:ptX,y:ptY});
+  logLine('tap → ('+ptX+', '+ptY+')');
+  await fetch('/api/tap',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({x:ptX,y:ptY})});
+  setTimeout(refreshScreen,400);
+});
+
+function flash(x,y,img){
+  const w=img.parentElement; const f=document.createElement('div');
+  f.className='tapflash';
+  const r=img.getBoundingClientRect(), pr=w.getBoundingClientRect();
+  f.style.left=(r.left-pr.left+x)+'px'; f.style.top=(r.top-pr.top+y)+'px';
+  w.appendChild(f); setTimeout(()=>f.remove(),500);
+}
+
+async function doType(){
+  const box=document.getElementById('typebox'); const t=box.value;
+  if(!t) return;
+  logLine('type '+t.length+' chars');
+  await fetch('/api/type',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({text:t})});
+  if(RECORDING){ addStep({do:'type',value:t}); }
+  box.value=''; setTimeout(refreshScreen,500);
+}
+
+async function doDismiss(){
+  logLine('dismiss modals…');
+  const r=await (await fetch('/api/dismiss',{method:'POST'})).json();
+  if(r.stdout) r.stdout.split('\n').filter(Boolean).forEach(logLine);
+  if(RECORDING) addStep({do:'dismiss'});
+  refreshScreen();
+}
+
+async function loadUi(){
+  logLine('── accessibility tree ──');
+  const r=await (await fetch('/api/ui')).json();
+  if(!r.elements || !r.elements.length){ logLine('! no elements (sim idle or idb not ready)'); return; }
+  r.elements.slice(0,40).forEach(el=> logLine('  ['+el.x+','+el.y+'] '+el.label));
+}
+
+async function healPrompt(){
+  const goal=prompt('AI self-heal goal (what should the agent accomplish?)');
+  if(!goal) return;
+  const r=await (await fetch('/api/heal',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({goal})})).json();
+  if(r.status==='not_configured'){ logLine('! AI heal not configured — '+r.hint); }
+  else if(r.status==='ok'){ logLine('✓ AI heal ran'); if(r.stdout) logLine(r.stdout); refreshScreen(); }
+  else { logLine('✗ AI heal: '+(r.error||r.stderr||'error')); }
+}
+
+document.getElementById('typebox').addEventListener('keydown',e=>{ if(e.key==='Enter') doType(); });
+boot();
+</script>
+</body>
+</html>
