@@ -73,18 +73,47 @@ ashot(){ apaths; local o="${1:-${TMPDIR:-/tmp}/yukti-shot.png}"; adb exec-out sc
 aui(){ apaths; adb shell uiautomator dump /sdcard/yk.xml >/dev/null 2>&1; adb shell cat /sdcard/yk.xml 2>/dev/null; }
 afind(){ apaths; aui | "$PY" -c '
 import sys,re
-q=sys.argv[1].lower(); xml=sys.stdin.read()
-for m in re.finditer(r"<node[^>]*>", xml):
-    tag=m.group(0);
+# Rank candidates instead of taking the first substring hit. Honors resource-id
+# and prefers the interactive field over a nearby static caption — "Email" used
+# to hit the "or use email" caption ~100px above the input, and "Password" hit
+# the "Forgot Password?" link. A node now must be relevant (query appears in its
+# text / content-desc / resource-id) AND scores highest to win; an editable /
+# clickable / focusable node outranks a plain caption.
+q=sys.argv[1].lower().strip(); xml=sys.stdin.read()
+best=None; best_score=0
+for m in re.finditer(r"<node\b[^>]*>", xml):
+    tag=m.group(0)
     def a(n):
         mm=re.search(n+r"=\"([^\"]*)\"",tag); return mm.group(1) if mm else ""
-    lbl=(a("text") or a("content-desc")).lower()
-    if q in lbl and lbl:
-        b=re.search(r"bounds=\"\[(\d+),(\d+)\]\[(\d+),(\d+)\]\"",tag)
-        if b: x1,y1,x2,y2=map(int,b.groups()); print((x1+x2)//2,(y1+y2)//2); break
+    text=a("text").lower(); desc=a("content-desc").lower()
+    rid=a("resource-id"); rid_seg=rid.split("/")[-1].lower()  # com.app:id/email -> email
+    cls=a("class"); editable=cls.endswith("EditText")
+    clickable=a("clickable")=="true"; focusable=a("focusable")=="true"
+    relevant = bool(q) and (q in rid_seg or q in text or q in desc)
+    if not relevant: continue
+    score=0
+    if q==rid_seg: score+=6
+    elif q in rid_seg: score+=5
+    if q==text or q==desc: score+=4
+    elif q in text or q in desc: score+=2
+    if editable: score+=3
+    if clickable: score+=1
+    if focusable: score+=1
+    if score<=best_score: continue
+    b=re.search(r"bounds=\"\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]\"",tag)
+    if not b: continue
+    x1,y1,x2,y2=map(int,b.groups()); best=((x1+x2)//2,(y1+y2)//2); best_score=score
+if best: print(best[0],best[1])
 ' "$1"; }
 atap(){ apaths; adb shell input tap "$1" "$2"; }
-atype(){ apaths; adb shell input text "$(printf '%s' "$1" | sed 's/ /%s/g')"; }
+atype(){ apaths; local s="$1" q
+  # Quote for the ON-DEVICE shell so metacharacters can't expand. Unquoted, a *
+  # in a password was glob-expanded by /system/bin/sh (an 8-char password
+  # arrived as 11 chars). Single-quote the arg (escaping embedded ' as '\''),
+  # then map spaces to %s which `input text` turns back into spaces.
+  q=$(printf '%s' "$s" | sed "s/'/'\\\\''/g")
+  q=${q// /%s}
+  adb shell "input text '$q'"; }
 aclear(){ apaths; adb shell input tap "$1" "$2"; local i; for i in $(seq 1 40); do adb shell input keyevent 67 >/dev/null 2>&1; done; }
 
 # ── doctor: verify/report the toolchain ──────────────────────────────────────
@@ -231,8 +260,13 @@ scroll_to(){ local lbl="$1" i xy y; for i in $(seq 1 8); do xy="$(find_el "$lbl"
 flow(){
   local f="${1:?usage: yukti flow <file.json>}"; [ -f "$f" ] || die "no flow file '$f'"; paths
   say "running flow: $f"
-  "$PY" -c 'import json,sys,os;[print("\x1f".join([s.get("do",""),os.path.expandvars(str(s.get("value",""))),str(s.get("x","")),str(s.get("y",""))])) for s in json.load(open(sys.argv[1]))["steps"]]' "$f" \
-  | while IFS=$'\x1f' read -r do_ val x y; do
+  # The step generator is fed on FD 3, NOT stdin: steps shell out to adb/idb,
+  # and `adb shell` / subprocesses read stdin — if the loop read from the same
+  # pipe they'd swallow the remaining steps, so only step 1 ran (and the flow
+  # still reported PASS). Reading `<&3` from a process substitution also keeps
+  # the loop in THIS shell (not a pipe subshell), so a step's `die` (exit 1)
+  # aborts the whole flow with a non-zero status instead of being lost.
+  while IFS=$'\x1f' read -r do_ val x y <&3; do
       set +e   # best-effort steps (dismiss/optionalTapText) return non-zero when
                # a label is absent; only an explicit `die` (assert fail / missing
                # required element) must stop the flow — not a benign miss.
@@ -251,20 +285,34 @@ flow(){
         launch)      launch "$val";;
         *) warn "unknown step '$do_'";;
       esac
-    done
+  done 3< <("$PY" -c 'import json,sys,os;[print("\x1f".join([s.get("do",""),os.path.expandvars(str(s.get("value",""))),str(s.get("x","")),str(s.get("y",""))])) for s in json.load(open(sys.argv[1]))["steps"]]' "$f")
   ok "flow complete: $f"
 }
 
-init(){ [ -f "$CONFIG" ] && die "$CONFIG exists"; cat > "$CONFIG" <<'JSON'
+init(){ [ -f "$CONFIG" ] && die "$CONFIG exists"
+  if [ "${1:-}" = android ] || [ "${YUKTI_PLATFORM:-}" = android ]; then cat > "$CONFIG" <<'JSON'
 {
+  "platform": "android",
+  "projectRoot": ".",
+  "android": { "avd": "Pixel_7_API_34" },
+  "variants": {
+    "qa":   { "platform": "android", "package": "com.you.app",     "gradleTask": "assembleDebug",   "envFile": ".env.qa" },
+    "prod": { "platform": "android", "package": "com.you.app",     "gradleTask": "assembleRelease", "envFile": ".env.production" }
+  }
+}
+JSON
+  ok "wrote $CONFIG (android) — set your package, then 'yukti doctor' and 'yukti up qa'"; return; fi
+  cat > "$CONFIG" <<'JSON'
+{
+  "platform": "ios",
   "projectRoot": ".",
   "workspace": "ios/YourApp.xcworkspace",
   "simulator": { "device": "iPhone 16 Pro" },
   "excludeIosAutolink": [],
   "easEnabled": false,
   "variants": {
-    "qa":   { "scheme": "YourApp",     "configuration": "Release", "bundleId": "com.you.app",     "envFile": ".env.qa",         "appVariant": "development", "nodeEnv": "development", "easProfile": "simulator" },
-    "prod": { "scheme": "YourApp",     "configuration": "Release", "bundleId": "com.you.app",     "envFile": ".env.production", "appVariant": "production",  "nodeEnv": "production",  "easProfile": "simulator" }
+    "qa":   { "platform": "ios", "scheme": "YourApp", "configuration": "Release", "bundleId": "com.you.app", "envFile": ".env.qa",         "appVariant": "development", "nodeEnv": "development", "easProfile": "simulator" },
+    "prod": { "platform": "ios", "scheme": "YourApp", "configuration": "Release", "bundleId": "com.you.app", "envFile": ".env.production", "appVariant": "production",  "nodeEnv": "production",  "easProfile": "simulator" }
   }
 }
 JSON
@@ -297,10 +345,21 @@ ${B}yukti v$YUKTI_VERSION${R} — YUKTI — smart mobile-app QA automation for R
 EOF
 }
 
+# Resolve the target platform ONCE per invocation (env wins, else config), and
+# export it so every primitive agrees. Previously each primitive defaulted to
+# iOS (${YUKTI_PLATFORM:-ios}); a caller that hadn't exported it — the Studio
+# server, or a bare `yukti flow` on an Android config — silently ran the iOS
+# path (build/boot/find/tap/type). Config source of truth: top-level "platform",
+# else the qa variant's platform, else ios.
+if [ -z "${YUKTI_PLATFORM:-}" ] && [ -f "$CONFIG" ]; then
+  YUKTI_PLATFORM="$(cfg platform "$(cfg variants.qa.platform ios)")"
+fi
+export YUKTI_PLATFORM="${YUKTI_PLATFORM:-ios}"
+
 cmd="${1:-}"; shift || true
 case "$cmd" in
   doctor) doctor;;
-  init) init;;
+  init) init "$@";;
   scan) scan;;
   build) build "$@";;
   pull) pull_eas "$@";;
