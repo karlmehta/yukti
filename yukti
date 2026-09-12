@@ -229,13 +229,36 @@ shot(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { ashot "$@"; return; }; paths
 ui(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { aui; return; }; idb_ready; local u out i; u="$(U)"; for i in 1 2 3 4; do out="$(idb ui describe-all --udid "$u" 2>/dev/null)"; [ -n "$out" ] && { printf '%s' "$out"; return 0; }; sleep 0.6; done; printf '%s' "$out"; }
 find_el(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { afind "$1"; return; }; paths; ui | "$PY" -c '
 import json,sys
-q=sys.argv[1].lower()
+# Rank candidates instead of the first AXLabel/AXValue substring hit: honor the
+# accessibility identifier (AXUniqueId) and prefer the actual field/control over
+# a nearby static caption — same bug the Android path had ("Email" hit the "or
+# use email" caption; "Password" hit the "Forgot Password?" link).
+q=sys.argv[1].lower().strip()
 raw=sys.stdin.read().strip()
 if not raw: sys.exit(0)
+best=None; best_score=-1
 for e in json.loads(raw):
-    lbl=str(e.get("AXLabel") or e.get("AXValue") or "")
-    if q in lbl.lower():
-        f=e.get("frame",{}); print(int(f.get("x",0)+f.get("width",0)/2), int(f.get("y",0)+f.get("height",0)/2)); break
+    label=str(e.get("AXLabel") or "").lower()
+    value=str(e.get("AXValue") or "").lower()
+    title=str(e.get("title") or "").lower()
+    ident=str(e.get("AXUniqueId") or e.get("identifier") or "").lower()
+    t=(str(e.get("type") or "")+" "+str(e.get("role_description") or "")).lower()
+    editable=("textfield" in t) or ("securetext" in t) or ("text field" in t) or ("textview" in t)
+    control=("button" in t) or ("link" in t)
+    if not (q and (q in ident or q in label or q in value or q in title)): continue
+    score=0
+    if q==ident: score+=6
+    elif q in ident: score+=5
+    if q in (label,value,title): score+=4
+    elif q in label or q in value or q in title: score+=2
+    if editable: score+=3
+    if control: score+=1
+    if score<=best_score: continue
+    f=e.get("frame",{})
+    try: cx=int(f.get("x",0)+f.get("width",0)/2); cy=int(f.get("y",0)+f.get("height",0)/2)
+    except Exception: continue
+    best=(cx,cy); best_score=score
+if best: print(best[0],best[1])
 ' "$1"; }
 tap(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { atap "$1" "$2"; return; }; paths; idb ui tap --udid "$(U)" "${1:?x}" "${2:?y}"; }
 tap_text(){ local xy; xy="$(scroll_to "$1")"; [ -n "$xy" ] || die "no element matching '$1'"; tap $xy; }  # auto-scrolls off-screen elements into view
