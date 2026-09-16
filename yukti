@@ -70,7 +70,20 @@ boot_android(){ apaths; local avd; avd="$(cfg android.avd Pixel_7_API_34)"
 install_android(){ apaths; local V="$1"; adb install -r "$(cat "${TMPDIR:-/tmp}/yukti-apk-$V")" && ok "installed"; }
 launch_android(){ apaths; local pkg; pkg="$(cfg variants.$1.package)"; adb shell monkey -p "$pkg" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1 && ok "launched $pkg"; }
 ashot(){ apaths; local o="${1:-${TMPDIR:-/tmp}/yukti-shot.png}"; adb exec-out screencap -p > "$o" && echo "$o"; }
-aui(){ apaths; adb shell uiautomator dump /sdcard/yk.xml >/dev/null 2>&1; adb shell cat /sdcard/yk.xml 2>/dev/null; }
+# Delete the dump before writing a new one. uiautomator refuses to dump while the
+# screen is animating ("could not get idle state!"), the error was swallowed, and
+# `cat` then served the tree of the PREVIOUS call: the next assert checked the
+# previous screen and passed. An empty or missing file is now a failure, not a
+# tree. A refusal is a normal state right after a tap, so retry a few times the
+# way the iOS ui() already does, and only then give up. Remove, dump and read run
+# in ONE adb round trip: a lookup used to cost two, a scroll_to up to eighteen.
+aui(){ apaths; local xml i
+  for i in 1 2 3; do
+    xml="$(adb shell 'rm -f /sdcard/yk.xml; uiautomator dump /sdcard/yk.xml >/dev/null 2>&1; cat /sdcard/yk.xml' 2>/dev/null)"
+    [ -n "$xml" ] && { printf '%s' "$xml"; return 0; }
+    [ "$i" = 3 ] || sleep 0.6
+  done
+  die "uiautomator produced no dump after 3 tries - the screen may still be animating"; }
 afind(){ apaths; aui | "$PY" -c '
 import sys,re,html
 # Rank candidates instead of taking the first substring hit. Honors resource-id
