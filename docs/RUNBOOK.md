@@ -47,9 +47,39 @@ a QA build and vice-versa. Use the matching account per variant.
 ## Add a test case
 
 Flows are JSON in `flows/`. Steps: `wait`, `screenshot`, `tap {x,y}`, `tapText`,
-`type`, `clearText {x,y}`, `assertText`, `launch`. Coordinates are **points**
+`optionalTapText`, `tapId`, `type`, `clearText {x,y}`, `scroll`, `scrollToText`,
+`dismiss`, `assertText`, `assertId`, `launch`. Coordinates are **points**
 (iPhone 16 Pro = 402×874). Prefer `tapText` (finds by accessibility label) over
 raw coords so flows survive layout changes. `${VARS}` in `value` expand from env.
+
+### Assertions, and matching by id
+
+`assertText` is the checkpoint of a flow, so it matches only what a person can
+perceive: the visible text or the accessibility label of an element that is on
+screen right now - real size, centre inside the window. It never matches a
+resource-id, a class name or any other markup, and it does **not** scroll: put
+`scrollToText` in front of it when the target sits below the fold.
+
+"On screen" means inside the window and of non-zero size. It does not model
+overlap: a label underneath a modal or an alert is still reported as on screen,
+on both platforms, because the dialog and the label live in the same tree.
+
+```json
+{"do":"scrollToText","value":"Weight History"},
+{"do":"assertText","value":"Weight History"}
+```
+
+`tapId` and `assertId` take an accessibility identifier (iOS) or the last segment
+of an Android `resource-id` - `com.app:id/email` matches `email` - and require an
+exact match: no text fallback, no ranking. An empty value always fails, so a
+misspelled key stops the run instead of tapping a random point. Neither verb
+scrolls, and when several elements share one id the first usable one in the tree
+wins - an element with no size is skipped.
+
+```json
+{"do":"tapId","value":"submit"},
+{"do":"assertId","value":"weight_card"}
+```
 
 Discover labels/coords for a screen:
 ```bash
