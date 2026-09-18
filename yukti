@@ -26,7 +26,9 @@ c(){ printf '\033[%sm' "$1"; }; R=$(c 0); B=$(c '1;36'); G=$(c '1;32'); Y=$(c '1
 say(){ printf '%s▸%s %s\n' "$B" "$R" "$*"; }
 ok(){  printf '%s✓%s %s\n' "$G" "$R" "$*"; }
 warn(){ printf '%s!%s %s\n' "$Y" "$R" "$*"; }
-die(){ printf '%s✗%s %s\n' "$E" "$R" "$*" >&2; exit 1; }
+# The last words of a failing step are also the message its result entry needs,
+# so keep a copy when a flow is running. The console output is unchanged.
+die(){ printf '%s✗%s %s\n' "$E" "$R" "$*" >&2; [ -n "${YUKTI_STEP_ERR:-}" ] && printf '%s' "$*" > "$YUKTI_STEP_ERR"; exit 1; }
 
 need_config(){ [ -f "$CONFIG" ] || die "no config at '$CONFIG' — run 'yukti init' or set YUKTI_CONFIG"; }
 
@@ -436,12 +438,127 @@ scroll_to(){ local lbl="$1" i xy y; for i in $(seq 1 8); do xy="$(find_el "$lbl"
     if [ -n "$xy" ]; then y="${xy##* }"; if [ "$y" -lt 840 ] && [ "$y" -gt 60 ]; then printf '%s' "$xy"; return 0; fi; fi
     scroll down; sleep 0.6; done; find_el "$lbl"; }
 
+# ── per-flow results ─────────────────────────────────────────────────────────
+# A run left console text and screenshots and nothing a tool could read: which
+# flow, which step, how long, where the artifacts are. That is enough at ten
+# flows and useless at a hundred - no report, no history, no way to tell a
+# permanent failure from a flaky one. Every flow now also leaves one JUnit XML
+# file, the format report viewers and CI already understand.
+#
+# Written from an EXIT trap rather than after the loop: a failing step exits the
+# whole run, so a result produced only on success would be missing exactly when
+# it is needed. Steps are appended as they finish; the step that started and
+# never finished is the one that failed.
+RESULTS_DIR="${YUKTI_RESULTS_DIR:-yukti-results}"
+FLOW_IDX=0
+now(){ if [ -n "${EPOCHREALTIME:-}" ]; then printf '%s' "${EPOCHREALTIME/,/.}"; else date +%s; fi; }
+
+flow_results(){
+  local st="${1:-0}" out
+  [ -n "${FLOW_REC:-}" ] || return 0
+  trap - EXIT
+  out="$("$PY" - "$FLOW_FILE" "$FLOW_REC" "$FLOW_CUR" "$FLOW_ERR" "$FLOW_T0" "$(now)" "$st" "$RESULTS_DIR" "${YUKTI_PLATFORM:-ios}" <<'PY'
+import os, sys, time
+from xml.sax.saxutils import escape, quoteattr
+
+flow, rec, cur, errf, t0, t1, st, outdir, plat = sys.argv[1:10]
+SEP = "\x1f"
+
+def num(v, d=0.0):
+    try: return float(v)
+    except ValueError: return d
+
+def read(path):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh: return fh.read()
+    except OSError: return ""
+
+steps = []
+for line in read(rec).splitlines():
+    if not line: continue
+    parts = line.split(SEP)
+    if len(parts) < 6: continue
+    i, verb, value, s0, s1, art = parts[:6]
+    steps.append({"i": int(num(i)), "verb": verb, "value": value,
+                  "t": max(0.0, num(s1) - num(s0)), "art": art})
+
+failing = None
+if int(num(st)) != 0:
+    parts = read(cur).strip("\n").split(SEP)
+    if len(parts) >= 4 and parts[0] and not any(x["i"] == int(num(parts[0])) for x in steps):
+        failing = {"i": int(num(parts[0])), "verb": parts[1], "value": parts[2],
+                   "t": max(0.0, num(t1) - num(parts[3])), "art": ""}
+
+msg = read(errf).strip() or "the run stopped with exit code %d" % int(num(st))
+
+# A typed string is a credential as often as not - the flow files take
+# ${TEST_PASSWORD} from the environment. The result file records how much was
+# typed, never what: an artifact that leaks the password is worse than no
+# artifact, and the console already prints the same count.
+def shown(step):
+    verb, value = step["verb"], step["value"]
+    if verb in ("type", "clearText"):
+        value = "%d chars" % len(value) if value else ""
+    if len(value) > 60: value = value[:57] + "..."
+    return ("%02d %s %s" % (step["i"], verb, value)).strip()
+
+stem = os.path.splitext(os.path.basename(flow))[0] or "flow"
+cases = []
+for step in steps:
+    cases.append('    <testcase classname=%s name=%s time="%.3f"/>'
+                 % (quoteattr(stem), quoteattr(shown(step)), step["t"]))
+if failing is not None:
+    cases.append('    <testcase classname=%s name=%s time="%.3f">\n'
+                 '      <failure message=%s type="StepFailed"/>\n'
+                 '    </testcase>'
+                 % (quoteattr(stem), quoteattr(shown(failing)), failing["t"], quoteattr(msg)))
+elif int(num(st)) != 0:
+    # The run died before or between steps: still a failure, and a result that
+    # said "all green, exit 1" would be worse than none.
+    cases.append('    <testcase classname=%s name="00 flow" time="0.000">\n'
+                 '      <failure message=%s type="FlowFailed"/>\n'
+                 '    </testcase>' % (quoteattr(stem), quoteattr(msg)))
+
+arts = [s["art"] for s in steps if s["art"]]
+out = [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<testsuites>',
+    '  <testsuite name=%s tests="%d" failures="%d" errors="0" skipped="0" time="%.3f" timestamp=%s>'
+    % (quoteattr(stem), len(cases), 0 if failing is None and int(num(st)) == 0 else 1,
+       max(0.0, num(t1) - num(t0)),
+       quoteattr(time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(num(t0))))),
+    '    <properties>',
+    '      <property name="platform" value=%s/>' % quoteattr(plat),
+    '      <property name="flow" value=%s/>' % quoteattr(flow),
+    '    </properties>',
+]
+out.extend(cases)
+if arts:
+    out.append('    <system-out>' + escape("\n".join(arts)) + '</system-out>')
+out.append('  </testsuite>')
+out.append('</testsuites>')
+
+os.makedirs(outdir, exist_ok=True)
+path = os.path.join(outdir, stem + ".xml")
+with open(path, "w", encoding="utf-8") as fh:
+    fh.write("\n".join(out) + "\n")
+print(path)
+PY
+)" && ok "results → $out" || warn "could not write the results file to '$RESULTS_DIR'"
+  rm -f "$FLOW_REC" "$FLOW_CUR" "$FLOW_ERR"; FLOW_REC=""
+  return 0
+}
+
 # ── deterministic flow runner: a JSON list of steps ──────────────────────────
 # step keys: launch|wait|screenshot|tap[x,y]|tapText|optionalTapText|tapId|type|
 #            clearText[x,y]|scroll|scrollToText|dismiss|assertText|assertId
 flow(){
   local f="${1:?usage: yukti flow <file.json>}"; [ -f "$f" ] || die "no flow file '$f'"; paths
   say "running flow: $f"
+  FLOW_FILE="$f"; FLOW_IDX=0; FLOW_ART=""
+  FLOW_REC="$(mktemp)"; FLOW_CUR="$(mktemp)"; FLOW_ERR="$(mktemp)"; FLOW_T0="$(now)"
+  export YUKTI_STEP_ERR="$FLOW_ERR"
+  trap 'flow_results $?' EXIT
   # The step generator is fed on FD 3, NOT stdin: steps shell out to adb/idb,
   # and `adb shell` / subprocesses read stdin — if the loop read from the same
   # pipe they'd swallow the remaining steps, so only step 1 ran (and the flow
@@ -449,12 +566,18 @@ flow(){
   # the loop in THIS shell (not a pipe subshell), so a step's `die` (exit 1)
   # aborts the whole flow with a non-zero status instead of being lost.
   while IFS=$'\x1f' read -r do_ val x y <&3; do
+      # Record the step BEFORE running it and again once it survived: the one
+      # step that has a start and no end is the step that failed, and that is
+      # the single fact a report cannot reconstruct from console text.
+      FLOW_IDX=$((FLOW_IDX+1)); FLOW_S0="$(now)"; FLOW_ART=""
+      printf '%s\x1f%s\x1f%s\x1f%s\n' "$FLOW_IDX" "$do_" "$val" "$FLOW_S0" > "$FLOW_CUR"
+      : > "$FLOW_ERR"
       set +e   # best-effort steps (dismiss/optionalTapText) return non-zero when
                # a label is absent; only an explicit `die` (assert fail / missing
                # required element) must stop the flow — not a benign miss.
       case "$do_" in
         wait)        wait_s "${val:-2}";;
-        screenshot)  ok "shot → $(shot "$val")";;
+        screenshot)  FLOW_ART="$(shot "$val")"; ok "shot → $FLOW_ART";;
         tap)         tap "$x" "$y";;
         tapText)     say "tap '$val'"; tap_text "$val";;
         optionalTapText) tap_text_optional "$val";;
@@ -469,6 +592,7 @@ flow(){
         launch)      launch "$val";;
         *) warn "unknown step '$do_'";;
       esac
+      printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' "$FLOW_IDX" "$do_" "$val" "$FLOW_S0" "$(now)" "$FLOW_ART" >> "$FLOW_REC"
   done 3< <("$PY" -c 'import json,sys,os;[print("\x1f".join([s.get("do",""),os.path.expandvars(str(s.get("value",""))),str(s.get("x","")),str(s.get("y",""))])) for s in json.load(open(sys.argv[1]))["steps"]]' "$f")
   ok "flow complete: $f"
 }
@@ -513,6 +637,7 @@ ${B}yukti v$YUKTI_VERSION${R} — YUKTI — smart mobile-app QA automation for R
   yukti boot                create/boot the simulator
   yukti up    <variant>     build + boot + install + launch  (one shot)
   yukti flow  <file.json>   run a deterministic flow (Talos test-case engine — no AI, CI-ready)
+                            leaves \$YUKTI_RESULTS_DIR/<flow>.xml (JUnit) — per-step result
 
   drive primitives (for flows or an AI agent — Claude Code / OpenAI):
   yukti shot [file]         screenshot the sim (an agent reads the PNG)

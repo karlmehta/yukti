@@ -75,6 +75,22 @@ yukti flow flows/example-login.json
 See [`examples/example.config.json`](examples/example.config.json) for a full real config
 and [`flows/`](flows/) for template flows (login, form entry) to customize for your app.
 
+### Results
+
+Every flow leaves a JUnit XML file in `yukti-results/` (set `YUKTI_RESULTS_DIR` to
+move it) with one entry per step: what ran, how long it took, and - when the run
+stops - which step failed and why. It is written even when a flow dies mid-way,
+because that is when it matters. Report viewers and CI read the format as is:
+
+```
+- uses: actions/upload-artifact@v4
+  with: { name: results, path: yukti-results/*.xml }
+```
+
+Typed text is never written to the file, only its length: flow files take
+`${TEST_PASSWORD}` from the environment, and an artifact that carries it is worse
+than no artifact.
+
 ## Commands
 
 ```
@@ -85,7 +101,7 @@ yukti build <variant>   build a signed arm64 simulator .app (local)
 yukti pull  <variant>   pull an OFFICIAL simulator build from EAS (needs EXPO_TOKEN)
 yukti boot              create/boot the simulator
 yukti up    <variant>   build + boot + install + launch
-yukti flow  <file>      run a deterministic flow (Talos engine)
+yukti flow  <file>      run a deterministic flow (Talos engine) → yukti-results/<flow>.xml
 yukti shot | ui | find "<label>" | tap <x> <y> | type "<text>" | clear <x> <y>
 ```
 
