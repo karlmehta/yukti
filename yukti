@@ -280,7 +280,12 @@ up(){ local V="${1:?usage: yukti up <variant>}"; export YUKTI_PLATFORM="$(plat_o
 U(){ cat "$(udid_file)" 2>/dev/null || booted; }
 idb_ready(){ paths; idb connect "$(U)" >/dev/null 2>&1 || true; }
 shot(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { ashot "$@"; return; }; paths; xcrun simctl io "$(U)" screenshot "${1:-${TMPDIR:-/tmp}/yukti-shot.png}" >/dev/null 2>&1 && echo "${1:-${TMPDIR:-/tmp}/yukti-shot.png}"; }
-ui(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { aui; return; }; idb_ready; local u out i; u="$(U)"; for i in 1 2 3 4; do out="$(idb ui describe-all --udid "$u" 2>/dev/null)"; [ -n "$out" ] && { printf '%s' "$out"; return 0; }; sleep 0.6; done; printf '%s' "$out"; }
+ui(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { aui; return; }; idb_ready; local u out i; u="$(U)"; for i in 1 2 3 4; do out="$(idb ui describe-all --udid "$u" 2>/dev/null)"; [ -n "$out" ] && { printf '%s' "$out"; return 0; }; sleep 0.6; done
+  # An empty tree after four tries is idb failing, not a screen with nothing on
+  # it: a booted simulator always reports at least its window. Returning the
+  # empty string made every caller read it as "the element is not there". The
+  # Android path already fails here; this is the same rule for iOS.
+  die "idb returned no accessibility tree after 4 tries - is the simulator booted?"; }
 find_el(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { afind "$1" "${2:-text}"; return; }; paths; ui | "$PY" -c '
 import json,sys
 # Rank candidates instead of the first AXLabel/AXValue substring hit: honor the
@@ -378,11 +383,18 @@ for e in els:
 if best: print(best[0],best[1])
 ' "$1" "${2:-text}"; }
 tap(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { atap "$1" "$2"; return; }; paths; idb ui tap --udid "$(U)" "${1:?x}" "${2:?y}"; }
-tap_text(){ local xy; xy="$(scroll_to "$1")"; [ -n "$xy" ] || die "no element matching '$1'"; tap $xy; }  # auto-scrolls off-screen elements into view
-tap_text_optional(){ local xy; xy="$(find_el "$1")"; [ -n "$xy" ] && { tap $xy; ok "optional tap '$1'"; } || warn "optional '$1' not present — skipped"; }
+# A lookup has three outcomes, not two: coordinates, "no such element", and
+# "the screen could not be read at all". The third one used to arrive as the
+# second, because `die` inside aui/ui exits a command-substitution subshell and
+# the status was dropped. A flow then skipped an optionalTapText, swiped eight
+# times looking for a label, or blamed a missing element for a broken dump.
+# Every lookup below now checks the status: an unreadable screen stops the run.
+tap_text(){ local xy; xy="$(scroll_to "$1")" || die "cannot read the screen - see the error above"; [ -n "$xy" ] || die "no element matching '$1'"; tap $xy; }  # auto-scrolls off-screen elements into view
+tap_text_optional(){ local xy; xy="$(find_el "$1")" || die "cannot read the screen - see the error above"; [ -n "$xy" ] && { tap $xy; ok "optional tap '$1'"; } || warn "optional '$1' not present — skipped"; }
 # Auto-dismiss the interstitials that derail flows (Save Password, notifications, promos…)
 dismiss(){ local L xy; for L in "Not Now" "Not now" "Maybe Later" "Later" "Skip for now" "Skip" "No thanks" "No Thanks" "Got it"; do
-    xy="$(find_el "$L")"; [ -n "$xy" ] && { tap $xy; sleep 0.6; ok "dismissed '$L'"; }
+    xy="$(find_el "$L")" || die "cannot read the screen - see the error above"
+    [ -n "$xy" ] && { tap $xy; sleep 0.6; ok "dismissed '$L'"; }
   done; }  # only SAFE interstitial labels — never Cancel/Close/OK (those navigate/confirm)
 type_str(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { atype "$1"; return; }; paths; local s="${1:?text}" i; for ((i=0;i<${#s};i++)); do idb ui text --udid "$(U)" "${s:$i:1}" >/dev/null 2>&1; sleep 0.12; done; }  # char-by-char = reliable
 clear_field(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { aclear "$1" "$2"; return; }; paths; local x="${1:?x}" y="${2:?y}" i; idb ui tap --udid "$(U)" "$x" "$y"; sleep .4; idb ui tap --udid "$(U)" 360 "$y"; sleep .3; for i in $(seq 1 32); do idb ui key --udid "$(U)" 42 >/dev/null 2>&1; done; }
@@ -390,19 +402,21 @@ clear_field(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { aclear "$1" "$2"; ret
 # somewhere in the dump. `ui | grep` matched invisible nodes, off-screen rows and
 # attribute values, so an assertText passed on a screen that never opened. Reuse
 # the same lookup taps use: relevance, ranking and real non-zero bounds.
-assert_text(){ local xy; xy="$(find_el "$1" assert)"; [ -n "$xy" ] && ok "assert: '$1' on screen at $xy" || die "assert FAILED: '$1' not on screen"; }
+assert_text(){ local xy; xy="$(find_el "$1" assert)" || die "assert FAILED: cannot read the screen - see the error above"; [ -n "$xy" ] && ok "assert: '$1' on screen at $xy" || die "assert FAILED: '$1' not on screen"; }
 # Explicit-selector variants. tapText/assertText match on visible text and can
 # land on a neighbouring caption; these two take an accessibility id / resource-id
 # segment and match it exactly, or fail. An empty id is a failure, never a match:
 # a flow step with a missing or misspelled `value` must stop the run, not tap a
 # random point. Neither scrolls — use scrollToText first for a target below the fold.
-tap_id(){ local q="${1:-}"; [ -n "$q" ] || die "tapId needs a non-empty id"; local xy; xy="$(find_el "$q" id)"; [ -n "$xy" ] || die "no element with id '$q'"; tap $xy; }
-assert_id(){ local q="${1:-}"; [ -n "$q" ] || die "assertId needs a non-empty id"; local xy; xy="$(find_el "$q" id)"; [ -n "$xy" ] && ok "assert id: '$q' on screen at $xy" || die "assert FAILED: no element with id '$q'"; }
+tap_id(){ local q="${1:-}"; [ -n "$q" ] || die "tapId needs a non-empty id"; local xy; xy="$(find_el "$q" id)" || die "cannot read the screen - see the error above"; [ -n "$xy" ] || die "no element with id '$q'"; tap $xy; }
+assert_id(){ local q="${1:-}"; [ -n "$q" ] || die "assertId needs a non-empty id"; local xy; xy="$(find_el "$q" id)" || die "assert FAILED: cannot read the screen - see the error above"; [ -n "$xy" ] && ok "assert id: '$q' on screen at $xy" || die "assert FAILED: no element with id '$q'"; }
 wait_s(){ sleep "${1:-2}"; }
 scroll(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { apaths; if [ "${1:-down}" = up ]; then adb shell input swipe 200 300 200 700 300; else adb shell input swipe 200 700 200 300 300; fi; return; }
   paths; if [ "${1:-down}" = up ]; then idb ui swipe --udid "$(U)" 200 320 200 720; else idb ui swipe --udid "$(U)" 200 720 200 320; fi; }
 # a11y reports FULL-CONTENT coords; taps need ON-SCREEN coords. Scroll a label into the viewport.
-scroll_to(){ local lbl="$1" i xy y; for i in $(seq 1 8); do xy="$(find_el "$lbl")"
+# Stop on an unreadable screen instead of swiping eight times into the dark:
+# a swipe changes state, and the state is what the next step is checking.
+scroll_to(){ local lbl="$1" i xy y; for i in $(seq 1 8); do xy="$(find_el "$lbl")" || die "cannot read the screen - see the error above"
     if [ -n "$xy" ]; then y="${xy##* }"; if [ "$y" -lt 840 ] && [ "$y" -gt 60 ]; then printf '%s' "$xy"; return 0; fi; fi
     scroll down; sleep 0.6; done; find_el "$lbl"; }
 
