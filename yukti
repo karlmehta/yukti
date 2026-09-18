@@ -73,17 +73,33 @@ ashot(){ apaths; local o="${1:-${TMPDIR:-/tmp}/yukti-shot.png}"; adb exec-out sc
 # Delete the dump before writing a new one. uiautomator refuses to dump while the
 # screen is animating ("could not get idle state!"), the error was swallowed, and
 # `cat` then served the tree of the PREVIOUS call: the next assert checked the
-# previous screen and passed. An empty or missing file is now a failure, not a
-# tree. A refusal is a normal state right after a tap, so retry a few times the
-# way the iOS ui() already does, and only then give up. Remove, dump and read run
-# in ONE adb round trip: a lookup used to cost two, a scroll_to up to eighteen.
-aui(){ apaths; local xml i
+# previous screen and passed. A refusal is a normal state right after a tap, so
+# retry a few times the way the iOS ui() already does, and only then give up.
+# Remove, dump and read run in ONE adb round trip: a lookup used to cost two, a
+# scroll_to up to eighteen.
+#
+# What counts as an answer is the WHOLE tree, not "some bytes". Non-empty is not
+# enough:
+# `cat` on a file uiautomator never wrote answers "No such file or directory" ON
+# STDOUT through some adb shell protocol versions, and the daemon prints "* daemon
+# started successfully *" on stdout too. Either one used to pass the emptiness
+# check and reach the parser, which found no nodes and reported an absent element -
+# the very confusion this retry exists to prevent. A dump cut off mid-tree does
+# the same thing while looking even more like a tree, so the closing tag has to
+# be there too: uiautomator writes the document in one go, and the end of it is
+# the only evidence that nothing was lost on the way out.
+#
+# The file name carries the pid, so a dump that did not happen cannot be answered
+# with the file some earlier run left on the device: `rm -f` failing silently was
+# the one path back to serving a stale tree, and a per-run name closes it. The
+# file is removed again after reading, in the same round trip.
+aui(){ apaths; local xml i f="/sdcard/yukti-dump-$$.xml"
   for i in 1 2 3; do
-    xml="$(adb shell 'rm -f /sdcard/yk.xml; uiautomator dump /sdcard/yk.xml >/dev/null 2>&1; cat /sdcard/yk.xml' 2>/dev/null)"
-    [ -n "$xml" ] && { printf '%s' "$xml"; return 0; }
+    xml="$(adb shell "rm -f $f; uiautomator dump $f >/dev/null 2>&1; cat $f 2>/dev/null; rm -f $f" 2>/dev/null)"
+    case "$xml" in *"<hierarchy"*"</hierarchy>"*) printf '%s' "$xml"; return 0;; esac
     [ "$i" = 3 ] || sleep 0.6
   done
-  die "uiautomator produced no dump after 3 tries - the screen may still be animating"; }
+  die "uiautomator produced no usable dump after 3 tries - the screen may still be animating"; }
 afind(){ apaths; aui | "$PY" -c '
 import sys,re,html
 # Rank candidates instead of taking the first substring hit. Honors resource-id
