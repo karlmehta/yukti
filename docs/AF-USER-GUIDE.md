@@ -94,7 +94,9 @@ A flow is `{ "name": "...", "steps": [ ... ] }`. Common step verbs:
 | `{"do":"optionalTapText","value":"Skip"}` | tap if present, don't fail if absent |
 | `{"do":"type","value":"165"}` | type into the focused field (`${TEST_EMAIL}` / `${TEST_PASSWORD}` inject creds) |
 | `{"do":"scrollToText","value":"Weight History"}` | scroll until visible |
-| `{"do":"assertText","value":"Logged"}` | verify text is shown (the test's checkpoint) |
+| `{"do":"tapId","value":"submit"}` | tap the element with this a11y id / `resource-id` segment, exact match |
+| `{"do":"assertText","value":"Logged"}` | verify the text is on screen (the test's checkpoint — perceivable text only, no scroll) |
+| `{"do":"assertId","value":"weight_card"}` | verify an element with this id is on screen |
 | `{"do":"screenshot","value":"x.png"}` | capture for review |
 | `{"do":"wait","value":3}` / `{"do":"dismiss"}` | settle / dismiss a modal |
 | `{"do":"tap","x":201,"y":812}` | tap raw coordinates (last resort — brittle) |
