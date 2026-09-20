@@ -520,6 +520,19 @@ except Exception:
   printf '%s %s' "$BASIS_W" "$BASIS_H"; }
 screen_w(){ set -- $(screen_wh); printf '%s' "${1:-$BASIS_W}"; }
 screen_h(){ set -- $(screen_wh); printf '%s' "${2:-$BASIS_H}"; }
+# A recorded step carries a point on the screen it was recorded on. Studio records
+# at BASIS_W x BASIS_H points; replayed on a 720x1600 phone the same pair lands
+# somewhere else. Scale it where a recorded number ENTERS the run - not inside
+# tap(), which is also fed coordinates taken straight from the device's own dump
+# (tapText, tapId, dismiss) and must stay a raw primitive in the device's space.
+# Set YUKTI_TAP_SCALE=0 to replay recorded pairs as-is.
+scale_xy(){ local x="${1:?x}" y="${2:?y}" w h nx ny
+  [ "${YUKTI_TAP_SCALE:-1}" = 0 ] && { printf '%s %s' "$x" "$y"; return 0; }
+  set -- $(screen_wh); w="${1:-$BASIS_W}"; h="${2:-$BASIS_H}"
+  [ "$w" = "$BASIS_W" ] && [ "$h" = "$BASIS_H" ] && { printf '%s %s' "$x" "$y"; return 0; }
+  nx=$(( x * w / BASIS_W )); ny=$(( y * h / BASIS_H ))
+  say "scaled $x,$y -> $nx,$ny (recorded ${BASIS_W}x${BASIS_H}, screen ${w}x${h})" >&2
+  printf '%s %s' "$nx" "$ny"; }
 scroll_to(){ local lbl="$1" i xy y h top bot; h="$(screen_h)"
   top=$(( h * BAND_TOP / BASIS_H )); bot=$(( h * BAND_BOTTOM / BASIS_H ))
   for i in $(seq 1 8); do xy="$(find_el "$lbl")" || die "cannot read the screen - see the error above"
@@ -666,13 +679,13 @@ flow(){
       case "$do_" in
         wait)        wait_s "${val:-2}";;
         screenshot)  FLOW_ART="$(shot "$val")"; ok "shot → $FLOW_ART";;
-        tap)         tap "$x" "$y";;
+        tap)         tap $(scale_xy "$x" "$y");;
         tapText)     say "tap '$val'"; tap_text "$val";;
         optionalTapText) tap_text_optional "$val";;
         scroll)      scroll "${val:-down}";;
         scrollToText) scroll_to "$val" >/dev/null;;
         dismiss)     dismiss;;
-        clearText)   clear_field "$x" "$y";;
+        clearText)   clear_field $(scale_xy "$x" "$y");;
         type)        say "type ${#val} chars"; type_str "$val";;
         assertText)  assert_text "$val";;
         tapId)       say "tap id '$val'"; tap_id "$val";;
