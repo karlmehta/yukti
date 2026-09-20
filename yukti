@@ -434,8 +434,96 @@ scroll(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { apaths; if [ "${1:-down}" 
 # a11y reports FULL-CONTENT coords; taps need ON-SCREEN coords. Scroll a label into the viewport.
 # Stop on an unreadable screen instead of swiping eight times into the dark:
 # a swipe changes state, and the state is what the next step is checking.
-scroll_to(){ local lbl="$1" i xy y; for i in $(seq 1 8); do xy="$(find_el "$lbl")" || die "cannot read the screen - see the error above"
-    if [ -n "$xy" ]; then y="${xy##* }"; if [ "$y" -lt 840 ] && [ "$y" -gt 60 ]; then printf '%s' "$xy"; return 0; fi; fi
+# The accepted band used to be written out as 60..840. Those are one device's
+# numbers - an iPhone 16 Pro, 874 points tall - not a universal viewport. A dump
+# reports coordinates in the screen's own space, so on a 720x1600 Android phone
+# the bottom navigation sits at y=1497 and every tab read as off-screen: each tap
+# on one paid the full eight swipes before it acted, and those swipes unload the
+# rows the NEXT step asserts on, which then reads as a defect in the app.
+# Keep the proportions and scale them to the screen the run is actually on. On
+# the original 874-point basis the bounds come out as 60 and 840, unchanged.
+# The basis those numbers were written against: the screen Studio records on, an
+# iPhone 16 Pro at 402x874 points. Same env names Studio already uses for it
+# (studio/server.py DEVICE_PT_W/H), so one override covers both halves.
+BASIS_W="${YUKTI_DEVICE_PT_W:-402}"; BASIS_H="${YUKTI_DEVICE_PT_H:-874}"; BAND_TOP=60; BAND_BOTTOM=840
+# Screen size in the same space the dump reports. Cached in a file, not in a
+# variable: every caller reads this through $( ), and an export from a command
+# substitution never reaches the caller, so a variable would re-ask the device on
+# every step. Asking must never be fatal and must never silently change geometry:
+# on any failure the answer is the basis, which is exactly the old behaviour.
+# Which device answered. Asked once and remembered, because the cache file is
+# named after it and every lookup would otherwise go to the device just to build
+# the name. With two devices attached adb cannot answer, and then nothing is
+# cached at all - a shared cache would be worse than no cache.
+#
+# What this key does NOT separate, so that nobody relies on it: an emulator's
+# serial is its port, not its AVD, so two AVDs started one after the other are
+# both emulator-5554 and share this cache; and a resize on a live device does
+# not change the serial at all. In both cases the cached geometry is another
+# screen's, and nothing says so. Scoping the cache to the run instead of the
+# device would remove all of it.
+screen_id(){ local f s
+  f="${TMPDIR:-/tmp}/yukti-screen-id-${YUKTI_PLATFORM:-ios}"
+  [ -s "$f" ] && { cat "$f"; return 0; }
+  if [ "${YUKTI_PLATFORM:-ios}" = android ]; then
+    apaths; s="$(adb get-serialno 2>/dev/null | tr -d '\r' || true)"
+  else
+    paths; s="$(cat "$(udid_file)" 2>/dev/null || true)"
+  fi
+  case "$s" in ''|*[!A-Za-z0-9_.:-]*) s='';; esac
+  [ -n "$s" ] && { ( printf '%s' "$s" > "$f" ) 2>/dev/null || true; }
+  printf '%s' "$s"; }
+screen_wh(){ local f m out w h id
+  id="$(screen_id)"; f=''
+  # The notice is throttled even when there is no device to name: without this a
+  # 45-flow run would print it on every step.
+  m="${TMPDIR:-/tmp}/yukti-screen-${YUKTI_PLATFORM:-ios}-${id:-nodevice}.fallback"
+  if [ -n "$id" ]; then
+    f="${TMPDIR:-/tmp}/yukti-screen-${YUKTI_PLATFORM:-ios}-${id}"
+    [ -s "$f" ] && { cat "$f"; return 0; }
+  fi
+  out=''
+  if [ "${YUKTI_PLATFORM:-ios}" = android ]; then
+    apaths   # platform-tools go into PATH here; without it adb is simply absent
+    out="$(adb shell wm size 2>/dev/null | tr -d '\r' | sed -n 's/.*: *\([0-9][0-9]*\)x\([0-9][0-9]*\).*/\1 \2/p' | tail -1 || true)"
+  else
+    paths
+    # points only: a pixel field here would silently triple every number on a 3x
+    # device, so a missing key must fall through to the basis, never to pixels.
+    out="$(idb describe --udid "$(U)" --json 2>/dev/null | "$PY" -c 'import json,sys
+try:
+    d=(json.load(sys.stdin).get("screen_dimensions") or {})
+    print(int(d["width_points"]), int(d["height_points"]))
+except Exception:
+    pass' 2>/dev/null || true)"
+  fi
+  set -- $out; w="${1:-}"; h="${2:-}"
+  case "$w" in ''|*[!0-9]*|0) w='';; esac
+  case "$h" in ''|*[!0-9]*|0) h='';; esac
+  if [ -n "$w" ] && [ -n "$h" ]; then
+    if [ -n "$f" ]; then
+      ( printf '%s %s' "$w" "$h" > "$f" ) 2>/dev/null || true   # only a real answer is worth remembering
+      # it answered: the next failure is news again, including the notice left
+      # behind while the device had no name yet
+      rm -f "$m" "${TMPDIR:-/tmp}/yukti-screen-${YUKTI_PLATFORM:-ios}-nodevice.fallback" 2>/dev/null || true
+    fi
+    printf '%s %s' "$w" "$h"; return 0
+  fi
+  # NEVER cache the fallback. A device merely slow to appear would otherwise
+  # switch the band off for every later step with nothing in the log to say so.
+  # The notice goes to stderr: this function is read through a substitution, and
+  # a line on stdout would be parsed as the screen size.
+  if [ ! -f "$m" ]; then
+    warn "screen size unavailable, using the recording basis ${BASIS_W}x${BASIS_H}" >&2
+    ( : > "$m" ) 2>/dev/null || true
+  fi
+  printf '%s %s' "$BASIS_W" "$BASIS_H"; }
+screen_w(){ set -- $(screen_wh); printf '%s' "${1:-$BASIS_W}"; }
+screen_h(){ set -- $(screen_wh); printf '%s' "${2:-$BASIS_H}"; }
+scroll_to(){ local lbl="$1" i xy y h top bot; h="$(screen_h)"
+  top=$(( h * BAND_TOP / BASIS_H )); bot=$(( h * BAND_BOTTOM / BASIS_H ))
+  for i in $(seq 1 8); do xy="$(find_el "$lbl")" || die "cannot read the screen - see the error above"
+    if [ -n "$xy" ]; then y="${xy##* }"; if [ "$y" -lt "$bot" ] && [ "$y" -gt "$top" ]; then printf '%s' "$xy"; return 0; fi; fi
     scroll down; sleep 0.6; done; find_el "$lbl"; }
 
 # ── per-flow results ─────────────────────────────────────────────────────────
