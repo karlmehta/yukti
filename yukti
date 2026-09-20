@@ -71,7 +71,18 @@ boot_android(){ apaths; local avd; avd="$(cfg android.avd Pixel_7_API_34)"
   adb wait-for-device; until [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = 1 ]; do sleep 2; done; ok "emulator booted"; }
 install_android(){ apaths; local V="$1"; adb install -r "$(cat "${TMPDIR:-/tmp}/yukti-apk-$V")" && ok "installed"; }
 launch_android(){ apaths; local pkg; pkg="$(cfg variants.$1.package)"; adb shell monkey -p "$pkg" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1 && ok "launched $pkg"; }
-ashot(){ apaths; local o="${1:-${TMPDIR:-/tmp}/yukti-shot.png}"; adb exec-out screencap -p > "$o" && echo "$o"; }
+# A screenshot value is a NAME, not a path. RUNBOOK says the files land in
+# $TMPDIR and that the flows only name them; they landed in whatever directory
+# the run was started from, so a suite scattered pngs across the caller's tree
+# while $TMPDIR stayed empty. Join a relative name to $TMPDIR. An absolute path
+# is still taken as given, and a name with a directory in it gets that directory
+# created rather than failing the step.
+shot_path(){ local n="${1:-yukti-shot.png}"
+  # A name is a name. ".." in it would write outside $TMPDIR while reading like
+  # a file inside it, so refuse rather than guess what was meant.
+  case "$n" in *..*) die "screenshot name must not contain '..': '$n'";; esac
+  case "$n" in /*) printf '%s' "$n";; *) printf '%s/%s' "${TMPDIR:-/tmp}" "$n";; esac; }
+ashot(){ apaths; local o; o="$(shot_path "${1:-}")"; mkdir -p "$(dirname "$o")"; adb exec-out screencap -p > "$o" && echo "$o"; }
 # Delete the dump before writing a new one. uiautomator refuses to dump while the
 # screen is animating ("could not get idle state!"), the error was swallowed, and
 # `cat` then served the tree of the PREVIOUS call: the next assert checked the
@@ -297,7 +308,7 @@ up(){ local V="${1:?usage: yukti up <variant>}"; export YUKTI_PLATFORM="$(plat_o
 # ── drive primitives (used by flows AND by AI agents) ────────────────────────
 U(){ cat "$(udid_file)" 2>/dev/null || booted; }
 idb_ready(){ paths; idb connect "$(U)" >/dev/null 2>&1 || true; }
-shot(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { ashot "$@"; return; }; paths; xcrun simctl io "$(U)" screenshot "${1:-${TMPDIR:-/tmp}/yukti-shot.png}" >/dev/null 2>&1 && echo "${1:-${TMPDIR:-/tmp}/yukti-shot.png}"; }
+shot(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { ashot "$@"; return; }; paths; local o; o="$(shot_path "${1:-}")"; mkdir -p "$(dirname "$o")"; xcrun simctl io "$(U)" screenshot "$o" >/dev/null 2>&1 && echo "$o"; }
 ui(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { aui; return; }; idb_ready; local u out i; u="$(U)"; for i in 1 2 3 4; do out="$(idb ui describe-all --udid "$u" 2>/dev/null)"; [ -n "$out" ] && { printf '%s' "$out"; return 0; }; sleep 0.6; done
   # An empty tree after four tries is idb failing, not a screen with nothing on
   # it: a booted simulator always reports at least its window. Returning the
@@ -678,7 +689,13 @@ flow(){
                # required element) must stop the flow — not a benign miss.
       case "$do_" in
         wait)        wait_s "${val:-2}";;
-        screenshot)  FLOW_ART="$(shot "$val")"; ok "shot → $FLOW_ART";;
+        # shot runs in a substitution, so its own die kills only that subshell:
+        # the step used to report PASS with an empty path, whether the name was
+        # refused or screencap itself failed. The status has to be checked here,
+        # in the shell that can stop the flow.
+        screenshot)  FLOW_ART="$(shot "$val")" || die "screenshot failed"
+                     [ -n "$FLOW_ART" ] || die "screenshot produced no file"
+                     ok "shot → $FLOW_ART";;
         tap)         tap $(scale_xy "$x" "$y");;
         tapText)     say "tap '$val'"; tap_text "$val";;
         optionalTapText) tap_text_optional "$val";;
