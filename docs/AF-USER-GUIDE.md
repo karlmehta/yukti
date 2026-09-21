@@ -95,11 +95,21 @@ A flow is `{ "name": "...", "steps": [ ... ] }`. Common step verbs:
 | `{"do":"type","value":"165"}` | type into the focused field (`${TEST_EMAIL}` / `${TEST_PASSWORD}` inject creds) |
 | `{"do":"scrollToText","value":"Weight History"}` | scroll until visible |
 | `{"do":"tapId","value":"submit"}` | tap the element with this a11y id / `resource-id` segment, exact match |
-| `{"do":"assertText","value":"Logged"}` | verify the text is on screen (the test's checkpoint — perceivable text only, no scroll) |
+| `{"do":"assertText","value":"Logged"}` | verify the text is on screen (the test's checkpoint — perceivable text only, no scroll). Matches the whole label, case as written; add `"match":"contains"` for a partial match |
 | `{"do":"assertId","value":"weight_card"}` | verify an element with this id is on screen |
 | `{"do":"screenshot","value":"x.png"}` | capture for review |
-| `{"do":"wait","value":3}` / `{"do":"dismiss"}` | settle / dismiss a modal |
+| `{"do":"waitFor","value":"Weight History","timeout":15}` | poll until the text is on screen, fail on timeout (seconds, default 10; no scrolling). Matches like `assertText`, `"match":"contains"` included |
+| `{"do":"waitForId","value":"weight_card"}` | the same wait, matching the id exactly |
+| `{"do":"wait","value":3}` / `{"do":"dismiss"}` | sleep a fixed time (prefer `waitFor`) / dismiss a modal |
 | `{"do":"tap","x":201,"y":812}` | tap raw coordinates (last resort — brittle) |
+| `{"do":"stopApp","value":"qa"}` | force-stop the app of that variant |
+| `{"do":"clearState","value":"qa"}` | wipe the app's data, Android only (the app stops — `launch` it again) |
+
+A step that fails now fails the flow, and the message names the step. Two
+exceptions stay, and they are narrow: `dismiss` and `optionalTapText` tolerate a
+label that is not on screen, but not a device that refuses the tap. An unknown
+verb, an unknown `"match"` value, a `"match"` on a step that does not take one,
+and a non-numeric `wait` stop the flow as well.
 
 Save it in `.yukti/flows/` and it's part of the suite the next Run All.
 

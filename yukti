@@ -127,7 +127,11 @@ import sys,re,html
 # break, and a two-line caption would otherwise be assertable only by writing the
 # line break into the flow file.
 norm=lambda s: " ".join(s.split())
-q=norm(sys.argv[1].lower()); mode=(sys.argv[2] if len(sys.argv)>2 else "text")
+# The oracle compares the query as written; the locator modes keep folding case,
+# because a flow author naming a button does not mean its capitalisation.
+q_raw=norm(sys.argv[1]); q=q_raw.lower()
+mode=(sys.argv[2] if len(sys.argv)>2 else "text")
+match=(sys.argv[3] if len(sys.argv)>3 else "exact")
 xml=sys.stdin.read()
 # Screen rect = the bounds of the ROOT node, i.e. the first bounds= in the dump.
 # Anything whose centre falls outside it is scrolled away or parked off-screen:
@@ -152,7 +156,8 @@ for m in re.finditer(r"<node\b[^>]*>", xml):
         # and assertText "amp" passes on any screen with an ampersand - markup
         # matching through the back door.
         mm=re.search(n+r"=\"([^\"]*)\"",tag); return norm(html.unescape(mm.group(1))) if mm else ""
-    text=a("text").lower(); desc=a("content-desc").lower()
+    text_raw=a("text"); desc_raw=a("content-desc")
+    text=text_raw.lower(); desc=desc_raw.lower()
     rid=a("resource-id"); rid_seg=rid.split("/")[-1].lower()  # com.app:id/email -> email
     cls=a("class"); editable=cls.endswith("EditText")
     clickable=a("clickable")=="true"; focusable=a("focusable")=="true"
@@ -166,7 +171,16 @@ for m in re.finditer(r"<node\b[^>]*>", xml):
         # An assertion is the test oracle: it may only match what a person can
         # perceive - visible text or the accessibility label. Matching a
         # resource-id, a class name or an attribute lets a step pass on markup.
-        if not (q and (q in text or q in desc)): continue
+        #
+        # The whole label, and the case as written. A substring match made a
+        # false green cheap: assertText "net" passed on a screen whose only
+        # relevant row said "Network & internet", and a check that passes on
+        # three letters of another sentence has not checked anything. A flow
+        # that does want the old rule says so: {"match":"contains"}.
+        if match=="contains":
+            if not (q and (q in text or q in desc)): continue
+        else:
+            if not (q_raw and q_raw in (text_raw, desc_raw)): continue
         score=10
     else:
         if not (q and (q in rid_seg or q in text or q in desc)): continue
@@ -187,7 +201,7 @@ for m in re.finditer(r"<node\b[^>]*>", xml):
     if SX2>SX1 and SY2>SY1 and not (SX1<=cx<SX2 and SY1<=cy<SY2): continue  # off-screen
     best=(cx,cy); best_score=score
 if best: print(best[0],best[1])
-' "$1" "${2:-text}"; }
+' "$1" "${2:-text}" "${3:-exact}"; }
 atap(){ apaths; adb shell input tap "$1" "$2"; }
 atype(){ apaths; local s="$1" q
   # Quote for the ON-DEVICE shell so metacharacters can't expand. Unquoted, a *
@@ -303,6 +317,69 @@ install(){ local V="${1:?variant}"; [ "$(plat_of "$V")" = android ] && { install
   xcrun simctl install "$u" "$a" && ok "installed $(basename "$a")"; }
 launch(){ local V="${1:?variant}"; [ "$(plat_of "$V")" = android ] && { launch_android "$V"; return; }; paths; local u b; u="$(cat "$(udid_file)")"; b="$(cfg variants.$V.bundleId)"
   xcrun simctl launch "$u" "$b" && ok "launched $b"; }
+# A flow inherits whatever the flow before it left behind - the session, the
+# onboarding, cached content, a half-filled form. The same flow is then green
+# alone and red in a suite, and nothing in the report says why. Nothing in the
+# vocabulary dropped that state: `launch` on Android goes through `monkey`,
+# which brings a RUNNING app to the front, and `install` uses `adb install -r`,
+# which keeps the data of the previous install on purpose.
+#
+# Both steps take the variant name, the way `launch` does, so the package and
+# the bundle id come from the config and never from the flow file.
+# The platform of a step is the platform of the RUN. plat_of() is not that: it
+# answers ios whenever the variant does not name a platform of its own, and a
+# config that names the platform once at the top level is legal - so a step
+# asking plat_of would take the iOS path in the middle of an Android run. The
+# run's platform is already resolved at startup (env, then the config, then the
+# ios default), which is what every drive primitive reads. Honour a variant that
+# names its own platform, and otherwise follow the run.
+step_platform(){ local V="$1" p; p="$(cfg "variants.$V.platform")"; printf '%s' "${p:-$YUKTI_PLATFORM}"; }
+stop_app(){ local V="${1:-}" plat; [ -n "$V" ] || die "stopApp needs a variant name - the one used in $CONFIG"
+  plat="$(step_platform "$V")"
+  if [ "$plat" = android ]; then apaths; local pkg installed; pkg="$(cfg variants.$V.package)"
+    [ -n "$pkg" ] || die "stopApp: variant '$V' has no 'package' in $CONFIG"
+    # `am force-stop` prints nothing and exits zero for a package that is not
+    # installed, exactly as for one that is. Without this probe the step reports
+    # a stop that never happened every time the config carries a typo.
+    installed="$(adb shell pm list packages 2>/dev/null | tr -d '\r')" || true
+    # An empty list means the device did not answer, not that the app is gone:
+    # without this the step blames the package name for an unreachable device
+    # and sends the reader to fix the config.
+    [ -n "$installed" ] || die "stopApp: could not read the package list from the device"
+    case "
+$installed
+" in *"
+package:$pkg
+"*) ;; *) die "stopApp: '$pkg' is not installed on the device";; esac
+    adb shell am force-stop "$pkg" || die "stopApp: force-stop failed for '$pkg'"
+    ok "stopped $pkg"; return; fi
+  paths; local u b; u="$(cat "$(udid_file)" 2>/dev/null)" || true
+  [ -n "$u" ] || die "stopApp: no simulator recorded in $(udid_file) - run 'yukti up <variant>' first"
+  b="$(cfg variants.$V.bundleId)"
+  [ -n "$b" ] || die "stopApp: variant '$V' has no 'bundleId' in $CONFIG"
+  # simctl refuses when the app is not running, and "not running" is the state
+  # this step exists to reach: that refusal is a warning, not a failure.
+  # Any refusal from simctl reads as "it was not running" here, including a
+  # simulator that is not booted. The narrower form needs a Mac to write and to
+  # check; the runbook names the gap rather than implying it is closed.
+  xcrun simctl terminate "$u" "$b" 2>/dev/null && ok "stopped $b" || warn "stopApp: '$b' was not running (or the simulator refused)"; }
+clear_state(){ local V="${1:-}" plat; [ -n "$V" ] || die "clearState needs a variant name - the one used in $CONFIG"
+  plat="$(step_platform "$V")"
+  [ "$plat" = android ] || die "clearState is Android-only for now - see RUNBOOK; on iOS reinstall the app between flows"
+  apaths; local pkg out; pkg="$(cfg variants.$V.package)"
+  [ -n "$pkg" ] || die "clearState: variant '$V' has no 'package' in $CONFIG"
+  # `pm clear` says what happened in words, and its exit status does not agree
+  # across platform versions: "Failed" comes back with status 1 on API 35 and
+  # with status 0 elsewhere. The word is the evidence, so the step reads the
+  # word, anchored at the start of the answer - stderr lands in the same string
+  # and a warning that merely contains "Success" must not pass for one. `|| true`
+  # is there for one reason: under `set -e` the step would otherwise die before
+  # reading the answer, with no message at all.
+  out="$(adb shell pm clear "$pkg" 2>&1 | tr -d '\r')" || true
+  case "$out" in
+    Success*) ok "cleared $pkg - the app is stopped now, launch it before the next step";;
+    *) die "clearState: pm clear refused '$pkg': ${out:-no output}";;
+  esac; }
 up(){ local V="${1:?usage: yukti up <variant>}"; export YUKTI_PLATFORM="$(plat_of "$V")"; build "$V"; boot; install "$V"; launch "$V"; ok "up: '$V' running — drive with 'yukti shot' / 'yukti flow'"; }
 
 # ── drive primitives (used by flows AND by AI agents) ────────────────────────
@@ -315,14 +392,17 @@ ui(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { aui; return; }; idb_ready; loc
   # empty string made every caller read it as "the element is not there". The
   # Android path already fails here; this is the same rule for iOS.
   die "idb returned no accessibility tree after 4 tries - is the simulator booted?"; }
-find_el(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { afind "$1" "${2:-text}"; return; }; paths; ui | "$PY" -c '
+find_el(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { afind "$1" "${2:-text}" "${3:-exact}"; return; }; paths; ui | "$PY" -c '
 import json,sys
 # Rank candidates instead of the first AXLabel/AXValue substring hit: honor the
 # accessibility identifier (AXUniqueId) and prefer the actual field/control over
 # a nearby static caption — same bug the Android path had ("Email" hit the "or
 # use email" caption; "Password" hit the "Forgot Password?" link).
 norm=lambda s: " ".join(s.split())   # a two-line caption is one query with spaces
-q=norm(sys.argv[1].lower()); mode=(sys.argv[2] if len(sys.argv)>2 else "text")
+# Same rule as the Android path: the oracle compares as written, locators fold case.
+q_raw=norm(sys.argv[1]); q=q_raw.lower()
+mode=(sys.argv[2] if len(sys.argv)>2 else "text")
+match=(sys.argv[3] if len(sys.argv)>3 else "exact")
 raw=sys.stdin.read().strip()
 if not raw: sys.exit(0)
 els=json.loads(raw)
@@ -369,9 +449,9 @@ def centre(e):
 if mode in ("assert","id") and not (SW>0 and SH>0): sys.exit(0)
 best=None; best_score=-1
 for e in els:
-    label=norm(str(e.get("AXLabel") or "").lower())
-    value=norm(str(e.get("AXValue") or "").lower())
-    title=norm(str(e.get("title") or "").lower())
+    label_raw=norm(str(e.get("AXLabel") or "")); label=label_raw.lower()
+    value_raw=norm(str(e.get("AXValue") or "")); value=value_raw.lower()
+    title_raw=norm(str(e.get("title") or "")); title=title_raw.lower()
     ident=str(e.get("AXUniqueId") or e.get("identifier") or "").lower()
     t=(str(e.get("type") or "")+" "+str(e.get("role_description") or "")).lower()
     editable=("textfield" in t) or ("securetext" in t) or ("text field" in t) or ("textview" in t)
@@ -386,8 +466,11 @@ for e in els:
         print(xy[0],xy[1]); sys.exit(0)
     if mode=="assert":
         # See the Android path: an assertion matches perceivable text only, on an
-        # element that is really on screen - real size, centre inside the window.
-        if not (q and (q in label or q in value or q in title)): continue
+        # element that is really on screen - real size, centre inside the window,
+        # and the whole label as written unless the flow asks for "contains".
+        if match=="contains":
+            if not (q and (q in label or q in value or q in title)): continue
+        elif not (q_raw and q_raw in (label_raw, value_raw, title_raw)): continue
         xy=centre(e)
         if xy is None: continue
         print(xy[0],xy[1]); sys.exit(0)
@@ -410,7 +493,7 @@ for e in els:
     if score<=best_score: continue
     best=(int(x+w/2),int(y+h/2)); best_score=score
 if best: print(best[0],best[1])
-' "$1" "${2:-text}"; }
+' "$1" "${2:-text}" "${3:-exact}"; }
 tap(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { atap "$1" "$2"; return; }; paths; idb ui tap --udid "$(U)" "${1:?x}" "${2:?y}"; }
 # A lookup has three outcomes, not two: coordinates, "no such element", and
 # "the screen could not be read at all". The third one used to arrive as the
@@ -419,11 +502,15 @@ tap(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { atap "$1" "$2"; return; }; pa
 # times looking for a label, or blamed a missing element for a broken dump.
 # Every lookup below now checks the status: an unreadable screen stops the run.
 tap_text(){ local xy; xy="$(scroll_to "$1")" || die "cannot read the screen - see the error above"; [ -n "$xy" ] || die "no element matching '$1'"; tap $xy; }  # auto-scrolls off-screen elements into view
-tap_text_optional(){ local xy; xy="$(find_el "$1")" || die "cannot read the screen - see the error above"; [ -n "$xy" ] && { tap $xy; ok "optional tap '$1'"; } || warn "optional '$1' not present — skipped"; }
+# The exception these two verbs enjoy is about an ABSENT label, and nothing else.
+# A device that refuses the tap is not an absent label: the status of `tap` is
+# checked here, or the step keeps its exception and reports a tap that never
+# happened - the very class of lie the status check above exists to end.
+tap_text_optional(){ local xy; xy="$(find_el "$1")" || die "cannot read the screen - see the error above"; [ -n "$xy" ] && { tap $xy || die "optional tap '$1': the device refused the tap"; ok "optional tap '$1'"; } || warn "optional '$1' not present — skipped"; }
 # Auto-dismiss the interstitials that derail flows (Save Password, notifications, promos…)
 dismiss(){ local L xy; for L in "Not Now" "Not now" "Maybe Later" "Later" "Skip for now" "Skip" "No thanks" "No Thanks" "Got it"; do
     xy="$(find_el "$L")" || die "cannot read the screen - see the error above"
-    [ -n "$xy" ] && { tap $xy; sleep 0.6; ok "dismissed '$L'"; }
+    [ -n "$xy" ] && { tap $xy || die "dismiss: the device refused the tap on '$L'"; sleep 0.6; ok "dismissed '$L'"; }
   done; }  # only SAFE interstitial labels — never Cancel/Close/OK (those navigate/confirm)
 type_str(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { atype "$1"; return; }; paths; local s="${1:?text}" i; for ((i=0;i<${#s};i++)); do idb ui text --udid "$(U)" "${s:$i:1}" >/dev/null 2>&1; sleep 0.12; done; }  # char-by-char = reliable
 clear_field(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { aclear "$1" "$2"; return; }; paths; local x="${1:?x}" y="${2:?y}" i; idb ui tap --udid "$(U)" "$x" "$y"; sleep .4; idb ui tap --udid "$(U)" 360 "$y"; sleep .3; for i in $(seq 1 32); do idb ui key --udid "$(U)" 42 >/dev/null 2>&1; done; }
@@ -431,7 +518,13 @@ clear_field(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { aclear "$1" "$2"; ret
 # somewhere in the dump. `ui | grep` matched invisible nodes, off-screen rows and
 # attribute values, so an assertText passed on a screen that never opened. Reuse
 # the same lookup taps use: relevance, ranking and real non-zero bounds.
-assert_text(){ local xy; xy="$(find_el "$1" assert)" || die "assert FAILED: cannot read the screen - see the error above"; [ -n "$xy" ] && ok "assert: '$1' on screen at $xy" || die "assert FAILED: '$1' not on screen"; }
+# The match rule is part of the assertion, so the flow states it and the log
+# repeats it: a green line that does not say how it matched cannot be read back.
+assert_text(){ local q="${1:-}" m="${2:-exact}" xy
+  [ -n "$q" ] || die "assertText needs a non-empty value"
+  case "$m" in exact|contains) ;; *) die "assertText: unknown match '$m' - use exact or contains";; esac
+  xy="$(find_el "$q" assert "$m")" || die "assert FAILED: cannot read the screen - see the error above"
+  [ -n "$xy" ] && ok "assert ($m): '$q' on screen at $xy" || die "assert FAILED ($m match): '$q' not on screen"; }
 # Explicit-selector variants. tapText/assertText match on visible text and can
 # land on a neighbouring caption; these two take an accessibility id / resource-id
 # segment and match it exactly, or fail. An empty id is a failure, never a match:
@@ -440,6 +533,35 @@ assert_text(){ local xy; xy="$(find_el "$1" assert)" || die "assert FAILED: cann
 tap_id(){ local q="${1:-}"; [ -n "$q" ] || die "tapId needs a non-empty id"; local xy; xy="$(find_el "$q" id)" || die "cannot read the screen - see the error above"; [ -n "$xy" ] || die "no element with id '$q'"; tap $xy; }
 assert_id(){ local q="${1:-}"; [ -n "$q" ] || die "assertId needs a non-empty id"; local xy; xy="$(find_el "$q" id)" || die "assert FAILED: cannot read the screen - see the error above"; [ -n "$xy" ] && ok "assert id: '$q' on screen at $xy" || die "assert FAILED: no element with id '$q'"; }
 wait_s(){ sleep "${1:-2}"; }
+# `wait` is a sleep, and a sleep is the wrong tool for a screen that loads its
+# content: too short and the flow goes red at random, too long and every run
+# pays for it, on every flow. scrollToText retries, but it SCROLLS between the
+# tries - on a screen that is still loading it swipes the content away instead
+# of waiting for it.
+#
+# waitFor polls the same lookup the taps and the oracle use, and it never
+# scrolls. The timeout is the failure: a screen that never arrives is a red
+# step, not a green one and not an eight-swipe detour.
+#
+# An unreadable screen is not "not there yet". The poll keeps going while the
+# screen cannot be read, and the timeout then says which of the two happened -
+# the distinction the lookup verbs already make.
+wait_for(){ local q="${1:-}" t="${2:-10}" m="${3:-exact}" mode="${4:-assert}" xy readable=1 t0 el label
+  [ -n "$q" ] || die "waitFor needs a non-empty value"
+  case "$t" in ''|*[!0-9]*|0) die "waitFor: timeout must be a whole number of seconds greater than zero, got '$t'";; esac
+  case "$m" in exact|contains) ;; *) die "waitFor: unknown match '$m' - use exact or contains";; esac
+  [ "$mode" = id ] && label="waitFor id" || label="waitFor ($m match)"
+  say "$label: up to ${t}s for '$q'"
+  t0=$SECONDS
+  while :; do
+    if xy="$(find_el "$q" "$mode" "$m")"; then readable=1
+      [ -n "$xy" ] && { el=$((SECONDS - t0)); ok "$label: '$q' on screen at $xy after ${el}s"; return 0; }
+    else readable=0; fi
+    [ $((SECONDS - t0)) -lt "$t" ] || break
+    sleep 0.5
+  done
+  [ "$readable" = 1 ] || die "$label FAILED: the screen could not be read while waiting ${t}s for '$q' - see the error above"
+  die "$label FAILED: '$q' not on screen after ${t}s"; }
 scroll(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { apaths; if [ "${1:-down}" = up ]; then adb shell input swipe 200 300 200 700 300; else adb shell input swipe 200 700 200 300 300; fi; return; }
   paths; if [ "${1:-down}" = up ]; then idb ui swipe --udid "$(U)" 200 320 200 720; else idb ui swipe --udid "$(U)" 200 720 200 320; fi; }
 # a11y reports FULL-CONTENT coords; taps need ON-SCREEN coords. Scroll a label into the viewport.
@@ -650,10 +772,18 @@ PY
 }
 
 # ── deterministic flow runner: a JSON list of steps ──────────────────────────
-# step keys: launch|wait|screenshot|tap[x,y]|tapText|optionalTapText|tapId|type|
-#            clearText[x,y]|scroll|scrollToText|dismiss|assertText|assertId
+# step keys: launch|stopApp|clearState|wait|waitFor[timeout,match]|waitForId[timeout]|screenshot|
+#            tap[x,y]|tapText|optionalTapText|tapId|type|clearText[x,y]|scroll|
+#            scrollToText|dismiss|assertText[match]|assertId
+#
+# The same names the dispatcher inside flow() knows, as a list a check can read.
+# The dispatcher cannot answer "do you know this name?" without running the
+# step, and one check below has to ask before the step runs. A verb added to the
+# `case` has to be added here too: nothing but this comment ties the two, and
+# the `*)` arm of the dispatcher stays as the backstop.
+FLOW_VERBS="launch stopApp clearState wait waitFor waitForId screenshot tap tapText optionalTapText tapId type clearText scroll scrollToText dismiss assertText assertId"
 flow(){
-  local f="${1:?usage: yukti flow <file.json>}"; [ -f "$f" ] || die "no flow file '$f'"; paths
+  local f="${1:?usage: yukti flow <file.json>}" st; [ -f "$f" ] || die "no flow file '$f'"; paths
   say "running flow: $f"
   FLOW_FILE="$f"; FLOW_IDX=0; FLOW_ART=""
   FLOW_REC="$(mktemp)"; FLOW_CUR="$(mktemp)"; FLOW_ERR="$(mktemp)"; FLOW_T0="$(now)"
@@ -665,18 +795,30 @@ flow(){
   # still reported PASS). Reading `<&3` from a process substitution also keeps
   # the loop in THIS shell (not a pipe subshell), so a step's `die` (exit 1)
   # aborts the whole flow with a non-zero status instead of being lost.
-  while IFS=$'\x1f' read -r do_ val x y <&3; do
+  while IFS=$'\x1f' read -r do_ val x y mtch tmo <&3; do
       # Record the step BEFORE running it and again once it survived: the one
       # step that has a start and no end is the step that failed, and that is
       # the single fact a report cannot reconstruct from console text.
       FLOW_IDX=$((FLOW_IDX+1)); FLOW_S0="$(now)"; FLOW_ART=""
       printf '%s\x1f%s\x1f%s\x1f%s\n' "$FLOW_IDX" "$do_" "$val" "$FLOW_S0" > "$FLOW_CUR"
       : > "$FLOW_ERR"
-      set +e   # best-effort steps (dismiss/optionalTapText) return non-zero when
-               # a label is absent; only an explicit `die` (assert fail / missing
-               # required element) must stop the flow — not a benign miss.
+      # The name first, the keys after it, because the order decides what a typo
+      # hears. A step named `tpText` carrying a `match` would otherwise be told
+      # that `tpText` does not take the key - a message that asserts the verb
+      # exists and costs the author a second run to find the real mistake.
+      case " $FLOW_VERBS " in *" $do_ "*) ;; *) die "unknown step '$do_' - check the flow file";; esac
+      # `match` belongs to the assertion contract, so only the verb that reads
+      # it may be given it. A locator that ignored the key told the flow author
+      # it was honoured: tapText folds case and matches a substring whatever the
+      # step says, and a suite written on that belief is weaker than it reads.
+      [ -z "$mtch" ] || case "$do_" in assertText|waitFor) ;; *) die "step $FLOW_IDX '$do_' does not take a \"match\" - only assertText and waitFor do";; esac
+      set +e   # a step must not abort the loop by itself: the status is read
+               # right after the dispatcher, so the failure is attributed to
+               # THIS step and the flow stops with a message.
       case "$do_" in
         wait)        wait_s "${val:-2}";;
+        waitFor)     wait_for "$val" "${tmo:-10}" "${mtch:-exact}" assert;;
+        waitForId)   wait_for "$val" "${tmo:-10}" exact id;;
         # shot runs in a substitution, so its own die kills only that subshell:
         # the step used to report PASS with an empty path, whether the name was
         # refused or screencap itself failed. The status has to be checked here,
@@ -692,14 +834,31 @@ flow(){
         dismiss)     dismiss;;
         clearText)   clear_field $(scale_xy "$x" "$y");;
         type)        say "type ${#val} chars"; type_str "$val";;
-        assertText)  assert_text "$val";;
+        assertText)  assert_text "$val" "${mtch:-exact}";;
         tapId)       say "tap id '$val'"; tap_id "$val";;
         assertId)    assert_id "$val";;
         launch)      launch "$val";;
-        *) warn "unknown step '$do_'";;
+        stopApp)     stop_app "$val";;
+        clearState)  clear_state "$val";;
+        # A name the dispatcher does not know is a typo in the flow file, and a
+        # typo must not pass: `warn` returns zero, so this case has to die on its
+        # own - reading the status below would not catch it.
+        *) die "unknown step '$do_' - check the flow file";;
       esac
+      st=$?
+      # A step that failed without dying used to be recorded as passed: the
+      # status of the dispatcher was never read. `adb` refusing a tap, a launch
+      # of a package that is not installed, a clearText on a dead device - all
+      # reported PASS, and the JUnit file said failures="0". Only an explicit
+      # `die` could stop a flow.
+      #
+      # The two best-effort verbs stay the exception, by contract: they return
+      # non-zero when a label is simply absent, which is the state they exist
+      # to tolerate.
+      case "$do_" in dismiss|optionalTapText) st=0;; esac
+      [ "$st" -eq 0 ] || die "step $FLOW_IDX '$do_' failed (exit $st)"
       printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' "$FLOW_IDX" "$do_" "$val" "$FLOW_S0" "$(now)" "$FLOW_ART" >> "$FLOW_REC"
-  done 3< <("$PY" -c 'import json,sys,os;[print("\x1f".join([s.get("do",""),os.path.expandvars(str(s.get("value",""))),str(s.get("x","")),str(s.get("y",""))])) for s in json.load(open(sys.argv[1]))["steps"]]' "$f")
+  done 3< <("$PY" -c 'import json,sys,os;[print("\x1f".join([s.get("do",""),os.path.expandvars(str(s.get("value",""))),str(s.get("x","")),str(s.get("y","")),str(s.get("match","")),str(s.get("timeout",""))])) for s in json.load(open(sys.argv[1]))["steps"]]' "$f")
   ok "flow complete: $f"
 }
 
@@ -755,10 +914,18 @@ ${B}yukti v$YUKTI_VERSION${R} — YUKTI — smart mobile-app QA automation for R
   yukti scroll <up|down>   scroll the screen · yukti scroll-to "<label>" scroll a label into view
   yukti dismiss             auto-dismiss common modals (Not Now / Skip / OK / Close…)
   yukti assert "<text>"     assert the text is on screen (perceivable text only, no scroll)
+  yukti stop-app <variant>  force-stop the app of that variant
+  yukti clear-state <variant>
+                            wipe the app's data (Android only) - the app stops, launch it again
+  yukti wait-for "<text>" [s] [exact|contains]
+                            poll until the text is on screen, fail on timeout (default 10s)
   yukti tap-id "<id>"       tap the element with this a11y id / resource-id segment
   yukti assert-id "<id>"    assert an element with this id is on screen
 
-  flow steps: wait · screenshot · tap · tapText · optionalTapText · tapId · scroll · scrollToText · dismiss · type · clearText · assertText · assertId · launch
+  flow steps: wait · waitFor · waitForId · screenshot · tap · tapText · optionalTapText · tapId · scroll · scrollToText · dismiss · type · clearText · assertText · assertId · launch · stopApp · clearState
+              stopApp force-stops the app, clearState wipes its data (Android only); both take the variant name
+              assertText matches the whole label as written; "match":"contains" asks for a substring
+              waitFor polls for an element and fails on timeout ("timeout": seconds, default 10); it never scrolls
   config: \$YUKTI_CONFIG or ./yukti.config.json  ·  cross-platform: set variant "platform":"android"
 EOF
 }
@@ -806,6 +973,8 @@ case "$cmd" in
   boot) boot;;
   install) install "$@";;
   launch) launch "$@";;
+  "stop-app"|stopApp) stop_app "$@";;
+  "clear-state"|clearState) clear_state "$@";;
   up) up "$@";;
   flow) flow "$@";;
   shot) shot "$@";;
@@ -821,6 +990,7 @@ case "$cmd" in
   assert) assert_text "$@";;
   "tap-id"|tapId) tap_id "$@";;
   "assert-id"|assertId) assert_id "$@";;
+  "wait-for"|waitFor) wait_for "$@";;
   ""|-h|--help|help) usage;;
   *) die "unknown command '$cmd' — see 'yukti help'";;
 esac

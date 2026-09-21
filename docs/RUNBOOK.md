@@ -60,6 +60,29 @@ screen right now - real size, centre inside the window. It never matches a
 resource-id, a class name or any other markup, and it does **not** scroll: put
 `scrollToText` in front of it when the target sits below the fold.
 
+The match is the **whole label, case as written**. Leading and trailing spaces
+do not count, and a two-line caption reads as one line. A partial match is
+available, and has to be asked for:
+
+```json
+{"do":"assertText","value":"Network & internet"},
+{"do":"assertText","value":"internet","match":"contains"}
+```
+
+`"match":"contains"` folds case as well, which is what makes it weak: `net`
+then passes on a screen that only says `Network & internet`. Use it where a
+label carries a value that changes, and prefer the default everywhere else.
+
+The locator verbs - `tapText`, `optionalTapText`, `scrollToText` - are not
+assertions and are unchanged: they still match a substring and fold case, and
+they rank the candidates. Naming a button is not a statement about its
+capitalisation; asserting one is.
+
+`match` belongs to the assertion, so `assertText` and the wait that follows the
+same rules - `waitFor`, below - are the only steps that take it. Any other step
+given a `match` fails instead of ignoring it: a step that reads as exact while
+the verb folds case is a suite that is weaker than it looks.
+
 "On screen" means inside the window and of non-zero size. It does not model
 overlap: a label underneath a modal or an alert is still reported as on screen,
 on both platforms, because the dialog and the label live in the same tree.
@@ -86,6 +109,108 @@ Discover labels/coords for a screen:
 ~/yukti/yukti ui | python3 -m json.tool | less      # accessibility tree
 ~/yukti/yukti find "Sign In"                         # -> "201 705"
 ```
+
+### When a step fails
+
+A step that ends with a non-zero status now fails the flow, and the message
+names it: `step 7 'tapText' failed (exit 1)`. Until now only an explicit failure
+inside a verb could stop a run - `adb` refusing a tap, a launch of a package
+that is not installed, a `clearText` on a dead device all reported PASS, and the
+JUnit file said `failures="0"`.
+
+Four more ways a flow stops, all of them typos that used to pass:
+
+- a step name the runner does not know;
+- a `"match"` value that is neither `exact` nor `contains`;
+- a `"match"` key on a step that does not take one;
+- a `wait` whose value is not a number - `sleep` refuses it.
+
+`dismiss` and `optionalTapText` keep their exception, and it is narrow: a label
+that is not on screen is the state those two exist to tolerate. A device that
+refuses the tap is not that state, and it fails the flow like any other step.
+
+Two verbs stay outside this guarantee. `scrollToText`
+reports no failure when the label is never found: it swipes eight times and
+returns a miss, and the step passes. `type` on iOS sends the characters one by
+one and never reads a status, so it cannot fail either. Neither belongs in a
+flow as its checkpoint - put an `assertText` or an `assertId` after them.
+
+### Waiting for a screen
+
+`wait` is a sleep and nothing else. A flow that synchronises with sleeps has two
+bad options: sleep too little and go red at random, or sleep too much and pay
+that on every run of every flow.
+
+`waitFor` polls for the element and fails when it does not arrive:
+
+```json
+{"do":"waitFor","value":"Weight History","timeout":15},
+{"do":"waitForId","value":"weight_card"},
+{"do":"waitFor","value":"items in cart","match":"contains"}
+```
+
+`timeout` is whole seconds and defaults to 10; a timeout that is not a positive
+whole number fails the step rather than falling back to the default. The match
+rules are the ones `assertText` uses - the whole label, case as written, with
+`"match":"contains"` available - so a wait and the assertion after it agree on
+what they are looking at. `waitForId` matches the id exactly, and like every
+step but those two it refuses a `match` key instead of ignoring it.
+
+`waitFor` does **not** scroll: it waits for what the screen is about to show,
+not for what sits below the fold. Keep `scrollToText` for the fold, and note
+that it is not a wait - it swipes between its tries, so on a screen that is
+still loading it scrolls the content away instead of waiting for it.
+
+A screen that cannot be read is not the same as an element that has not arrived.
+The poll keeps going while the screen is unreadable, and the message on timeout
+says which of the two happened.
+
+The step sees only what outlives one poll - the sleep plus the lookup itself,
+about a second on a device. Wait for a state that stays, not for something that
+flashes: a toast that shows for two seconds will be caught some runs and missed
+in others.
+
+One consequence of following the assertion's rules: `waitFor` and the locator
+after it do not compare the same way. `waitFor "Log Water"` wants that whole
+label, case as written, while `tapText "log water"` matches a substring, folds
+case, and also looks at the element's id. Write the label the way the screen
+shows it and both are happy.
+
+### Starting a flow from a known state
+
+A flow inherits whatever the flow before it left behind: the session, the
+onboarding it already dismissed, cached content, a half-filled form. That is
+what makes a flow green on its own and red in the suite, and the report cannot
+explain it. `launch` does not drop that state - on Android it goes through
+`monkey`, which brings a running app to the front - and `install` keeps the data
+of the previous install on purpose.
+
+```json
+{"do":"stopApp","value":"qa"},
+{"do":"clearState","value":"qa"},
+{"do":"launch","value":"qa"}
+```
+
+Both steps take the **variant name**, the way `launch` does, so the package and
+the bundle id come from `yukti.config.json` and never from the flow file.
+
+`stopApp` force-stops the app, and fails when the package named by the variant
+is not installed - `am force-stop` answers the same way for a typo as for a real
+package, so the step checks first.
+
+`clearState` wipes the app's data and stops it, so the next step has to be a
+`launch` - the app is not running after it. It also drops the runtime
+permissions the app was granted, which is the point worth planning for: after it
+the app is in its first-launch state, permission dialogs included, and a flow
+that used to run past them has to dismiss them again.
+
+`clearState` is Android-only for now (`pm clear`), and a flow that reaches it on
+iOS fails rather than doing nothing: reinstall the app between flows there.
+`stopApp` works on both, and on iOS an app that was not running is a warning,
+not a failure - that is the state the step exists to reach. On iOS that warning
+currently covers any refusal from `simctl`, a simulator that is not booted
+included, so read a warning there as "not stopped, reason unknown". The iOS half
+of both steps has not been exercised on a Mac.
 
 ## CI (every PR)
 
