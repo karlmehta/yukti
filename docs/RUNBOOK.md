@@ -78,10 +78,10 @@ assertions and are unchanged: they still match a substring and fold case, and
 they rank the candidates. Naming a button is not a statement about its
 capitalisation; asserting one is.
 
-`match` belongs to the assertion, so `assertText` is the only step that takes
-it. Any other step given a `match` fails instead of ignoring it: a step that
-reads as exact while the verb folds case is a suite that is weaker than it
-looks.
+`match` belongs to the assertion, so `assertText` and the wait that follows the
+same rules - `waitFor`, below - are the only steps that take it. Any other step
+given a `match` fails instead of ignoring it: a step that reads as exact while
+the verb folds case is a suite that is weaker than it looks.
 
 "On screen" means inside the window and of non-zero size. It does not model
 overlap: a label underneath a modal or an alert is still reported as on screen,
@@ -134,6 +134,47 @@ reports no failure when the label is never found: it swipes eight times and
 returns a miss, and the step passes. `type` on iOS sends the characters one by
 one and never reads a status, so it cannot fail either. Neither belongs in a
 flow as its checkpoint - put an `assertText` or an `assertId` after them.
+
+### Waiting for a screen
+
+`wait` is a sleep and nothing else. A flow that synchronises with sleeps has two
+bad options: sleep too little and go red at random, or sleep too much and pay
+that on every run of every flow.
+
+`waitFor` polls for the element and fails when it does not arrive:
+
+```json
+{"do":"waitFor","value":"Weight History","timeout":15},
+{"do":"waitForId","value":"weight_card"},
+{"do":"waitFor","value":"items in cart","match":"contains"}
+```
+
+`timeout` is whole seconds and defaults to 10; a timeout that is not a positive
+whole number fails the step rather than falling back to the default. The match
+rules are the ones `assertText` uses - the whole label, case as written, with
+`"match":"contains"` available - so a wait and the assertion after it agree on
+what they are looking at. `waitForId` matches the id exactly, and like every
+step but those two it refuses a `match` key instead of ignoring it.
+
+`waitFor` does **not** scroll: it waits for what the screen is about to show,
+not for what sits below the fold. Keep `scrollToText` for the fold, and note
+that it is not a wait - it swipes between its tries, so on a screen that is
+still loading it scrolls the content away instead of waiting for it.
+
+A screen that cannot be read is not the same as an element that has not arrived.
+The poll keeps going while the screen is unreadable, and the message on timeout
+says which of the two happened.
+
+The step sees only what outlives one poll - the sleep plus the lookup itself,
+about a second on a device. Wait for a state that stays, not for something that
+flashes: a toast that shows for two seconds will be caught some runs and missed
+in others.
+
+One consequence of following the assertion's rules: `waitFor` and the locator
+after it do not compare the same way. `waitFor "Log Water"` wants that whole
+label, case as written, while `tapText "log water"` matches a substring, folds
+case, and also looks at the element's id. Write the label the way the screen
+shows it and both are happy.
 
 ## CI (every PR)
 

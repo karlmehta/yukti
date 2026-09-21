@@ -98,7 +98,9 @@ A flow is `{ "name": "...", "steps": [ ... ] }`. Common step verbs:
 | `{"do":"assertText","value":"Logged"}` | verify the text is on screen (the test's checkpoint — perceivable text only, no scroll). Matches the whole label, case as written; add `"match":"contains"` for a partial match |
 | `{"do":"assertId","value":"weight_card"}` | verify an element with this id is on screen |
 | `{"do":"screenshot","value":"x.png"}` | capture for review |
-| `{"do":"wait","value":3}` / `{"do":"dismiss"}` | settle / dismiss a modal |
+| `{"do":"waitFor","value":"Weight History","timeout":15}` | poll until the text is on screen, fail on timeout (seconds, default 10; no scrolling). Matches like `assertText`, `"match":"contains"` included |
+| `{"do":"waitForId","value":"weight_card"}` | the same wait, matching the id exactly |
+| `{"do":"wait","value":3}` / `{"do":"dismiss"}` | sleep a fixed time (prefer `waitFor`) / dismiss a modal |
 | `{"do":"tap","x":201,"y":812}` | tap raw coordinates (last resort — brittle) |
 
 A step that fails now fails the flow, and the message names the step. Two

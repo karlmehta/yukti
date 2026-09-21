@@ -470,6 +470,35 @@ assert_text(){ local q="${1:-}" m="${2:-exact}" xy
 tap_id(){ local q="${1:-}"; [ -n "$q" ] || die "tapId needs a non-empty id"; local xy; xy="$(find_el "$q" id)" || die "cannot read the screen - see the error above"; [ -n "$xy" ] || die "no element with id '$q'"; tap $xy; }
 assert_id(){ local q="${1:-}"; [ -n "$q" ] || die "assertId needs a non-empty id"; local xy; xy="$(find_el "$q" id)" || die "assert FAILED: cannot read the screen - see the error above"; [ -n "$xy" ] && ok "assert id: '$q' on screen at $xy" || die "assert FAILED: no element with id '$q'"; }
 wait_s(){ sleep "${1:-2}"; }
+# `wait` is a sleep, and a sleep is the wrong tool for a screen that loads its
+# content: too short and the flow goes red at random, too long and every run
+# pays for it, on every flow. scrollToText retries, but it SCROLLS between the
+# tries - on a screen that is still loading it swipes the content away instead
+# of waiting for it.
+#
+# waitFor polls the same lookup the taps and the oracle use, and it never
+# scrolls. The timeout is the failure: a screen that never arrives is a red
+# step, not a green one and not an eight-swipe detour.
+#
+# An unreadable screen is not "not there yet". The poll keeps going while the
+# screen cannot be read, and the timeout then says which of the two happened -
+# the distinction the lookup verbs already make.
+wait_for(){ local q="${1:-}" t="${2:-10}" m="${3:-exact}" mode="${4:-assert}" xy readable=1 t0 el label
+  [ -n "$q" ] || die "waitFor needs a non-empty value"
+  case "$t" in ''|*[!0-9]*|0) die "waitFor: timeout must be a whole number of seconds greater than zero, got '$t'";; esac
+  case "$m" in exact|contains) ;; *) die "waitFor: unknown match '$m' - use exact or contains";; esac
+  [ "$mode" = id ] && label="waitFor id" || label="waitFor ($m match)"
+  say "$label: up to ${t}s for '$q'"
+  t0=$SECONDS
+  while :; do
+    if xy="$(find_el "$q" "$mode" "$m")"; then readable=1
+      [ -n "$xy" ] && { el=$((SECONDS - t0)); ok "$label: '$q' on screen at $xy after ${el}s"; return 0; }
+    else readable=0; fi
+    [ $((SECONDS - t0)) -lt "$t" ] || break
+    sleep 0.5
+  done
+  [ "$readable" = 1 ] || die "$label FAILED: the screen could not be read while waiting ${t}s for '$q' - see the error above"
+  die "$label FAILED: '$q' not on screen after ${t}s"; }
 scroll(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { apaths; if [ "${1:-down}" = up ]; then adb shell input swipe 200 300 200 700 300; else adb shell input swipe 200 700 200 300 300; fi; return; }
   paths; if [ "${1:-down}" = up ]; then idb ui swipe --udid "$(U)" 200 320 200 720; else idb ui swipe --udid "$(U)" 200 720 200 320; fi; }
 # a11y reports FULL-CONTENT coords; taps need ON-SCREEN coords. Scroll a label into the viewport.
@@ -680,15 +709,16 @@ PY
 }
 
 # ── deterministic flow runner: a JSON list of steps ──────────────────────────
-# step keys: launch|wait|screenshot|tap[x,y]|tapText|optionalTapText|tapId|type|
-#            clearText[x,y]|scroll|scrollToText|dismiss|assertText[match]|assertId
+# step keys: launch|wait|waitFor[timeout,match]|waitForId[timeout]|screenshot|
+#            tap[x,y]|tapText|optionalTapText|tapId|type|clearText[x,y]|scroll|
+#            scrollToText|dismiss|assertText[match]|assertId
 #
 # The same names the dispatcher inside flow() knows, as a list a check can read.
 # The dispatcher cannot answer "do you know this name?" without running the
 # step, and one check below has to ask before the step runs. A verb added to the
 # `case` has to be added here too: nothing but this comment ties the two, and
 # the `*)` arm of the dispatcher stays as the backstop.
-FLOW_VERBS="launch wait screenshot tap tapText optionalTapText tapId type clearText scroll scrollToText dismiss assertText assertId"
+FLOW_VERBS="launch wait waitFor waitForId screenshot tap tapText optionalTapText tapId type clearText scroll scrollToText dismiss assertText assertId"
 flow(){
   local f="${1:?usage: yukti flow <file.json>}" st; [ -f "$f" ] || die "no flow file '$f'"; paths
   say "running flow: $f"
@@ -702,7 +732,7 @@ flow(){
   # still reported PASS). Reading `<&3` from a process substitution also keeps
   # the loop in THIS shell (not a pipe subshell), so a step's `die` (exit 1)
   # aborts the whole flow with a non-zero status instead of being lost.
-  while IFS=$'\x1f' read -r do_ val x y mtch <&3; do
+  while IFS=$'\x1f' read -r do_ val x y mtch tmo <&3; do
       # Record the step BEFORE running it and again once it survived: the one
       # step that has a start and no end is the step that failed, and that is
       # the single fact a report cannot reconstruct from console text.
@@ -718,12 +748,14 @@ flow(){
       # it may be given it. A locator that ignored the key told the flow author
       # it was honoured: tapText folds case and matches a substring whatever the
       # step says, and a suite written on that belief is weaker than it reads.
-      [ -z "$mtch" ] || case "$do_" in assertText) ;; *) die "step $FLOW_IDX '$do_' does not take a \"match\" - only assertText does";; esac
+      [ -z "$mtch" ] || case "$do_" in assertText|waitFor) ;; *) die "step $FLOW_IDX '$do_' does not take a \"match\" - only assertText and waitFor do";; esac
       set +e   # a step must not abort the loop by itself: the status is read
                # right after the dispatcher, so the failure is attributed to
                # THIS step and the flow stops with a message.
       case "$do_" in
         wait)        wait_s "${val:-2}";;
+        waitFor)     wait_for "$val" "${tmo:-10}" "${mtch:-exact}" assert;;
+        waitForId)   wait_for "$val" "${tmo:-10}" exact id;;
         # shot runs in a substitution, so its own die kills only that subshell:
         # the step used to report PASS with an empty path, whether the name was
         # refused or screencap itself failed. The status has to be checked here,
@@ -761,7 +793,7 @@ flow(){
       case "$do_" in dismiss|optionalTapText) st=0;; esac
       [ "$st" -eq 0 ] || die "step $FLOW_IDX '$do_' failed (exit $st)"
       printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' "$FLOW_IDX" "$do_" "$val" "$FLOW_S0" "$(now)" "$FLOW_ART" >> "$FLOW_REC"
-  done 3< <("$PY" -c 'import json,sys,os;[print("\x1f".join([s.get("do",""),os.path.expandvars(str(s.get("value",""))),str(s.get("x","")),str(s.get("y","")),str(s.get("match",""))])) for s in json.load(open(sys.argv[1]))["steps"]]' "$f")
+  done 3< <("$PY" -c 'import json,sys,os;[print("\x1f".join([s.get("do",""),os.path.expandvars(str(s.get("value",""))),str(s.get("x","")),str(s.get("y","")),str(s.get("match","")),str(s.get("timeout",""))])) for s in json.load(open(sys.argv[1]))["steps"]]' "$f")
   ok "flow complete: $f"
 }
 
@@ -817,11 +849,14 @@ ${B}yukti v$YUKTI_VERSION${R} — YUKTI — smart mobile-app QA automation for R
   yukti scroll <up|down>   scroll the screen · yukti scroll-to "<label>" scroll a label into view
   yukti dismiss             auto-dismiss common modals (Not Now / Skip / OK / Close…)
   yukti assert "<text>"     assert the text is on screen (perceivable text only, no scroll)
+  yukti wait-for "<text>" [s] [exact|contains]
+                            poll until the text is on screen, fail on timeout (default 10s)
   yukti tap-id "<id>"       tap the element with this a11y id / resource-id segment
   yukti assert-id "<id>"    assert an element with this id is on screen
 
-  flow steps: wait · screenshot · tap · tapText · optionalTapText · tapId · scroll · scrollToText · dismiss · type · clearText · assertText · assertId · launch
+  flow steps: wait · waitFor · waitForId · screenshot · tap · tapText · optionalTapText · tapId · scroll · scrollToText · dismiss · type · clearText · assertText · assertId · launch
               assertText matches the whole label as written; "match":"contains" asks for a substring
+              waitFor polls for an element and fails on timeout ("timeout": seconds, default 10); it never scrolls
   config: \$YUKTI_CONFIG or ./yukti.config.json  ·  cross-platform: set variant "platform":"android"
 EOF
 }
@@ -884,6 +919,7 @@ case "$cmd" in
   assert) assert_text "$@";;
   "tap-id"|tapId) tap_id "$@";;
   "assert-id"|assertId) assert_id "$@";;
+  "wait-for"|waitFor) wait_for "$@";;
   ""|-h|--help|help) usage;;
   *) die "unknown command '$cmd' — see 'yukti help'";;
 esac
