@@ -127,7 +127,11 @@ import sys,re,html
 # break, and a two-line caption would otherwise be assertable only by writing the
 # line break into the flow file.
 norm=lambda s: " ".join(s.split())
-q=norm(sys.argv[1].lower()); mode=(sys.argv[2] if len(sys.argv)>2 else "text")
+# The oracle compares the query as written; the locator modes keep folding case,
+# because a flow author naming a button does not mean its capitalisation.
+q_raw=norm(sys.argv[1]); q=q_raw.lower()
+mode=(sys.argv[2] if len(sys.argv)>2 else "text")
+match=(sys.argv[3] if len(sys.argv)>3 else "exact")
 xml=sys.stdin.read()
 # Screen rect = the bounds of the ROOT node, i.e. the first bounds= in the dump.
 # Anything whose centre falls outside it is scrolled away or parked off-screen:
@@ -152,7 +156,8 @@ for m in re.finditer(r"<node\b[^>]*>", xml):
         # and assertText "amp" passes on any screen with an ampersand - markup
         # matching through the back door.
         mm=re.search(n+r"=\"([^\"]*)\"",tag); return norm(html.unescape(mm.group(1))) if mm else ""
-    text=a("text").lower(); desc=a("content-desc").lower()
+    text_raw=a("text"); desc_raw=a("content-desc")
+    text=text_raw.lower(); desc=desc_raw.lower()
     rid=a("resource-id"); rid_seg=rid.split("/")[-1].lower()  # com.app:id/email -> email
     cls=a("class"); editable=cls.endswith("EditText")
     clickable=a("clickable")=="true"; focusable=a("focusable")=="true"
@@ -166,7 +171,16 @@ for m in re.finditer(r"<node\b[^>]*>", xml):
         # An assertion is the test oracle: it may only match what a person can
         # perceive - visible text or the accessibility label. Matching a
         # resource-id, a class name or an attribute lets a step pass on markup.
-        if not (q and (q in text or q in desc)): continue
+        #
+        # The whole label, and the case as written. A substring match made a
+        # false green cheap: assertText "net" passed on a screen whose only
+        # relevant row said "Network & internet", and a check that passes on
+        # three letters of another sentence has not checked anything. A flow
+        # that does want the old rule says so: {"match":"contains"}.
+        if match=="contains":
+            if not (q and (q in text or q in desc)): continue
+        else:
+            if not (q_raw and q_raw in (text_raw, desc_raw)): continue
         score=10
     else:
         if not (q and (q in rid_seg or q in text or q in desc)): continue
@@ -187,7 +201,7 @@ for m in re.finditer(r"<node\b[^>]*>", xml):
     if SX2>SX1 and SY2>SY1 and not (SX1<=cx<SX2 and SY1<=cy<SY2): continue  # off-screen
     best=(cx,cy); best_score=score
 if best: print(best[0],best[1])
-' "$1" "${2:-text}"; }
+' "$1" "${2:-text}" "${3:-exact}"; }
 atap(){ apaths; adb shell input tap "$1" "$2"; }
 atype(){ apaths; local s="$1" q
   # Quote for the ON-DEVICE shell so metacharacters can't expand. Unquoted, a *
@@ -315,14 +329,17 @@ ui(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { aui; return; }; idb_ready; loc
   # empty string made every caller read it as "the element is not there". The
   # Android path already fails here; this is the same rule for iOS.
   die "idb returned no accessibility tree after 4 tries - is the simulator booted?"; }
-find_el(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { afind "$1" "${2:-text}"; return; }; paths; ui | "$PY" -c '
+find_el(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { afind "$1" "${2:-text}" "${3:-exact}"; return; }; paths; ui | "$PY" -c '
 import json,sys
 # Rank candidates instead of the first AXLabel/AXValue substring hit: honor the
 # accessibility identifier (AXUniqueId) and prefer the actual field/control over
 # a nearby static caption — same bug the Android path had ("Email" hit the "or
 # use email" caption; "Password" hit the "Forgot Password?" link).
 norm=lambda s: " ".join(s.split())   # a two-line caption is one query with spaces
-q=norm(sys.argv[1].lower()); mode=(sys.argv[2] if len(sys.argv)>2 else "text")
+# Same rule as the Android path: the oracle compares as written, locators fold case.
+q_raw=norm(sys.argv[1]); q=q_raw.lower()
+mode=(sys.argv[2] if len(sys.argv)>2 else "text")
+match=(sys.argv[3] if len(sys.argv)>3 else "exact")
 raw=sys.stdin.read().strip()
 if not raw: sys.exit(0)
 els=json.loads(raw)
@@ -369,9 +386,9 @@ def centre(e):
 if mode in ("assert","id") and not (SW>0 and SH>0): sys.exit(0)
 best=None; best_score=-1
 for e in els:
-    label=norm(str(e.get("AXLabel") or "").lower())
-    value=norm(str(e.get("AXValue") or "").lower())
-    title=norm(str(e.get("title") or "").lower())
+    label_raw=norm(str(e.get("AXLabel") or "")); label=label_raw.lower()
+    value_raw=norm(str(e.get("AXValue") or "")); value=value_raw.lower()
+    title_raw=norm(str(e.get("title") or "")); title=title_raw.lower()
     ident=str(e.get("AXUniqueId") or e.get("identifier") or "").lower()
     t=(str(e.get("type") or "")+" "+str(e.get("role_description") or "")).lower()
     editable=("textfield" in t) or ("securetext" in t) or ("text field" in t) or ("textview" in t)
@@ -386,8 +403,11 @@ for e in els:
         print(xy[0],xy[1]); sys.exit(0)
     if mode=="assert":
         # See the Android path: an assertion matches perceivable text only, on an
-        # element that is really on screen - real size, centre inside the window.
-        if not (q and (q in label or q in value or q in title)): continue
+        # element that is really on screen - real size, centre inside the window,
+        # and the whole label as written unless the flow asks for "contains".
+        if match=="contains":
+            if not (q and (q in label or q in value or q in title)): continue
+        elif not (q_raw and q_raw in (label_raw, value_raw, title_raw)): continue
         xy=centre(e)
         if xy is None: continue
         print(xy[0],xy[1]); sys.exit(0)
@@ -410,7 +430,7 @@ for e in els:
     if score<=best_score: continue
     best=(int(x+w/2),int(y+h/2)); best_score=score
 if best: print(best[0],best[1])
-' "$1" "${2:-text}"; }
+' "$1" "${2:-text}" "${3:-exact}"; }
 tap(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { atap "$1" "$2"; return; }; paths; idb ui tap --udid "$(U)" "${1:?x}" "${2:?y}"; }
 # A lookup has three outcomes, not two: coordinates, "no such element", and
 # "the screen could not be read at all". The third one used to arrive as the
@@ -431,7 +451,12 @@ clear_field(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { aclear "$1" "$2"; ret
 # somewhere in the dump. `ui | grep` matched invisible nodes, off-screen rows and
 # attribute values, so an assertText passed on a screen that never opened. Reuse
 # the same lookup taps use: relevance, ranking and real non-zero bounds.
-assert_text(){ local xy; xy="$(find_el "$1" assert)" || die "assert FAILED: cannot read the screen - see the error above"; [ -n "$xy" ] && ok "assert: '$1' on screen at $xy" || die "assert FAILED: '$1' not on screen"; }
+# The match rule is part of the assertion, so the flow states it and the log
+# repeats it: a green line that does not say how it matched cannot be read back.
+assert_text(){ local q="${1:?text}" m="${2:-exact}" xy
+  case "$m" in exact|contains) ;; *) die "assertText: unknown match '$m' - use exact or contains";; esac
+  xy="$(find_el "$q" assert "$m")" || die "assert FAILED: cannot read the screen - see the error above"
+  [ -n "$xy" ] && ok "assert ($m): '$q' on screen at $xy" || die "assert FAILED ($m match): '$q' not on screen"; }
 # Explicit-selector variants. tapText/assertText match on visible text and can
 # land on a neighbouring caption; these two take an accessibility id / resource-id
 # segment and match it exactly, or fail. An empty id is a failure, never a match:
@@ -651,7 +676,7 @@ PY
 
 # ── deterministic flow runner: a JSON list of steps ──────────────────────────
 # step keys: launch|wait|screenshot|tap[x,y]|tapText|optionalTapText|tapId|type|
-#            clearText[x,y]|scroll|scrollToText|dismiss|assertText|assertId
+#            clearText[x,y]|scroll|scrollToText|dismiss|assertText[match]|assertId
 flow(){
   local f="${1:?usage: yukti flow <file.json>}" st; [ -f "$f" ] || die "no flow file '$f'"; paths
   say "running flow: $f"
@@ -665,7 +690,7 @@ flow(){
   # still reported PASS). Reading `<&3` from a process substitution also keeps
   # the loop in THIS shell (not a pipe subshell), so a step's `die` (exit 1)
   # aborts the whole flow with a non-zero status instead of being lost.
-  while IFS=$'\x1f' read -r do_ val x y <&3; do
+  while IFS=$'\x1f' read -r do_ val x y mtch <&3; do
       # Record the step BEFORE running it and again once it survived: the one
       # step that has a start and no end is the step that failed, and that is
       # the single fact a report cannot reconstruct from console text.
@@ -692,7 +717,7 @@ flow(){
         dismiss)     dismiss;;
         clearText)   clear_field $(scale_xy "$x" "$y");;
         type)        say "type ${#val} chars"; type_str "$val";;
-        assertText)  assert_text "$val";;
+        assertText)  assert_text "$val" "${mtch:-exact}";;
         tapId)       say "tap id '$val'"; tap_id "$val";;
         assertId)    assert_id "$val";;
         launch)      launch "$val";;
@@ -714,7 +739,7 @@ flow(){
       case "$do_" in dismiss|optionalTapText) st=0;; esac
       [ "$st" -eq 0 ] || die "step $FLOW_IDX '$do_' failed (exit $st)"
       printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' "$FLOW_IDX" "$do_" "$val" "$FLOW_S0" "$(now)" "$FLOW_ART" >> "$FLOW_REC"
-  done 3< <("$PY" -c 'import json,sys,os;[print("\x1f".join([s.get("do",""),os.path.expandvars(str(s.get("value",""))),str(s.get("x","")),str(s.get("y",""))])) for s in json.load(open(sys.argv[1]))["steps"]]' "$f")
+  done 3< <("$PY" -c 'import json,sys,os;[print("\x1f".join([s.get("do",""),os.path.expandvars(str(s.get("value",""))),str(s.get("x","")),str(s.get("y","")),str(s.get("match",""))])) for s in json.load(open(sys.argv[1]))["steps"]]' "$f")
   ok "flow complete: $f"
 }
 
@@ -774,6 +799,7 @@ ${B}yukti v$YUKTI_VERSION${R} — YUKTI — smart mobile-app QA automation for R
   yukti assert-id "<id>"    assert an element with this id is on screen
 
   flow steps: wait · screenshot · tap · tapText · optionalTapText · tapId · scroll · scrollToText · dismiss · type · clearText · assertText · assertId · launch
+              assertText matches the whole label as written; "match":"contains" asks for a substring
   config: \$YUKTI_CONFIG or ./yukti.config.json  ·  cross-platform: set variant "platform":"android"
 EOF
 }

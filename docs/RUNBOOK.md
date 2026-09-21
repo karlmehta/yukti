@@ -60,6 +60,24 @@ screen right now - real size, centre inside the window. It never matches a
 resource-id, a class name or any other markup, and it does **not** scroll: put
 `scrollToText` in front of it when the target sits below the fold.
 
+The match is the **whole label, case as written**. Leading and trailing spaces
+do not count, and a two-line caption reads as one line. A partial match is
+available, and has to be asked for:
+
+```json
+{"do":"assertText","value":"Network & internet"},
+{"do":"assertText","value":"internet","match":"contains"}
+```
+
+`"match":"contains"` folds case as well, which is what makes it weak: `net`
+then passes on a screen that only says `Network & internet`. Use it where a
+label carries a value that changes, and prefer the default everywhere else.
+
+The locator verbs - `tapText`, `optionalTapText`, `scrollToText` - are not
+assertions and are unchanged: they still match a substring and fold case, and
+they rank the candidates. Naming a button is not a statement about its
+capitalisation; asserting one is.
+
 "On screen" means inside the window and of non-zero size. It does not model
 overlap: a label underneath a modal or an alert is still reported as on screen,
 on both platforms, because the dialog and the label live in the same tree.
