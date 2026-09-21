@@ -104,7 +104,8 @@ A flow is `{ "name": "...", "steps": [ ... ] }`. Common step verbs:
 A step that fails now fails the flow, and the message names the step. Two
 exceptions stay, and they are narrow: `dismiss` and `optionalTapText` tolerate a
 label that is not on screen, but not a device that refuses the tap. An unknown
-verb, an unknown `"match"` value and a non-numeric `wait` stop the flow as well.
+verb, an unknown `"match"` value, a `"match"` on a step that does not take one,
+and a non-numeric `wait` stop the flow as well.
 
 Save it in `.yukti/flows/` and it's part of the suite the next Run All.
 

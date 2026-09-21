@@ -78,6 +78,11 @@ assertions and are unchanged: they still match a substring and fold case, and
 they rank the candidates. Naming a button is not a statement about its
 capitalisation; asserting one is.
 
+`match` belongs to the assertion, so `assertText` is the only step that takes
+it. Any other step given a `match` fails instead of ignoring it: a step that
+reads as exact while the verb folds case is a suite that is weaker than it
+looks.
+
 "On screen" means inside the window and of non-zero size. It does not model
 overlap: a label underneath a modal or an alert is still reported as on screen,
 on both platforms, because the dialog and the label live in the same tree.
@@ -113,10 +118,11 @@ inside a verb could stop a run - `adb` refusing a tap, a launch of a package
 that is not installed, a `clearText` on a dead device all reported PASS, and the
 JUnit file said `failures="0"`.
 
-Three more ways a flow stops, all of them typos that used to pass:
+Four more ways a flow stops, all of them typos that used to pass:
 
 - a step name the runner does not know;
 - a `"match"` value that is neither `exact` nor `contains`;
+- a `"match"` key on a step that does not take one;
 - a `wait` whose value is not a number - `sleep` refuses it.
 
 `dismiss` and `optionalTapText` keep their exception, and it is narrow: a label

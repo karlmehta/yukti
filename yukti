@@ -682,6 +682,13 @@ PY
 # ── deterministic flow runner: a JSON list of steps ──────────────────────────
 # step keys: launch|wait|screenshot|tap[x,y]|tapText|optionalTapText|tapId|type|
 #            clearText[x,y]|scroll|scrollToText|dismiss|assertText[match]|assertId
+#
+# The same names the dispatcher inside flow() knows, as a list a check can read.
+# The dispatcher cannot answer "do you know this name?" without running the
+# step, and one check below has to ask before the step runs. A verb added to the
+# `case` has to be added here too: nothing but this comment ties the two, and
+# the `*)` arm of the dispatcher stays as the backstop.
+FLOW_VERBS="launch wait screenshot tap tapText optionalTapText tapId type clearText scroll scrollToText dismiss assertText assertId"
 flow(){
   local f="${1:?usage: yukti flow <file.json>}" st; [ -f "$f" ] || die "no flow file '$f'"; paths
   say "running flow: $f"
@@ -702,6 +709,16 @@ flow(){
       FLOW_IDX=$((FLOW_IDX+1)); FLOW_S0="$(now)"; FLOW_ART=""
       printf '%s\x1f%s\x1f%s\x1f%s\n' "$FLOW_IDX" "$do_" "$val" "$FLOW_S0" > "$FLOW_CUR"
       : > "$FLOW_ERR"
+      # The name first, the keys after it, because the order decides what a typo
+      # hears. A step named `tpText` carrying a `match` would otherwise be told
+      # that `tpText` does not take the key - a message that asserts the verb
+      # exists and costs the author a second run to find the real mistake.
+      case " $FLOW_VERBS " in *" $do_ "*) ;; *) die "unknown step '$do_' - check the flow file";; esac
+      # `match` belongs to the assertion contract, so only the verb that reads
+      # it may be given it. A locator that ignored the key told the flow author
+      # it was honoured: tapText folds case and matches a substring whatever the
+      # step says, and a suite written on that belief is weaker than it reads.
+      [ -z "$mtch" ] || case "$do_" in assertText) ;; *) die "step $FLOW_IDX '$do_' does not take a \"match\" - only assertText does";; esac
       set +e   # a step must not abort the loop by itself: the status is read
                # right after the dispatcher, so the failure is attributed to
                # THIS step and the flow stops with a message.
