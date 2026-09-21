@@ -457,7 +457,8 @@ clear_field(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { aclear "$1" "$2"; ret
 # the same lookup taps use: relevance, ranking and real non-zero bounds.
 # The match rule is part of the assertion, so the flow states it and the log
 # repeats it: a green line that does not say how it matched cannot be read back.
-assert_text(){ local q="${1:?text}" m="${2:-exact}" xy
+assert_text(){ local q="${1:-}" m="${2:-exact}" xy
+  [ -n "$q" ] || die "assertText needs a non-empty value"
   case "$m" in exact|contains) ;; *) die "assertText: unknown match '$m' - use exact or contains";; esac
   xy="$(find_el "$q" assert "$m")" || die "assert FAILED: cannot read the screen - see the error above"
   [ -n "$xy" ] && ok "assert ($m): '$q' on screen at $xy" || die "assert FAILED ($m match): '$q' not on screen"; }
