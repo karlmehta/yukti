@@ -176,6 +176,42 @@ label, case as written, while `tapText "log water"` matches a substring, folds
 case, and also looks at the element's id. Write the label the way the screen
 shows it and both are happy.
 
+### Starting a flow from a known state
+
+A flow inherits whatever the flow before it left behind: the session, the
+onboarding it already dismissed, cached content, a half-filled form. That is
+what makes a flow green on its own and red in the suite, and the report cannot
+explain it. `launch` does not drop that state - on Android it goes through
+`monkey`, which brings a running app to the front - and `install` keeps the data
+of the previous install on purpose.
+
+```json
+{"do":"stopApp","value":"qa"},
+{"do":"clearState","value":"qa"},
+{"do":"launch","value":"qa"}
+```
+
+Both steps take the **variant name**, the way `launch` does, so the package and
+the bundle id come from `yukti.config.json` and never from the flow file.
+
+`stopApp` force-stops the app, and fails when the package named by the variant
+is not installed - `am force-stop` answers the same way for a typo as for a real
+package, so the step checks first.
+
+`clearState` wipes the app's data and stops it, so the next step has to be a
+`launch` - the app is not running after it. It also drops the runtime
+permissions the app was granted, which is the point worth planning for: after it
+the app is in its first-launch state, permission dialogs included, and a flow
+that used to run past them has to dismiss them again.
+
+`clearState` is Android-only for now (`pm clear`), and a flow that reaches it on
+iOS fails rather than doing nothing: reinstall the app between flows there.
+`stopApp` works on both, and on iOS an app that was not running is a warning,
+not a failure - that is the state the step exists to reach. On iOS that warning
+currently covers any refusal from `simctl`, a simulator that is not booted
+included, so read a warning there as "not stopped, reason unknown". The iOS half
+of both steps has not been exercised on a Mac.
+
 ## CI (every PR)
 
 Copy `.github/workflows/yukti-qa.yml` into the app repo, add `TEST_EMAIL` /

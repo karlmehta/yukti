@@ -317,6 +317,69 @@ install(){ local V="${1:?variant}"; [ "$(plat_of "$V")" = android ] && { install
   xcrun simctl install "$u" "$a" && ok "installed $(basename "$a")"; }
 launch(){ local V="${1:?variant}"; [ "$(plat_of "$V")" = android ] && { launch_android "$V"; return; }; paths; local u b; u="$(cat "$(udid_file)")"; b="$(cfg variants.$V.bundleId)"
   xcrun simctl launch "$u" "$b" && ok "launched $b"; }
+# A flow inherits whatever the flow before it left behind - the session, the
+# onboarding, cached content, a half-filled form. The same flow is then green
+# alone and red in a suite, and nothing in the report says why. Nothing in the
+# vocabulary dropped that state: `launch` on Android goes through `monkey`,
+# which brings a RUNNING app to the front, and `install` uses `adb install -r`,
+# which keeps the data of the previous install on purpose.
+#
+# Both steps take the variant name, the way `launch` does, so the package and
+# the bundle id come from the config and never from the flow file.
+# The platform of a step is the platform of the RUN. plat_of() is not that: it
+# answers ios whenever the variant does not name a platform of its own, and a
+# config that names the platform once at the top level is legal - so a step
+# asking plat_of would take the iOS path in the middle of an Android run. The
+# run's platform is already resolved at startup (env, then the config, then the
+# ios default), which is what every drive primitive reads. Honour a variant that
+# names its own platform, and otherwise follow the run.
+step_platform(){ local V="$1" p; p="$(cfg "variants.$V.platform")"; printf '%s' "${p:-$YUKTI_PLATFORM}"; }
+stop_app(){ local V="${1:-}" plat; [ -n "$V" ] || die "stopApp needs a variant name - the one used in $CONFIG"
+  plat="$(step_platform "$V")"
+  if [ "$plat" = android ]; then apaths; local pkg installed; pkg="$(cfg variants.$V.package)"
+    [ -n "$pkg" ] || die "stopApp: variant '$V' has no 'package' in $CONFIG"
+    # `am force-stop` prints nothing and exits zero for a package that is not
+    # installed, exactly as for one that is. Without this probe the step reports
+    # a stop that never happened every time the config carries a typo.
+    installed="$(adb shell pm list packages 2>/dev/null | tr -d '\r')" || true
+    # An empty list means the device did not answer, not that the app is gone:
+    # without this the step blames the package name for an unreachable device
+    # and sends the reader to fix the config.
+    [ -n "$installed" ] || die "stopApp: could not read the package list from the device"
+    case "
+$installed
+" in *"
+package:$pkg
+"*) ;; *) die "stopApp: '$pkg' is not installed on the device";; esac
+    adb shell am force-stop "$pkg" || die "stopApp: force-stop failed for '$pkg'"
+    ok "stopped $pkg"; return; fi
+  paths; local u b; u="$(cat "$(udid_file)" 2>/dev/null)" || true
+  [ -n "$u" ] || die "stopApp: no simulator recorded in $(udid_file) - run 'yukti up <variant>' first"
+  b="$(cfg variants.$V.bundleId)"
+  [ -n "$b" ] || die "stopApp: variant '$V' has no 'bundleId' in $CONFIG"
+  # simctl refuses when the app is not running, and "not running" is the state
+  # this step exists to reach: that refusal is a warning, not a failure.
+  # Any refusal from simctl reads as "it was not running" here, including a
+  # simulator that is not booted. The narrower form needs a Mac to write and to
+  # check; the runbook names the gap rather than implying it is closed.
+  xcrun simctl terminate "$u" "$b" 2>/dev/null && ok "stopped $b" || warn "stopApp: '$b' was not running (or the simulator refused)"; }
+clear_state(){ local V="${1:-}" plat; [ -n "$V" ] || die "clearState needs a variant name - the one used in $CONFIG"
+  plat="$(step_platform "$V")"
+  [ "$plat" = android ] || die "clearState is Android-only for now - see RUNBOOK; on iOS reinstall the app between flows"
+  apaths; local pkg out; pkg="$(cfg variants.$V.package)"
+  [ -n "$pkg" ] || die "clearState: variant '$V' has no 'package' in $CONFIG"
+  # `pm clear` says what happened in words, and its exit status does not agree
+  # across platform versions: "Failed" comes back with status 1 on API 35 and
+  # with status 0 elsewhere. The word is the evidence, so the step reads the
+  # word, anchored at the start of the answer - stderr lands in the same string
+  # and a warning that merely contains "Success" must not pass for one. `|| true`
+  # is there for one reason: under `set -e` the step would otherwise die before
+  # reading the answer, with no message at all.
+  out="$(adb shell pm clear "$pkg" 2>&1 | tr -d '\r')" || true
+  case "$out" in
+    Success*) ok "cleared $pkg - the app is stopped now, launch it before the next step";;
+    *) die "clearState: pm clear refused '$pkg': ${out:-no output}";;
+  esac; }
 up(){ local V="${1:?usage: yukti up <variant>}"; export YUKTI_PLATFORM="$(plat_of "$V")"; build "$V"; boot; install "$V"; launch "$V"; ok "up: '$V' running — drive with 'yukti shot' / 'yukti flow'"; }
 
 # ── drive primitives (used by flows AND by AI agents) ────────────────────────
@@ -709,7 +772,7 @@ PY
 }
 
 # ── deterministic flow runner: a JSON list of steps ──────────────────────────
-# step keys: launch|wait|waitFor[timeout,match]|waitForId[timeout]|screenshot|
+# step keys: launch|stopApp|clearState|wait|waitFor[timeout,match]|waitForId[timeout]|screenshot|
 #            tap[x,y]|tapText|optionalTapText|tapId|type|clearText[x,y]|scroll|
 #            scrollToText|dismiss|assertText[match]|assertId
 #
@@ -718,7 +781,7 @@ PY
 # step, and one check below has to ask before the step runs. A verb added to the
 # `case` has to be added here too: nothing but this comment ties the two, and
 # the `*)` arm of the dispatcher stays as the backstop.
-FLOW_VERBS="launch wait waitFor waitForId screenshot tap tapText optionalTapText tapId type clearText scroll scrollToText dismiss assertText assertId"
+FLOW_VERBS="launch stopApp clearState wait waitFor waitForId screenshot tap tapText optionalTapText tapId type clearText scroll scrollToText dismiss assertText assertId"
 flow(){
   local f="${1:?usage: yukti flow <file.json>}" st; [ -f "$f" ] || die "no flow file '$f'"; paths
   say "running flow: $f"
@@ -775,6 +838,8 @@ flow(){
         tapId)       say "tap id '$val'"; tap_id "$val";;
         assertId)    assert_id "$val";;
         launch)      launch "$val";;
+        stopApp)     stop_app "$val";;
+        clearState)  clear_state "$val";;
         # A name the dispatcher does not know is a typo in the flow file, and a
         # typo must not pass: `warn` returns zero, so this case has to die on its
         # own - reading the status below would not catch it.
@@ -849,12 +914,16 @@ ${B}yukti v$YUKTI_VERSION${R} — YUKTI — smart mobile-app QA automation for R
   yukti scroll <up|down>   scroll the screen · yukti scroll-to "<label>" scroll a label into view
   yukti dismiss             auto-dismiss common modals (Not Now / Skip / OK / Close…)
   yukti assert "<text>"     assert the text is on screen (perceivable text only, no scroll)
+  yukti stop-app <variant>  force-stop the app of that variant
+  yukti clear-state <variant>
+                            wipe the app's data (Android only) - the app stops, launch it again
   yukti wait-for "<text>" [s] [exact|contains]
                             poll until the text is on screen, fail on timeout (default 10s)
   yukti tap-id "<id>"       tap the element with this a11y id / resource-id segment
   yukti assert-id "<id>"    assert an element with this id is on screen
 
-  flow steps: wait · waitFor · waitForId · screenshot · tap · tapText · optionalTapText · tapId · scroll · scrollToText · dismiss · type · clearText · assertText · assertId · launch
+  flow steps: wait · waitFor · waitForId · screenshot · tap · tapText · optionalTapText · tapId · scroll · scrollToText · dismiss · type · clearText · assertText · assertId · launch · stopApp · clearState
+              stopApp force-stops the app, clearState wipes its data (Android only); both take the variant name
               assertText matches the whole label as written; "match":"contains" asks for a substring
               waitFor polls for an element and fails on timeout ("timeout": seconds, default 10); it never scrolls
   config: \$YUKTI_CONFIG or ./yukti.config.json  ·  cross-platform: set variant "platform":"android"
@@ -904,6 +973,8 @@ case "$cmd" in
   boot) boot;;
   install) install "$@";;
   launch) launch "$@";;
+  "stop-app"|stopApp) stop_app "$@";;
+  "clear-state"|clearState) clear_state "$@";;
   up) up "$@";;
   flow) flow "$@";;
   shot) shot "$@";;

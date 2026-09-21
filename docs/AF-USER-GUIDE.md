@@ -102,6 +102,8 @@ A flow is `{ "name": "...", "steps": [ ... ] }`. Common step verbs:
 | `{"do":"waitForId","value":"weight_card"}` | the same wait, matching the id exactly |
 | `{"do":"wait","value":3}` / `{"do":"dismiss"}` | sleep a fixed time (prefer `waitFor`) / dismiss a modal |
 | `{"do":"tap","x":201,"y":812}` | tap raw coordinates (last resort — brittle) |
+| `{"do":"stopApp","value":"qa"}` | force-stop the app of that variant |
+| `{"do":"clearState","value":"qa"}` | wipe the app's data, Android only (the app stops — `launch` it again) |
 
 A step that fails now fails the flow, and the message names the step. Two
 exceptions stay, and they are narrow: `dismiss` and `optionalTapText` tolerate a
