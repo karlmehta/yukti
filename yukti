@@ -457,42 +457,31 @@ scroll(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { apaths; if [ "${1:-down}" 
 # iPhone 16 Pro at 402x874 points. Same env names Studio already uses for it
 # (studio/server.py DEVICE_PT_W/H), so one override covers both halves.
 BASIS_W="${YUKTI_DEVICE_PT_W:-402}"; BASIS_H="${YUKTI_DEVICE_PT_H:-874}"; BAND_TOP=60; BAND_BOTTOM=840
+# Where a per-run cache lives. Set once per invocation just before the command
+# runs (see the bottom of this file) and inherited by everything the run shells
+# out to. If it is somehow unset, this points at a directory that is never
+# created: reads and writes both fail, the device is asked every time, and the
+# answer is still correct - only slower. That is the right way for this to
+# break.
+run_dir(){ printf '%s' "${YUKTI_RUN_DIR:-${TMPDIR:-/tmp}/yukti-no-run-dir}"; }
 # Screen size in the same space the dump reports. Cached in a file, not in a
 # variable: every caller reads this through $( ), and an export from a command
 # substitution never reaches the caller, so a variable would re-ask the device on
 # every step. Asking must never be fatal and must never silently change geometry:
 # on any failure the answer is the basis, which is exactly the old behaviour.
-# Which device answered. Asked once and remembered, because the cache file is
-# named after it and every lookup would otherwise go to the device just to build
-# the name. With two devices attached adb cannot answer, and then nothing is
-# cached at all - a shared cache would be worse than no cache.
 #
-# What this key does NOT separate, so that nobody relies on it: an emulator's
-# serial is its port, not its AVD, so two AVDs started one after the other are
-# both emulator-5554 and share this cache; and a resize on a live device does
-# not change the serial at all. In both cases the cached geometry is another
-# screen's, and nothing says so. Scoping the cache to the run instead of the
-# device would remove all of it.
-screen_id(){ local f s
-  f="${TMPDIR:-/tmp}/yukti-screen-id-${YUKTI_PLATFORM:-ios}"
+# The cache belongs to the RUN, not to the device: RUN_DIR is made once per
+# invocation and removed when it ends. A device-named key cannot do this job -
+# an emulator's serial is its port, not its AVD, so two AVDs started one after
+# the other are both emulator-5554 and the second would read the first one's
+# geometry with nothing in the log to say so; a resize on a live device does not
+# change the serial at all. Scoped to the run, a stale answer cannot exist:
+# the run that measured it is the only run that can read it.
+screen_wh(){ local f m out w h
+  f="$(run_dir)/screen-${YUKTI_PLATFORM:-ios}"
+  # The notice is throttled the same way, per run.
+  m="$f.fallback"
   [ -s "$f" ] && { cat "$f"; return 0; }
-  if [ "${YUKTI_PLATFORM:-ios}" = android ]; then
-    apaths; s="$(adb get-serialno 2>/dev/null | tr -d '\r' || true)"
-  else
-    paths; s="$(cat "$(udid_file)" 2>/dev/null || true)"
-  fi
-  case "$s" in ''|*[!A-Za-z0-9_.:-]*) s='';; esac
-  [ -n "$s" ] && { ( printf '%s' "$s" > "$f" ) 2>/dev/null || true; }
-  printf '%s' "$s"; }
-screen_wh(){ local f m out w h id
-  id="$(screen_id)"; f=''
-  # The notice is throttled even when there is no device to name: without this a
-  # 45-flow run would print it on every step.
-  m="${TMPDIR:-/tmp}/yukti-screen-${YUKTI_PLATFORM:-ios}-${id:-nodevice}.fallback"
-  if [ -n "$id" ]; then
-    f="${TMPDIR:-/tmp}/yukti-screen-${YUKTI_PLATFORM:-ios}-${id}"
-    [ -s "$f" ] && { cat "$f"; return 0; }
-  fi
   out=''
   if [ "${YUKTI_PLATFORM:-ios}" = android ]; then
     apaths   # platform-tools go into PATH here; without it adb is simply absent
@@ -512,12 +501,8 @@ except Exception:
   case "$w" in ''|*[!0-9]*|0) w='';; esac
   case "$h" in ''|*[!0-9]*|0) h='';; esac
   if [ -n "$w" ] && [ -n "$h" ]; then
-    if [ -n "$f" ]; then
-      ( printf '%s %s' "$w" "$h" > "$f" ) 2>/dev/null || true   # only a real answer is worth remembering
-      # it answered: the next failure is news again, including the notice left
-      # behind while the device had no name yet
-      rm -f "$m" "${TMPDIR:-/tmp}/yukti-screen-${YUKTI_PLATFORM:-ios}-nodevice.fallback" 2>/dev/null || true
-    fi
+    ( printf '%s %s' "$w" "$h" > "$f" ) 2>/dev/null || true   # only a real answer is worth remembering
+    rm -f "$m" 2>/dev/null || true   # it answered: the next failure is news again
     printf '%s %s' "$w" "$h"; return 0
   fi
   # NEVER cache the fallback. A device merely slow to appear would otherwise
@@ -670,7 +655,7 @@ flow(){
   FLOW_FILE="$f"; FLOW_IDX=0; FLOW_ART=""
   FLOW_REC="$(mktemp)"; FLOW_CUR="$(mktemp)"; FLOW_ERR="$(mktemp)"; FLOW_T0="$(now)"
   export YUKTI_STEP_ERR="$FLOW_ERR"
-  trap 'flow_results $?' EXIT
+  trap 'flow_results $?; run_dir_cleanup' EXIT
   # The step generator is fed on FD 3, NOT stdin: steps shell out to adb/idb,
   # and `adb shell` / subprocesses read stdin — if the loop read from the same
   # pipe they'd swallow the remaining steps, so only step 1 ran (and the flow
@@ -785,6 +770,25 @@ if [ -z "${YUKTI_PLATFORM:-}" ] && [ -f "$CONFIG" ]; then
   YUKTI_PLATFORM="$(cfg platform "$(cfg variants.qa.platform ios)")"
 fi
 export YUKTI_PLATFORM="${YUKTI_PLATFORM:-ios}"
+
+# One directory per run for anything measured from the device, made here and
+# removed on the way out. Nested calls - the agent shelling out to `yukti tap`,
+# Studio driving a flow - inherit it and share the measurement; only the shell
+# that made it removes it, so a child cannot pull the floor out from under its
+# parent. The alternative, naming the cache after the device, cannot tell two
+# emulators apart: their serial is the port they took, not the AVD behind it.
+if [ -z "${YUKTI_RUN_DIR:-}" ] || [ ! -d "${YUKTI_RUN_DIR:-}" ]; then
+  YUKTI_RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/yukti-run.XXXXXX" 2>/dev/null || true)"
+  export YUKTI_RUN_DIR
+  [ -n "$YUKTI_RUN_DIR" ] && RUN_DIR_OWNED=1 || true
+fi
+# Not exported on purpose: a child inherits the directory but never the right
+# to delete it.
+run_dir_cleanup(){
+  [ "${RUN_DIR_OWNED:-}" = 1 ] || return 0
+  case "${YUKTI_RUN_DIR:-}" in */yukti-run.??????) rm -rf "$YUKTI_RUN_DIR";; esac
+  return 0; }
+trap run_dir_cleanup EXIT
 
 cmd="${1:-}"; shift || true
 case "$cmd" in
