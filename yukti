@@ -653,7 +653,7 @@ PY
 # step keys: launch|wait|screenshot|tap[x,y]|tapText|optionalTapText|tapId|type|
 #            clearText[x,y]|scroll|scrollToText|dismiss|assertText|assertId
 flow(){
-  local f="${1:?usage: yukti flow <file.json>}"; [ -f "$f" ] || die "no flow file '$f'"; paths
+  local f="${1:?usage: yukti flow <file.json>}" st; [ -f "$f" ] || die "no flow file '$f'"; paths
   say "running flow: $f"
   FLOW_FILE="$f"; FLOW_IDX=0; FLOW_ART=""
   FLOW_REC="$(mktemp)"; FLOW_CUR="$(mktemp)"; FLOW_ERR="$(mktemp)"; FLOW_T0="$(now)"
@@ -672,9 +672,9 @@ flow(){
       FLOW_IDX=$((FLOW_IDX+1)); FLOW_S0="$(now)"; FLOW_ART=""
       printf '%s\x1f%s\x1f%s\x1f%s\n' "$FLOW_IDX" "$do_" "$val" "$FLOW_S0" > "$FLOW_CUR"
       : > "$FLOW_ERR"
-      set +e   # best-effort steps (dismiss/optionalTapText) return non-zero when
-               # a label is absent; only an explicit `die` (assert fail / missing
-               # required element) must stop the flow — not a benign miss.
+      set +e   # a step must not abort the loop by itself: the status is read
+               # right after the dispatcher, so the failure is attributed to
+               # THIS step and the flow stops with a message.
       case "$do_" in
         wait)        wait_s "${val:-2}";;
         # shot runs in a substitution, so its own die kills only that subshell:
@@ -696,8 +696,23 @@ flow(){
         tapId)       say "tap id '$val'"; tap_id "$val";;
         assertId)    assert_id "$val";;
         launch)      launch "$val";;
-        *) warn "unknown step '$do_'";;
+        # A name the dispatcher does not know is a typo in the flow file, and a
+        # typo must not pass: `warn` returns zero, so this case has to die on its
+        # own - reading the status below would not catch it.
+        *) die "unknown step '$do_' - check the flow file";;
       esac
+      st=$?
+      # A step that failed without dying used to be recorded as passed: the
+      # status of the dispatcher was never read. `adb` refusing a tap, a launch
+      # of a package that is not installed, a clearText on a dead device - all
+      # reported PASS, and the JUnit file said failures="0". Only an explicit
+      # `die` could stop a flow.
+      #
+      # The two best-effort verbs stay the exception, by contract: they return
+      # non-zero when a label is simply absent, which is the state they exist
+      # to tolerate.
+      case "$do_" in dismiss|optionalTapText) st=0;; esac
+      [ "$st" -eq 0 ] || die "step $FLOW_IDX '$do_' failed (exit $st)"
       printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' "$FLOW_IDX" "$do_" "$val" "$FLOW_S0" "$(now)" "$FLOW_ART" >> "$FLOW_REC"
   done 3< <("$PY" -c 'import json,sys,os;[print("\x1f".join([s.get("do",""),os.path.expandvars(str(s.get("value",""))),str(s.get("x","")),str(s.get("y",""))])) for s in json.load(open(sys.argv[1]))["steps"]]' "$f")
   ok "flow complete: $f"
