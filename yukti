@@ -459,11 +459,12 @@ scroll(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { apaths; if [ "${1:-down}" 
 BASIS_W="${YUKTI_DEVICE_PT_W:-402}"; BASIS_H="${YUKTI_DEVICE_PT_H:-874}"; BAND_TOP=60; BAND_BOTTOM=840
 # Where a per-run cache lives. Set once per invocation just before the command
 # runs (see the bottom of this file) and inherited by everything the run shells
-# out to. If it is somehow unset, this points at a directory that is never
-# created: reads and writes both fail, the device is asked every time, and the
-# answer is still correct - only slower. That is the right way for this to
-# break.
-run_dir(){ printf '%s' "${YUKTI_RUN_DIR:-${TMPDIR:-/tmp}/yukti-no-run-dir}"; }
+# out to. Empty when there is no such directory, and then nothing is cached at
+# all: the device is asked every time and the answer is still correct, only
+# slower. A placeholder path would be worse than nothing - a flow is free to
+# name any directory in a screenshot step and would create it, and a cache
+# under a fixed name outlives the run, which is the bug this replaced.
+run_dir(){ printf '%s' "${YUKTI_RUN_DIR:-}"; }
 # Screen size in the same space the dump reports. Cached in a file, not in a
 # variable: every caller reads this through $( ), and an export from a command
 # substitution never reaches the caller, so a variable would re-ask the device on
@@ -477,11 +478,11 @@ run_dir(){ printf '%s' "${YUKTI_RUN_DIR:-${TMPDIR:-/tmp}/yukti-no-run-dir}"; }
 # geometry with nothing in the log to say so; a resize on a live device does not
 # change the serial at all. Scoped to the run, a stale answer cannot exist:
 # the run that measured it is the only run that can read it.
-screen_wh(){ local f m out w h
-  f="$(run_dir)/screen-${YUKTI_PLATFORM:-ios}"
-  # The notice is throttled the same way, per run.
-  m="$f.fallback"
-  [ -s "$f" ] && { cat "$f"; return 0; }
+screen_wh(){ local d f m out w h
+  d="$(run_dir)"; f=''; m=''
+  # No run directory, no cache: both halves stay empty and every lookup asks.
+  [ -n "$d" ] && { f="$d/screen-${YUKTI_PLATFORM:-ios}"; m="$f.fallback"; }
+  [ -n "$f" ] && [ -s "$f" ] && { cat "$f"; return 0; }
   out=''
   if [ "${YUKTI_PLATFORM:-ios}" = android ]; then
     apaths   # platform-tools go into PATH here; without it adb is simply absent
@@ -501,17 +502,19 @@ except Exception:
   case "$w" in ''|*[!0-9]*|0) w='';; esac
   case "$h" in ''|*[!0-9]*|0) h='';; esac
   if [ -n "$w" ] && [ -n "$h" ]; then
-    ( printf '%s %s' "$w" "$h" > "$f" ) 2>/dev/null || true   # only a real answer is worth remembering
-    rm -f "$m" 2>/dev/null || true   # it answered: the next failure is news again
+    if [ -n "$f" ]; then
+      ( printf '%s %s' "$w" "$h" > "$f" ) 2>/dev/null || true   # only a real answer is worth remembering
+      rm -f "$m" 2>/dev/null || true   # it answered: the next failure is news again
+    fi
     printf '%s %s' "$w" "$h"; return 0
   fi
   # NEVER cache the fallback. A device merely slow to appear would otherwise
   # switch the band off for every later step with nothing in the log to say so.
   # The notice goes to stderr: this function is read through a substitution, and
   # a line on stdout would be parsed as the screen size.
-  if [ ! -f "$m" ]; then
+  if [ -z "$m" ] || [ ! -f "$m" ]; then
     warn "screen size unavailable, using the recording basis ${BASIS_W}x${BASIS_H}" >&2
-    ( : > "$m" ) 2>/dev/null || true
+    [ -n "$m" ] && { ( : > "$m" ) 2>/dev/null || true; }
   fi
   printf '%s %s' "$BASIS_W" "$BASIS_H"; }
 screen_w(){ set -- $(screen_wh); printf '%s' "${1:-$BASIS_W}"; }
@@ -782,8 +785,11 @@ if [ -z "${YUKTI_RUN_DIR:-}" ] || [ ! -d "${YUKTI_RUN_DIR:-}" ]; then
   export YUKTI_RUN_DIR
   [ -n "$YUKTI_RUN_DIR" ] && RUN_DIR_OWNED=1 || true
 fi
-# Not exported on purpose: a child inherits the directory but never the right
-# to delete it.
+# Not exported on purpose: a child PROCESS inherits the directory but never the
+# right to delete it. A SUBSHELL is held off by something else - it does inherit
+# this flag, and what saves it is that bash does not run an EXIT trap inside a
+# subshell. Two different mechanisms: move this cleanup out of the trap into a
+# plain call and the second one disappears without a sound.
 run_dir_cleanup(){
   [ "${RUN_DIR_OWNED:-}" = 1 ] || return 0
   case "${YUKTI_RUN_DIR:-}" in */yukti-run.??????) rm -rf "$YUKTI_RUN_DIR";; esac
