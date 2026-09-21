@@ -93,7 +93,7 @@ A flow is `{ "name": "...", "steps": [ ... ] }`. Common step verbs:
 | `{"do":"tapText","value":"Sign In"}` | tap an element by its visible label (preferred — resilient) |
 | `{"do":"optionalTapText","value":"Skip"}` | tap if present, don't fail if absent |
 | `{"do":"type","value":"165"}` | type into the focused field (`${TEST_EMAIL}` / `${TEST_PASSWORD}` inject creds) |
-| `{"do":"scrollToText","value":"Weight History"}` | scroll until visible |
+| `{"do":"scrollToText","value":"Weight History"}` | scroll until visible, and fail the flow if it never becomes visible |
 | `{"do":"tapId","value":"submit"}` | tap the element with this a11y id / `resource-id` segment, exact match |
 | `{"do":"assertText","value":"Logged"}` | verify the text is on screen (the test's checkpoint — perceivable text only, no scroll). Matches the whole label, case as written; add `"match":"contains"` for a partial match |
 | `{"do":"assertId","value":"weight_card"}` | verify an element with this id is on screen |
@@ -109,7 +109,8 @@ A step that fails now fails the flow, and the message names the step. Two
 exceptions stay, and they are narrow: `dismiss` and `optionalTapText` tolerate a
 label that is not on screen, but not a device that refuses the tap. An unknown
 verb, an unknown `"match"` value, a `"match"` on a step that does not take one,
-and a non-numeric `wait` stop the flow as well.
+a non-numeric `wait`, and a `scrollToText` whose label never comes into view stop
+the flow as well.
 
 Save it in `.yukti/flows/` and it's part of the suite the next Run All.
 

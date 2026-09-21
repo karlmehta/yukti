@@ -654,11 +654,25 @@ scale_xy(){ local x="${1:?x}" y="${2:?y}" w h nx ny
   nx=$(( x * w / BASIS_W )); ny=$(( y * h / BASIS_H ))
   say "scaled $x,$y -> $nx,$ny (recorded ${BASIS_W}x${BASIS_H}, screen ${w}x${h})" >&2
   printf '%s %s' "$nx" "$ny"; }
+# How many times a miss is worth swiping for. Read twice: by the loop, and by the
+# message that reports the miss.
+SCROLL_TRIES=8
 scroll_to(){ local lbl="$1" i xy y h top bot; h="$(screen_h)"
   top=$(( h * BAND_TOP / BASIS_H )); bot=$(( h * BAND_BOTTOM / BASIS_H ))
-  for i in $(seq 1 8); do xy="$(find_el "$lbl")" || die "cannot read the screen - see the error above"
+  for i in $(seq 1 $SCROLL_TRIES); do xy="$(find_el "$lbl")" || die "cannot read the screen - see the error above"
     if [ -n "$xy" ]; then y="${xy##* }"; if [ "$y" -lt "$bot" ] && [ "$y" -gt "$top" ]; then printf '%s' "$xy"; return 0; fi; fi
     scroll down; sleep 0.6; done; find_el "$lbl"; }
+# scroll_to is a locator and stays one: it is also the first half of tapText,
+# which has its own words for a miss. As a STEP, though, scrollToText is a
+# statement that the label is there - the flow swipes until it finds it - and a
+# statement that turns out false has to fail. It did not: the swipes ended, the
+# last lookup came back empty, and the step passed. The runbook recommends this
+# step in front of an assertion, so the documented way to reach something below
+# the fold was also the way to miss it in silence, at eight swipes a time.
+scroll_to_step(){ local lbl="${1:-}" xy; [ -n "$lbl" ] || die "scrollToText needs a non-empty value"
+  xy="$(scroll_to "$lbl")" || die "cannot read the screen - see the error above"
+  [ -n "$xy" ] || die "scrollToText: '$lbl' not on screen after $SCROLL_TRIES swipes"
+  printf '%s\n' "$xy"; }
 
 # ── per-flow results ─────────────────────────────────────────────────────────
 # A run left console text and screenshots and nothing a tool could read: which
@@ -830,7 +844,7 @@ flow(){
         tapText)     say "tap '$val'"; tap_text "$val";;
         optionalTapText) tap_text_optional "$val";;
         scroll)      scroll "${val:-down}";;
-        scrollToText) scroll_to "$val" >/dev/null;;
+        scrollToText) scroll_to_step "$val" >/dev/null;;
         dismiss)     dismiss;;
         clearText)   clear_field $(scale_xy "$x" "$y");;
         type)        say "type ${#val} chars"; type_str "$val";;
@@ -911,7 +925,7 @@ ${B}yukti v$YUKTI_VERSION${R} — YUKTI — smart mobile-app QA automation for R
   yukti tap <x> <y>         tap
   yukti type "<text>"       type (char-by-char = reliable; idb bulk-type drops chars)
   yukti clear <x> <y>       clear a text field
-  yukti scroll <up|down>   scroll the screen · yukti scroll-to "<label>" scroll a label into view
+  yukti scroll <up|down>   scroll the screen · yukti scroll-to "<label>" scroll a label into view, fail on a miss
   yukti dismiss             auto-dismiss common modals (Not Now / Skip / OK / Close…)
   yukti assert "<text>"     assert the text is on screen (perceivable text only, no scroll)
   yukti stop-app <variant>  force-stop the app of that variant
@@ -983,7 +997,7 @@ case "$cmd" in
   tap) tap "$@";;
   "tap-text"|tapText) tap_text "$@";;
   scroll) scroll "$@";;
-  "scroll-to"|scrollToText) scroll_to "$@";;
+  "scroll-to"|scrollToText) scroll_to_step "$@";;
   dismiss) dismiss;;
   type) type_str "$@";;
   clear) clear_field "$@";;

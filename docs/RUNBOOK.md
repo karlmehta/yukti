@@ -58,7 +58,9 @@ raw coords so flows survive layout changes. `${VARS}` in `value` expand from env
 perceive: the visible text or the accessibility label of an element that is on
 screen right now - real size, centre inside the window. It never matches a
 resource-id, a class name or any other markup, and it does **not** scroll: put
-`scrollToText` in front of it when the target sits below the fold.
+`scrollToText` in front of it when the target sits below the fold. That step
+fails the flow if the label never comes into view, so the assertion after it
+runs on the screen it was written for.
 
 The match is the **whole label, case as written**. Leading and trailing spaces
 do not count, and a two-line caption reads as one line. A partial match is
@@ -74,8 +76,9 @@ then passes on a screen that only says `Network & internet`. Use it where a
 label carries a value that changes, and prefer the default everywhere else.
 
 The locator verbs - `tapText`, `optionalTapText`, `scrollToText` - are not
-assertions and are unchanged: they still match a substring and fold case, and
-they rank the candidates. Naming a button is not a statement about its
+assertions, and their matching is unchanged: they still match a substring and
+fold case, and they rank the candidates. What `scrollToText` does on a miss is
+new, and it is below. Naming a button is not a statement about its
 capitalisation; asserting one is.
 
 `match` belongs to the assertion, so `assertText` and the wait that follows the
@@ -129,11 +132,13 @@ Four more ways a flow stops, all of them typos that used to pass:
 that is not on screen is the state those two exist to tolerate. A device that
 refuses the tap is not that state, and it fails the flow like any other step.
 
-Two verbs stay outside this guarantee. `scrollToText`
-reports no failure when the label is never found: it swipes eight times and
-returns a miss, and the step passes. `type` on iOS sends the characters one by
-one and never reads a status, so it cannot fail either. Neither belongs in a
-flow as its checkpoint - put an `assertText` or an `assertId` after them.
+`scrollToText` fails the flow when the label never arrives: it swipes eight
+times, and a last look that finds nothing is the failure, named with the label.
+It used to pass on that miss. An empty value fails with its own message.
+
+One verb stays outside the guarantee. `type` on iOS sends the characters one by
+one and never reads a status, so it cannot fail. It does not belong in a flow as
+its checkpoint - put an `assertText` or an `assertId` after it.
 
 ### Waiting for a screen
 
