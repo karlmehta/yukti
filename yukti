@@ -71,7 +71,18 @@ boot_android(){ apaths; local avd; avd="$(cfg android.avd Pixel_7_API_34)"
   adb wait-for-device; until [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = 1 ]; do sleep 2; done; ok "emulator booted"; }
 install_android(){ apaths; local V="$1"; adb install -r "$(cat "${TMPDIR:-/tmp}/yukti-apk-$V")" && ok "installed"; }
 launch_android(){ apaths; local pkg; pkg="$(cfg variants.$1.package)"; adb shell monkey -p "$pkg" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1 && ok "launched $pkg"; }
-ashot(){ apaths; local o="${1:-${TMPDIR:-/tmp}/yukti-shot.png}"; adb exec-out screencap -p > "$o" && echo "$o"; }
+# A screenshot value is a NAME, not a path. RUNBOOK says the files land in
+# $TMPDIR and that the flows only name them; they landed in whatever directory
+# the run was started from, so a suite scattered pngs across the caller's tree
+# while $TMPDIR stayed empty. Join a relative name to $TMPDIR. An absolute path
+# is still taken as given, and a name with a directory in it gets that directory
+# created rather than failing the step.
+shot_path(){ local n="${1:-yukti-shot.png}"
+  # A name is a name. ".." in it would write outside $TMPDIR while reading like
+  # a file inside it, so refuse rather than guess what was meant.
+  case "$n" in *..*) die "screenshot name must not contain '..': '$n'";; esac
+  case "$n" in /*) printf '%s' "$n";; *) printf '%s/%s' "${TMPDIR:-/tmp}" "$n";; esac; }
+ashot(){ apaths; local o; o="$(shot_path "${1:-}")"; mkdir -p "$(dirname "$o")"; adb exec-out screencap -p > "$o" && echo "$o"; }
 # Delete the dump before writing a new one. uiautomator refuses to dump while the
 # screen is animating ("could not get idle state!"), the error was swallowed, and
 # `cat` then served the tree of the PREVIOUS call: the next assert checked the
@@ -297,7 +308,7 @@ up(){ local V="${1:?usage: yukti up <variant>}"; export YUKTI_PLATFORM="$(plat_o
 # ── drive primitives (used by flows AND by AI agents) ────────────────────────
 U(){ cat "$(udid_file)" 2>/dev/null || booted; }
 idb_ready(){ paths; idb connect "$(U)" >/dev/null 2>&1 || true; }
-shot(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { ashot "$@"; return; }; paths; xcrun simctl io "$(U)" screenshot "${1:-${TMPDIR:-/tmp}/yukti-shot.png}" >/dev/null 2>&1 && echo "${1:-${TMPDIR:-/tmp}/yukti-shot.png}"; }
+shot(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { ashot "$@"; return; }; paths; local o; o="$(shot_path "${1:-}")"; mkdir -p "$(dirname "$o")"; xcrun simctl io "$(U)" screenshot "$o" >/dev/null 2>&1 && echo "$o"; }
 ui(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { aui; return; }; idb_ready; local u out i; u="$(U)"; for i in 1 2 3 4; do out="$(idb ui describe-all --udid "$u" 2>/dev/null)"; [ -n "$out" ] && { printf '%s' "$out"; return 0; }; sleep 0.6; done
   # An empty tree after four tries is idb failing, not a screen with nothing on
   # it: a booted simulator always reports at least its window. Returning the
@@ -434,8 +445,97 @@ scroll(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { apaths; if [ "${1:-down}" 
 # a11y reports FULL-CONTENT coords; taps need ON-SCREEN coords. Scroll a label into the viewport.
 # Stop on an unreadable screen instead of swiping eight times into the dark:
 # a swipe changes state, and the state is what the next step is checking.
-scroll_to(){ local lbl="$1" i xy y; for i in $(seq 1 8); do xy="$(find_el "$lbl")" || die "cannot read the screen - see the error above"
-    if [ -n "$xy" ]; then y="${xy##* }"; if [ "$y" -lt 840 ] && [ "$y" -gt 60 ]; then printf '%s' "$xy"; return 0; fi; fi
+# The accepted band used to be written out as 60..840. Those are one device's
+# numbers - an iPhone 16 Pro, 874 points tall - not a universal viewport. A dump
+# reports coordinates in the screen's own space, so on a 720x1600 Android phone
+# the bottom navigation sits at y=1497 and every tab read as off-screen: each tap
+# on one paid the full eight swipes before it acted, and those swipes unload the
+# rows the NEXT step asserts on, which then reads as a defect in the app.
+# Keep the proportions and scale them to the screen the run is actually on. On
+# the original 874-point basis the bounds come out as 60 and 840, unchanged.
+# The basis those numbers were written against: the screen Studio records on, an
+# iPhone 16 Pro at 402x874 points. Same env names Studio already uses for it
+# (studio/server.py DEVICE_PT_W/H), so one override covers both halves.
+BASIS_W="${YUKTI_DEVICE_PT_W:-402}"; BASIS_H="${YUKTI_DEVICE_PT_H:-874}"; BAND_TOP=60; BAND_BOTTOM=840
+# Where a per-run cache lives. Set once per invocation just before the command
+# runs (see the bottom of this file) and inherited by everything the run shells
+# out to. Empty when there is no such directory, and then nothing is cached at
+# all: the device is asked every time and the answer is still correct, only
+# slower. A placeholder path would be worse than nothing - a flow is free to
+# name any directory in a screenshot step and would create it, and a cache
+# under a fixed name outlives the run, which is the bug this replaced.
+run_dir(){ printf '%s' "${YUKTI_RUN_DIR:-}"; }
+# Screen size in the same space the dump reports. Cached in a file, not in a
+# variable: every caller reads this through $( ), and an export from a command
+# substitution never reaches the caller, so a variable would re-ask the device on
+# every step. Asking must never be fatal and must never silently change geometry:
+# on any failure the answer is the basis, which is exactly the old behaviour.
+#
+# The cache belongs to the RUN, not to the device: RUN_DIR is made once per
+# invocation and removed when it ends. A device-named key cannot do this job -
+# an emulator's serial is its port, not its AVD, so two AVDs started one after
+# the other are both emulator-5554 and the second would read the first one's
+# geometry with nothing in the log to say so; a resize on a live device does not
+# change the serial at all. Scoped to the run, a stale answer cannot exist:
+# the run that measured it is the only run that can read it.
+screen_wh(){ local d f m out w h
+  d="$(run_dir)"; f=''; m=''
+  # No run directory, no cache: both halves stay empty and every lookup asks.
+  [ -n "$d" ] && { f="$d/screen-${YUKTI_PLATFORM:-ios}"; m="$f.fallback"; }
+  [ -n "$f" ] && [ -s "$f" ] && { cat "$f"; return 0; }
+  out=''
+  if [ "${YUKTI_PLATFORM:-ios}" = android ]; then
+    apaths   # platform-tools go into PATH here; without it adb is simply absent
+    out="$(adb shell wm size 2>/dev/null | tr -d '\r' | sed -n 's/.*: *\([0-9][0-9]*\)x\([0-9][0-9]*\).*/\1 \2/p' | tail -1 || true)"
+  else
+    paths
+    # points only: a pixel field here would silently triple every number on a 3x
+    # device, so a missing key must fall through to the basis, never to pixels.
+    out="$(idb describe --udid "$(U)" --json 2>/dev/null | "$PY" -c 'import json,sys
+try:
+    d=(json.load(sys.stdin).get("screen_dimensions") or {})
+    print(int(d["width_points"]), int(d["height_points"]))
+except Exception:
+    pass' 2>/dev/null || true)"
+  fi
+  set -- $out; w="${1:-}"; h="${2:-}"
+  case "$w" in ''|*[!0-9]*|0) w='';; esac
+  case "$h" in ''|*[!0-9]*|0) h='';; esac
+  if [ -n "$w" ] && [ -n "$h" ]; then
+    if [ -n "$f" ]; then
+      ( printf '%s %s' "$w" "$h" > "$f" ) 2>/dev/null || true   # only a real answer is worth remembering
+      rm -f "$m" 2>/dev/null || true   # it answered: the next failure is news again
+    fi
+    printf '%s %s' "$w" "$h"; return 0
+  fi
+  # NEVER cache the fallback. A device merely slow to appear would otherwise
+  # switch the band off for every later step with nothing in the log to say so.
+  # The notice goes to stderr: this function is read through a substitution, and
+  # a line on stdout would be parsed as the screen size.
+  if [ -z "$m" ] || [ ! -f "$m" ]; then
+    warn "screen size unavailable, using the recording basis ${BASIS_W}x${BASIS_H}" >&2
+    [ -n "$m" ] && { ( : > "$m" ) 2>/dev/null || true; }
+  fi
+  printf '%s %s' "$BASIS_W" "$BASIS_H"; }
+screen_w(){ set -- $(screen_wh); printf '%s' "${1:-$BASIS_W}"; }
+screen_h(){ set -- $(screen_wh); printf '%s' "${2:-$BASIS_H}"; }
+# A recorded step carries a point on the screen it was recorded on. Studio records
+# at BASIS_W x BASIS_H points; replayed on a 720x1600 phone the same pair lands
+# somewhere else. Scale it where a recorded number ENTERS the run - not inside
+# tap(), which is also fed coordinates taken straight from the device's own dump
+# (tapText, tapId, dismiss) and must stay a raw primitive in the device's space.
+# Set YUKTI_TAP_SCALE=0 to replay recorded pairs as-is.
+scale_xy(){ local x="${1:?x}" y="${2:?y}" w h nx ny
+  [ "${YUKTI_TAP_SCALE:-1}" = 0 ] && { printf '%s %s' "$x" "$y"; return 0; }
+  set -- $(screen_wh); w="${1:-$BASIS_W}"; h="${2:-$BASIS_H}"
+  [ "$w" = "$BASIS_W" ] && [ "$h" = "$BASIS_H" ] && { printf '%s %s' "$x" "$y"; return 0; }
+  nx=$(( x * w / BASIS_W )); ny=$(( y * h / BASIS_H ))
+  say "scaled $x,$y -> $nx,$ny (recorded ${BASIS_W}x${BASIS_H}, screen ${w}x${h})" >&2
+  printf '%s %s' "$nx" "$ny"; }
+scroll_to(){ local lbl="$1" i xy y h top bot; h="$(screen_h)"
+  top=$(( h * BAND_TOP / BASIS_H )); bot=$(( h * BAND_BOTTOM / BASIS_H ))
+  for i in $(seq 1 8); do xy="$(find_el "$lbl")" || die "cannot read the screen - see the error above"
+    if [ -n "$xy" ]; then y="${xy##* }"; if [ "$y" -lt "$bot" ] && [ "$y" -gt "$top" ]; then printf '%s' "$xy"; return 0; fi; fi
     scroll down; sleep 0.6; done; find_el "$lbl"; }
 
 # ── per-flow results ─────────────────────────────────────────────────────────
@@ -558,7 +658,7 @@ flow(){
   FLOW_FILE="$f"; FLOW_IDX=0; FLOW_ART=""
   FLOW_REC="$(mktemp)"; FLOW_CUR="$(mktemp)"; FLOW_ERR="$(mktemp)"; FLOW_T0="$(now)"
   export YUKTI_STEP_ERR="$FLOW_ERR"
-  trap 'flow_results $?' EXIT
+  trap 'flow_results $?; run_dir_cleanup' EXIT
   # The step generator is fed on FD 3, NOT stdin: steps shell out to adb/idb,
   # and `adb shell` / subprocesses read stdin — if the loop read from the same
   # pipe they'd swallow the remaining steps, so only step 1 ran (and the flow
@@ -577,14 +677,20 @@ flow(){
                # required element) must stop the flow — not a benign miss.
       case "$do_" in
         wait)        wait_s "${val:-2}";;
-        screenshot)  FLOW_ART="$(shot "$val")"; ok "shot → $FLOW_ART";;
-        tap)         tap "$x" "$y";;
+        # shot runs in a substitution, so its own die kills only that subshell:
+        # the step used to report PASS with an empty path, whether the name was
+        # refused or screencap itself failed. The status has to be checked here,
+        # in the shell that can stop the flow.
+        screenshot)  FLOW_ART="$(shot "$val")" || die "screenshot failed"
+                     [ -n "$FLOW_ART" ] || die "screenshot produced no file"
+                     ok "shot → $FLOW_ART";;
+        tap)         tap $(scale_xy "$x" "$y");;
         tapText)     say "tap '$val'"; tap_text "$val";;
         optionalTapText) tap_text_optional "$val";;
         scroll)      scroll "${val:-down}";;
         scrollToText) scroll_to "$val" >/dev/null;;
         dismiss)     dismiss;;
-        clearText)   clear_field "$x" "$y";;
+        clearText)   clear_field $(scale_xy "$x" "$y");;
         type)        say "type ${#val} chars"; type_str "$val";;
         assertText)  assert_text "$val";;
         tapId)       say "tap id '$val'"; tap_id "$val";;
@@ -667,6 +773,28 @@ if [ -z "${YUKTI_PLATFORM:-}" ] && [ -f "$CONFIG" ]; then
   YUKTI_PLATFORM="$(cfg platform "$(cfg variants.qa.platform ios)")"
 fi
 export YUKTI_PLATFORM="${YUKTI_PLATFORM:-ios}"
+
+# One directory per run for anything measured from the device, made here and
+# removed on the way out. Nested calls - the agent shelling out to `yukti tap`,
+# Studio driving a flow - inherit it and share the measurement; only the shell
+# that made it removes it, so a child cannot pull the floor out from under its
+# parent. The alternative, naming the cache after the device, cannot tell two
+# emulators apart: their serial is the port they took, not the AVD behind it.
+if [ -z "${YUKTI_RUN_DIR:-}" ] || [ ! -d "${YUKTI_RUN_DIR:-}" ]; then
+  YUKTI_RUN_DIR="$(mktemp -d "${TMPDIR:-/tmp}/yukti-run.XXXXXX" 2>/dev/null || true)"
+  export YUKTI_RUN_DIR
+  [ -n "$YUKTI_RUN_DIR" ] && RUN_DIR_OWNED=1 || true
+fi
+# Not exported on purpose: a child PROCESS inherits the directory but never the
+# right to delete it. A SUBSHELL is held off by something else - it does inherit
+# this flag, and what saves it is that bash does not run an EXIT trap inside a
+# subshell. Two different mechanisms: move this cleanup out of the trap into a
+# plain call and the second one disappears without a sound.
+run_dir_cleanup(){
+  [ "${RUN_DIR_OWNED:-}" = 1 ] || return 0
+  case "${YUKTI_RUN_DIR:-}" in */yukti-run.??????) rm -rf "$YUKTI_RUN_DIR";; esac
+  return 0; }
+trap run_dir_cleanup EXIT
 
 cmd="${1:-}"; shift || true
 case "$cmd" in
