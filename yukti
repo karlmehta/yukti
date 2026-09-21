@@ -439,11 +439,15 @@ tap(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { atap "$1" "$2"; return; }; pa
 # times looking for a label, or blamed a missing element for a broken dump.
 # Every lookup below now checks the status: an unreadable screen stops the run.
 tap_text(){ local xy; xy="$(scroll_to "$1")" || die "cannot read the screen - see the error above"; [ -n "$xy" ] || die "no element matching '$1'"; tap $xy; }  # auto-scrolls off-screen elements into view
-tap_text_optional(){ local xy; xy="$(find_el "$1")" || die "cannot read the screen - see the error above"; [ -n "$xy" ] && { tap $xy; ok "optional tap '$1'"; } || warn "optional '$1' not present — skipped"; }
+# The exception these two verbs enjoy is about an ABSENT label, and nothing else.
+# A device that refuses the tap is not an absent label: the status of `tap` is
+# checked here, or the step keeps its exception and reports a tap that never
+# happened - the very class of lie the status check above exists to end.
+tap_text_optional(){ local xy; xy="$(find_el "$1")" || die "cannot read the screen - see the error above"; [ -n "$xy" ] && { tap $xy || die "optional tap '$1': the device refused the tap"; ok "optional tap '$1'"; } || warn "optional '$1' not present — skipped"; }
 # Auto-dismiss the interstitials that derail flows (Save Password, notifications, promos…)
 dismiss(){ local L xy; for L in "Not Now" "Not now" "Maybe Later" "Later" "Skip for now" "Skip" "No thanks" "No Thanks" "Got it"; do
     xy="$(find_el "$L")" || die "cannot read the screen - see the error above"
-    [ -n "$xy" ] && { tap $xy; sleep 0.6; ok "dismissed '$L'"; }
+    [ -n "$xy" ] && { tap $xy || die "dismiss: the device refused the tap on '$L'"; sleep 0.6; ok "dismissed '$L'"; }
   done; }  # only SAFE interstitial labels — never Cancel/Close/OK (those navigate/confirm)
 type_str(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { atype "$1"; return; }; paths; local s="${1:?text}" i; for ((i=0;i<${#s};i++)); do idb ui text --udid "$(U)" "${s:$i:1}" >/dev/null 2>&1; sleep 0.12; done; }  # char-by-char = reliable
 clear_field(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { aclear "$1" "$2"; return; }; paths; local x="${1:?x}" y="${2:?y}" i; idb ui tap --udid "$(U)" "$x" "$y"; sleep .4; idb ui tap --udid "$(U)" 360 "$y"; sleep .3; for i in $(seq 1 32); do idb ui key --udid "$(U)" 42 >/dev/null 2>&1; done; }

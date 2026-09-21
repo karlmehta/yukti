@@ -105,6 +105,30 @@ Discover labels/coords for a screen:
 ~/yukti/yukti find "Sign In"                         # -> "201 705"
 ```
 
+### When a step fails
+
+A step that ends with a non-zero status now fails the flow, and the message
+names it: `step 7 'tapText' failed (exit 1)`. Until now only an explicit failure
+inside a verb could stop a run - `adb` refusing a tap, a launch of a package
+that is not installed, a `clearText` on a dead device all reported PASS, and the
+JUnit file said `failures="0"`.
+
+Three more ways a flow stops, all of them typos that used to pass:
+
+- a step name the runner does not know;
+- a `"match"` value that is neither `exact` nor `contains`;
+- a `wait` whose value is not a number - `sleep` refuses it.
+
+`dismiss` and `optionalTapText` keep their exception, and it is narrow: a label
+that is not on screen is the state those two exist to tolerate. A device that
+refuses the tap is not that state, and it fails the flow like any other step.
+
+Two verbs stay outside this guarantee. `scrollToText`
+reports no failure when the label is never found: it swipes eight times and
+returns a miss, and the step passes. `type` on iOS sends the characters one by
+one and never reads a status, so it cannot fail either. Neither belongs in a
+flow as its checkpoint - put an `assertText` or an `assertId` after them.
+
 ## CI (every PR)
 
 Copy `.github/workflows/yukti-qa.yml` into the app repo, add `TEST_EMAIL` /

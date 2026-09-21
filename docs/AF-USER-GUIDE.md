@@ -101,6 +101,11 @@ A flow is `{ "name": "...", "steps": [ ... ] }`. Common step verbs:
 | `{"do":"wait","value":3}` / `{"do":"dismiss"}` | settle / dismiss a modal |
 | `{"do":"tap","x":201,"y":812}` | tap raw coordinates (last resort — brittle) |
 
+A step that fails now fails the flow, and the message names the step. Two
+exceptions stay, and they are narrow: `dismiss` and `optionalTapText` tolerate a
+label that is not on screen, but not a device that refuses the tap. An unknown
+verb, an unknown `"match"` value and a non-numeric `wait` stop the flow as well.
+
 Save it in `.yukti/flows/` and it's part of the suite the next Run All.
 
 ---
