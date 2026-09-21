@@ -50,7 +50,13 @@ Flows are JSON in `flows/`. Steps: `wait`, `screenshot`, `tap {x,y}`, `tapText`,
 `optionalTapText`, `tapId`, `type`, `clearText {x,y}`, `scroll`, `scrollToText`,
 `dismiss`, `assertText`, `assertId`, `launch`. Coordinates are **points**
 (iPhone 16 Pro = 402×874). Prefer `tapText` (finds by accessibility label) over
-raw coords so flows survive layout changes. `${VARS}` in `value` expand from env.
+raw coords so flows survive layout changes. `${VARS}` in `value` expand from env,
+and a variable that is not set stops the flow before its first step, naming it -
+the value used to be typed in as written, sixteen literal characters of
+`${TEST_PASSWORD}`, under a log line that said `type 16 chars`. A `$` followed by
+a name is read as a variable wherever it appears in a value, and there is no way
+to write a literal one: a caption like `$USD`, or a password with a `$` in the
+middle of it, has to come from the environment too.
 
 ### Assertions, and matching by id
 
@@ -127,6 +133,20 @@ Four more ways a flow stops, all of them typos that used to pass:
 - a `"match"` value that is neither `exact` nor `contains`;
 - a `"match"` key on a step that does not take one;
 - a `wait` whose value is not a number - `sleep` refuses it.
+
+The flow file itself is now read in full before the first step runs, and a file
+the runner cannot turn into steps stops the run there: JSON it cannot parse, no
+`steps` list, a `null` where a value belongs, a variable that is not set, or a
+value carrying the character the runner separates its fields with. None of those
+produced a failure before - the steps were generated straight into the loop,
+where the generator's status was lost, so a file that yielded no steps at all
+still ended with `flow complete`.
+
+A value is one value, whatever is inside it. A caption that wraps onto two lines
+can be written with the line break in it, and the lookup folds whitespace on both
+sides of the comparison. The step used to end at that line break: the first half
+ran as the step, the second half arrived as a step of its own, and the failure
+quoted a string the flow file did not contain.
 
 `dismiss` and `optionalTapText` keep their exception, and it is narrow: a label
 that is not on screen is the state those two exist to tolerate. A device that

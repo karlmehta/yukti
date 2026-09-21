@@ -710,7 +710,10 @@ def read(path):
     except OSError: return ""
 
 steps = []
-for line in read(rec).splitlines():
+# split("\n"), not splitlines(): the latter also cuts on \r and on half a dozen
+# other characters, so a value carrying one of them split its own record and the
+# step vanished from the report - green run, no steps in the file.
+for line in read(rec).split("\n"):
     if not line: continue
     parts = line.split(SEP)
     if len(parts) < 6: continue
@@ -803,18 +806,88 @@ flow(){
   FLOW_REC="$(mktemp)"; FLOW_CUR="$(mktemp)"; FLOW_ERR="$(mktemp)"; FLOW_T0="$(now)"
   export YUKTI_STEP_ERR="$FLOW_ERR"
   trap 'flow_results $?; run_dir_cleanup' EXIT
-  # The step generator is fed on FD 3, NOT stdin: steps shell out to adb/idb,
+  # The steps are built before the first one runs, and a flow file the builder
+  # refuses never starts. It used to be generated straight into the loop, where
+  # its status was lost with the process substitution: a flow file that is not
+  # valid JSON, or one carrying a variable that is not set, produced no steps
+  # and the run still ended with "flow complete".
+  local steps gerr gmsg
+  steps="$(mktemp)"; gerr="$(mktemp)"
+  if ! "$PY" - "$f" > "$steps" 2> "$gerr" <<'PY'
+import json, os, re, sys
+
+def fail(msg):
+    sys.stderr.write(msg + "\n"); sys.exit(2)
+
+try:
+    with open(sys.argv[1], encoding="utf-8") as fh: doc = json.load(fh)
+except ValueError as e:
+    fail("flow file is not valid JSON: %s" % e)
+except OSError as e:
+    fail("flow file cannot be read: %s" % e)
+if not isinstance(doc, dict) or not isinstance(doc.get("steps"), list):
+    fail('flow file has no "steps" list')
+if not doc["steps"]:
+    fail("flow file has no steps - it would pass without doing anything")
+
+# The same forms os.path.expandvars accepted, minus its silence: it returns the
+# text unchanged when the variable is not set, so ${TEST_PASSWORD} was typed
+# into whatever held focus as a literal and the log said `type 16 chars`.
+VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+# A record ends with NUL, the fields inside it are separated by US. A newline is
+# then just a character in a value: a caption that wraps on screen is what an
+# author copies out of it, and the lookup already folds whitespace on both sides
+# of the comparison. Line-separated records cut such a value in half, ran the
+# first half as the step and read the second as a step of its own.
+SEP, END = "\x1f", "\0"
+KEYS = ("do", "value", "x", "y", "match", "timeout")
+
+recs = []
+for idx, step in enumerate(doc["steps"], 1):
+    if not isinstance(step, dict): fail("step %d is not an object" % idx)
+    verb = step.get("do") or ""
+    fields = []
+    for key in KEYS:
+        v = step.get(key, "")
+        if v is None:
+            fail('step %d \'%s\': "%s" is null - remove the key or give it a value'
+                 % (idx, verb, key))
+        v = v if isinstance(v, str) else str(v)
+        if key == "value":
+            missing = []
+            def one(m, missing=missing):
+                name = m.group(1) or m.group(2)
+                if name not in os.environ: missing.append(name); return ""
+                return os.environ[name]
+            v = VAR.sub(one, v)
+            if missing:
+                fail("step %d '%s': $%s is not set in the environment - the step "
+                     "would have used the text as written" % (idx, verb, missing[0]))
+        if SEP in v or END in v:
+            fail('step %d \'%s\': "%s" contains a character the runner separates '
+                 "fields with" % (idx, verb, key))
+        fields.append(v)
+    recs.append(SEP.join(fields))
+
+sys.stdout.write(END.join(recs) + (END if recs else ""))
+PY
+  then gmsg="$(cat "$gerr")"; rm -f "$steps" "$gerr"; die "${gmsg:-the flow file could not be read}"; fi
+  rm -f "$gerr"
+  # Opened and then unlinked: the loop keeps reading it, and no path is left
+  # behind whichever way the flow ends.
+  exec 3< "$steps"; rm -f "$steps"
+  # The steps are fed on FD 3, NOT stdin: steps shell out to adb/idb,
   # and `adb shell` / subprocesses read stdin — if the loop read from the same
   # pipe they'd swallow the remaining steps, so only step 1 ran (and the flow
-  # still reported PASS). Reading `<&3` from a process substitution also keeps
-  # the loop in THIS shell (not a pipe subshell), so a step's `die` (exit 1)
-  # aborts the whole flow with a non-zero status instead of being lost.
-  while IFS=$'\x1f' read -r do_ val x y mtch tmo <&3; do
+  # still reported PASS). Reading `<&3` also keeps the loop in THIS shell (not a
+  # pipe subshell), so a step's `die` (exit 1) aborts the whole flow with a
+  # non-zero status instead of being lost.
+  while IFS=$'\x1f' read -r -d '' do_ val x y mtch tmo <&3; do
       # Record the step BEFORE running it and again once it survived: the one
       # step that has a start and no end is the step that failed, and that is
       # the single fact a report cannot reconstruct from console text.
       FLOW_IDX=$((FLOW_IDX+1)); FLOW_S0="$(now)"; FLOW_ART=""
-      printf '%s\x1f%s\x1f%s\x1f%s\n' "$FLOW_IDX" "$do_" "$val" "$FLOW_S0" > "$FLOW_CUR"
+      printf '%s\x1f%s\x1f%s\x1f%s\n' "$FLOW_IDX" "$do_" "${val//[$'\n\r']/ }" "$FLOW_S0" > "$FLOW_CUR"
       : > "$FLOW_ERR"
       # The name first, the keys after it, because the order decides what a typo
       # hears. A step named `tpText` carrying a `match` would otherwise be told
@@ -871,8 +944,9 @@ flow(){
       # to tolerate.
       case "$do_" in dismiss|optionalTapText) st=0;; esac
       [ "$st" -eq 0 ] || die "step $FLOW_IDX '$do_' failed (exit $st)"
-      printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' "$FLOW_IDX" "$do_" "$val" "$FLOW_S0" "$(now)" "$FLOW_ART" >> "$FLOW_REC"
-  done 3< <("$PY" -c 'import json,sys,os;[print("\x1f".join([s.get("do",""),os.path.expandvars(str(s.get("value",""))),str(s.get("x","")),str(s.get("y","")),str(s.get("match","")),str(s.get("timeout",""))])) for s in json.load(open(sys.argv[1]))["steps"]]' "$f")
+      printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' "$FLOW_IDX" "$do_" "${val//[$'\n\r']/ }" "$FLOW_S0" "$(now)" "$FLOW_ART" >> "$FLOW_REC"
+  done
+  exec 3<&-
   ok "flow complete: $f"
 }
 

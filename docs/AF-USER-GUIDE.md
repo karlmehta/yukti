@@ -110,7 +110,9 @@ exceptions stay, and they are narrow: `dismiss` and `optionalTapText` tolerate a
 label that is not on screen, but not a device that refuses the tap. An unknown
 verb, an unknown `"match"` value, a `"match"` on a step that does not take one,
 a non-numeric `wait`, and a `scrollToText` whose label never comes into view stop
-the flow as well.
+the flow as well. A flow file that is not valid JSON, one with no steps in it, and
+a `${VARIABLE}` that is not set in the environment stop it before the first step
+instead of running half of it.
 
 Save it in `.yukti/flows/` and it's part of the suite the next Run All.
 
@@ -120,7 +122,9 @@ Save it in `.yukti/flows/` and it's part of the suite the next Run All.
 
 Enter the test account **email/password** once in the Build bar → **Set**. They
 stay in the panel's memory (localhost only, never written to disk) and inject
-into flows via `${TEST_EMAIL}` / `${TEST_PASSWORD}`.
+into flows via `${TEST_EMAIL}` / `${TEST_PASSWORD}`. A flow that reaches one of
+them without it being set stops and names it - it used to type the text
+`${TEST_PASSWORD}` into the field and carry on green.
 
 ## First-time setup on a machine
 
