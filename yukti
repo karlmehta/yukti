@@ -225,6 +225,36 @@ for m in re.finditer(r"<node\b[^>]*>", xml):
     best=(cx,cy); best_score=score
 if best: print(best[0],best[1])
 ' "$1" "${2:-text}" "${3:-exact}"; }
+# Where a horizontal swipe should land, from the dump. A swipe across the middle
+# of the screen lands on whatever is there, and an element that does not claim
+# the gesture may be pressed instead of scrolled: measured on the app under test,
+# a horizontal swipe across a clickable row opened that row's share sheet, and a
+# search of eight swipes did it eight times. The dump says which nodes scroll, and
+# one that scrolls and is wider than it is tall is what a horizontal swipe is for.
+# Prints "cy x1 x2" of the widest such node, or nothing when the screen has none.
+ahscroller(){ aui | "$PY" -c '
+import re,sys
+xml=sys.stdin.read()
+best=None
+for m in re.finditer(r"<node\b[^>]*>", xml):
+    t=m.group(0)
+    # No single quote anywhere in this snippet: it lives inside a single-quoted
+    # shell string. With one, the string ended here, the rest of the code became
+    # shell words, and the lookup answered nothing at all - silently, because a
+    # screen with no sideways scroller is a legitimate answer.
+    if re.search(r"scrollable=\"true\"", t) is None: continue
+    b=re.search(r"bounds=\"\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]\"", t)
+    if not b: continue
+    x1,y1,x2,y2=map(int,b.groups())
+    w,h=x2-x1,y2-y1
+    # Taller than wide is a vertical list, whatever else it is.
+    if w<=h or w<80 or h<20: continue
+    # The WIDEST, which is what the guide and the runbook promise. By area a
+    # 900x400 carousel would win over a 1080x100 tab strip, and then the code and
+    # the text would mean different things - the area is only the tie-break.
+    if best is None or (w,w*h)>(best[0],best[1]): best=(w,w*h,(y1+y2)//2,x1,x2)
+if best: print(best[2],best[3],best[4])
+'; }
 atap(){ apaths; adb shell input tap "$1" "$2"; }
 atype(){ apaths; local s="$1" q
   # Quote for the ON-DEVICE shell so metacharacters can't expand. Unquoted, a *
@@ -642,7 +672,12 @@ tap(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { atap "$1" "$2"; return; }; pa
 # the status was dropped. A flow then skipped an optionalTapText, swiped eight
 # times looking for a label, or blamed a missing element for a broken dump.
 # Every lookup below now checks the status: an unreadable screen stops the run.
-tap_text(){ local xy; xy="$(scroll_to "$1")" || die "cannot read the screen - see the error above"; [ -n "$xy" ] || die "no element matching '$1'"; tap $xy; }  # auto-scrolls off-screen elements into view
+# Status 5 hands back the last sighting, which is stale by definition, so this
+# verb must not tap it: an element that left the screen is an element that is not
+# there, which is the answer it has always given.
+tap_text(){ local xy st=0; xy="$(scroll_to "$1")" || st=$?
+  case "$st" in 0) ;; 5) die "no element matching '$1'";; *) die "cannot read the screen - see the error above";; esac
+  [ -n "$xy" ] || die "no element matching '$1'"; tap $xy; }  # auto-scrolls off-screen elements into view
 # The exception these two verbs enjoy is about an ABSENT label, and nothing else.
 # A device that refuses the tap is not an absent label: the status of `tap` is
 # checked here, or the step keeps its exception and reports a tap that never
@@ -835,8 +870,65 @@ wait_for(){ local q="${1:-}" t="${2:-10}" m="${3:-exact}" mode="${4:-assert}" xy
   done
   [ "$readable" = 1 ] || die "$label FAILED after ${t}s waiting for '$q': $(lookup_err "$lst")"
   die "$label FAILED: '$q' not on screen after ${t}s"; }
-scroll(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { apaths; if [ "${1:-down}" = up ]; then adb shell input swipe 200 300 200 700 300; else adb shell input swipe 200 700 200 300 300; fi; return; }
-  paths; if [ "${1:-down}" = up ]; then idb ui swipe --udid "$(U)" 200 320 200 720; else idb ui swipe --udid "$(U)" 200 720 200 320; fi; }
+# A direction reveals what lies that way: `down` shows what is further down the
+# content, which means the finger travels up. Same for `left` and `right`.
+#
+# A name the tool does not know used to scroll DOWN - the `else` of a two-way
+# test - so `{"do":"scroll","value":"sideways"}` swiped down and said nothing.
+# The list is checked first now, and a typo stops the flow.
+#
+# The vertical swipes keep the coordinates they were measured with. They are
+# device pixels and they are not proportional to anything, which is worth its own
+# issue, but changing them here would change the scroll distance of every flow
+# that exists - and this change is about direction. The horizontal pair has no
+# measured numbers to keep, so it is computed from the screen: across the widest
+# element that says it scrolls, from a fifth of its width to four fifths of it -
+# or, when the screen has no such element, across the middle of the screen, with
+# a line in the run to say that is what happened.
+scroll(){ local d="${1:-down}" w h
+  case "$d" in up|down|left|right) ;; *) die "scroll: '$d' is not a direction - use up, down, left or right";; esac
+  if [ "${YUKTI_PLATFORM:-ios}" = android ]; then apaths
+    case "$d" in
+      up)    adb shell input swipe 200 300 200 700 300;;
+      down)  adb shell input swipe 200 700 200 300 300;;
+      left|right)
+        local cy x1 x2 span aim ast=0
+        # A dump that failed is not the same answer as a screen with nothing to
+        # aim at: it used to arrive as the second, so a broken dump printed the
+        # warning and swiped blind. A bare `scroll` step has no lookup in front
+        # of it to catch that later, so it dies here, like every other reader of
+        # the screen.
+        aim="$(ahscroller)" || ast=$?
+        [ "$ast" -eq 0 ] || die "cannot read the screen - see the error above"
+        set -- $aim; cy="${1:-}"; x1="${2:-}"; x2="${3:-}"
+        if [ -z "$cy" ]; then
+          # Nothing on this screen says it scrolls sideways. The swipe still goes
+          # out, because a dump does not always report what an app implements -
+          # but it says so once per run, since this is the case where the gesture
+          # is most likely to be taken for a press.
+          # To stderr, like the other line that can be printed from inside a
+          # command substitution: scroll_to runs in one, so a warning on stdout
+          # would arrive inside the coordinates it returns.
+          [ -n "${H_WARNED:-}" ] || warn "no horizontally scrollable element in the dump - swiping across the middle of the screen, which the app may read as a press on what is there" >&2
+          H_WARNED=1
+          set -- $(screen_wh); w="${1:-$BASIS_W}"; h="${2:-$BASIS_H}"
+          cy=$(( h / 2 )); x1=0; x2="$w"
+        fi
+        span=$(( x2 - x1 ))
+        if [ "$d" = left ]; then adb shell input swipe $(( x1 + span / 5 )) "$cy" $(( x2 - span / 5 )) "$cy" 300
+        else adb shell input swipe $(( x2 - span / 5 )) "$cy" $(( x1 + span / 5 )) "$cy" 300; fi;;
+    esac
+    return
+  fi
+  paths
+  case "$d" in
+    up)    idb ui swipe --udid "$(U)" 200 320 200 720;;
+    down)  idb ui swipe --udid "$(U)" 200 720 200 320;;
+    left|right)
+      set -- $(screen_wh); w="${1:-$BASIS_W}"; h="${2:-$BASIS_H}"
+      if [ "$d" = left ]; then idb ui swipe --udid "$(U)" $(( w / 5 )) $(( h / 2 )) $(( w * 4 / 5 )) $(( h / 2 ))
+      else idb ui swipe --udid "$(U)" $(( w * 4 / 5 )) $(( h / 2 )) $(( w / 5 )) $(( h / 2 )); fi;;
+  esac; }
 # a11y reports FULL-CONTENT coords; taps need ON-SCREEN coords. Scroll a label into the viewport.
 # Stop on an unreadable screen instead of swiping eight times into the dark:
 # a swipe changes state, and the state is what the next step is checking.
@@ -930,11 +1022,71 @@ scale_xy(){ local x="${1:?x}" y="${2:?y}" w h nx ny
 # How many times a miss is worth swiping for. Read twice: by the loop, and by the
 # message that reports the miss.
 SCROLL_TRIES=8
-scroll_to(){ local lbl="$1" i xy y h top bot; h="$(screen_h)"
-  top=$(( h * BAND_TOP / BASIS_H )); bot=$(( h * BAND_BOTTOM / BASIS_H ))
+# How much of the band counts as "the edge" when a step asks to be clear of it.
+# A fifth from each side: enough to clear a sticky header or a bottom bar, which
+# is what the request is for, and not so much that a short list can never satisfy
+# it.
+CLEAR_PCT=20
+# The inset of the band on x, as a percentage of the width. The vertical band is
+# measured - BAND_TOP and BAND_BOTTOM against BASIS_H - and on x there is nothing
+# measured to keep: no status bar, no navigation bar. So the proportion the top
+# inset comes to, 60 of 874, is applied to both sides. Written out as its own
+# number because `w * BAND_TOP / BASIS_H` reads as a dimension mistake.
+BAND_SIDE_PCT=7
+# The direction is for FINDING the element. Once it is on the screen, which way
+# to swipe is decided by where it IS: an element at the top edge has to travel
+# down the screen, and a search that walked downwards to find it would push it
+# out of view instead and then report it missing - a row under a sticky header is
+# exactly the case `"edges":"clear"` exists for.
+#
+# Three answers, and the last two are new:
+#   0 + coordinates - it is there, and where it has to be
+#   0 + nothing     - it was never on the screen
+#   4 + coordinates - in the band, never clear of its edges; the position is live
+#   5 + coordinates - it came into view and the swipes took it out again; the
+#                     position is the LAST SIGHTING and is stale. Saying "not on
+#                     screen" of an element that was on it is a false reason, and
+#                     a false reason is worse than a vague one.
+scroll_to(){ local lbl="$1" dir="${2:-down}" clear="${3:-}" i xy c lo hi blo bhi m w h seen="" nudge
+  case "$dir" in
+    # The band on y is the measured one, scaled to this screen.
+    up|down)    h="$(screen_h)"; blo=$(( h * BAND_TOP / BASIS_H )); bhi=$(( h * BAND_BOTTOM / BASIS_H ));;
+    left|right) w="$(screen_w)"; blo=$(( w * BAND_SIDE_PCT / 100 )); bhi=$(( w - blo ));;
+    *) die "scrollToText: '$dir' is not a direction - use up, down, left or right";;
+  esac
+  lo="$blo"; hi="$bhi"
+  if [ "$clear" = clear ]; then
+    m=$(( (bhi - blo) * CLEAR_PCT / 100 )); lo=$(( blo + m )); hi=$(( bhi - m ))
+  fi
   for i in $(seq 1 $SCROLL_TRIES); do xy="$(find_el "$lbl")" || die "cannot read the screen - see the error above"
-    if [ -n "$xy" ]; then y="${xy##* }"; if [ "$y" -lt "$bot" ] && [ "$y" -gt "$top" ]; then printf '%s' "$xy"; return 0; fi; fi
-    scroll down; sleep 0.6; done; find_el "$lbl"; }
+    nudge="$dir"
+    if [ -n "$xy" ]; then
+      # The coordinate that decides is the one the swipe moves.
+      case "$dir" in up|down) c="${xy##* }";; *) c="${xy%% *}";; esac
+      seen="$xy"
+      if [ "$c" -lt "$hi" ] && [ "$c" -gt "$lo" ]; then printf '%s' "$xy"; return 0; fi
+      # Too near one end: reveal what lies on that side, which moves the element
+      # towards the other. `up` and `left` reveal what is above and to the left,
+      # so the element travels down and right.
+      if [ "$c" -le "$lo" ]; then case "$dir" in up|down) nudge=up;; *) nudge=left;; esac
+      else case "$dir" in up|down) nudge=down;; *) nudge=right;; esac; fi
+    fi
+    scroll "$nudge"; sleep 0.6; done
+  # Out of swipes. As a locator this still answers with wherever the element is,
+  # which is what tapText has always done with it - and the position is judged
+  # here as it is inside the loop, because the last swipe of the loop can be the
+  # one that placed it: without this test such an element would be reported as
+  # "never landed clear" while sitting exactly where it was asked to be.
+  xy="$(find_el "$lbl")" || die "cannot read the screen - see the error above"
+  if [ -n "$xy" ]; then
+    printf '%s' "$xy"
+    case "$dir" in up|down) c="${xy##* }";; *) c="${xy%% *}";; esac
+    [ "$c" -lt "$hi" ] && [ "$c" -gt "$lo" ] && return 0
+    [ "$clear" = clear ] && return 4
+    return 0
+  fi
+  if [ -n "$seen" ]; then printf '%s' "$seen"; return 5; fi
+  return 0; }
 # scroll_to is a locator and stays one: it is also the first half of tapText,
 # which has its own words for a miss. As a STEP, though, scrollToText is a
 # statement that the label is there - the flow swipes until it finds it - and a
@@ -942,9 +1094,20 @@ scroll_to(){ local lbl="$1" i xy y h top bot; h="$(screen_h)"
 # last lookup came back empty, and the step passed. The runbook recommends this
 # step in front of an assertion, so the documented way to reach something below
 # the fold was also the way to miss it in silence, at eight swipes a time.
-scroll_to_step(){ local lbl="${1:-}" xy; [ -n "$lbl" ] || die "scrollToText needs a non-empty value"
-  xy="$(scroll_to "$lbl")" || die "cannot read the screen - see the error above"
-  [ -n "$xy" ] || die "scrollToText: '$lbl' not on screen after $SCROLL_TRIES swipes"
+scroll_to_step(){ local lbl="${1:-}" dir="${2:-down}" clear="${3:-}" xy st=0
+  [ -n "$lbl" ] || die "scrollToText needs a non-empty value"
+  case "$dir" in up|down|left|right) ;; *) die "scrollToText: '$dir' is not a direction - use up, down, left or right";; esac
+  case "$clear" in ''|clear) ;; *) die "scrollToText: '$clear' is not a value for \"edges\" - the only one is clear";; esac
+  xy="$(scroll_to "$lbl" "$dir" "$clear")" || st=$?
+  # Neither of these two says the direction: once the element is on the screen
+  # the swipes follow its position, not the direction the search came from.
+  case "$st" in
+    0) ;;
+    4) die "scrollToText: '$lbl' came into view but never landed clear of the band edges after $SCROLL_TRIES swipes - it is at $xy";;
+    5) die "scrollToText: '$lbl' came into view at $xy and the swipes took it out of view again - after $SCROLL_TRIES swipes it is not on the screen";;
+    *) die "cannot read the screen - see the error above";;
+  esac
+  [ -n "$xy" ] || die "scrollToText: '$lbl' not on screen after $SCROLL_TRIES swipes $dir"
   printf '%s\n' "$xy"; }
 
 # ── per-flow results ─────────────────────────────────────────────────────────
@@ -1078,7 +1241,7 @@ PY
 # ── deterministic flow runner: a JSON list of steps ──────────────────────────
 # step keys: include[with]|launch|stopApp|clearState|wait|waitFor[timeout,match]|waitForId[timeout]|screenshot|
 #            tap[x,y]|tapText|optionalTapText|tapId|type|clearText[x,y]|pressKey|hideKeyboard|scroll|
-#            scrollToText|dismiss|assertText[match]|assertId|assertNotText[match]|assertNotId
+#            scrollToText[direction,edges]|dismiss|assertText[match]|assertId|assertNotText[match]|assertNotId
 #            any step, and an include, may carry "when": {visible|notVisible|
 #            visibleId|notVisibleId|platform} - all of them have to hold
 #
@@ -1161,9 +1324,9 @@ FLOW_VERBS="launch stopApp clearState wait waitFor waitForId screenshot tap tapT
 # after it - they say so on the console, and they land in the report as `skipped`
 # with the condition that switched them off. A nested guard inside the group is
 # not a step and takes no number: it is skipped together with its group.
-flow_skip(){ local n="${1:-1}" why="$2" i=0 d v xx yy mm tt ss si wc ws t
+flow_skip(){ local n="${1:-1}" why="$2" i=0 d v xx yy mm tt dd ee ss si wc ws t
   why="${why//[$'\n\r']/ }"
-  while [ "$i" -lt "$n" ] && IFS=$'\x1f' read -r -d '' d v xx yy mm tt ss si wc ws <&3; do
+  while [ "$i" -lt "$n" ] && IFS=$'\x1f' read -r -d '' d v xx yy mm tt dd ee ss si wc ws <&3; do
     i=$((i+1))
     if [ "$d" = "__when" ]; then continue; fi
     FLOW_IDX=$((FLOW_IDX+1)); t="$(now)"
@@ -1201,7 +1364,7 @@ NAME = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]*\Z")
 # of the comparison. Line-separated records cut such a value in half, ran the
 # first half as the step and read the second as a step of its own.
 SEP, END = "\x1f", "\0"
-KEYS = ("do", "value", "x", "y", "match", "timeout")
+KEYS = ("do", "value", "x", "y", "match", "timeout", "direction", "edges")
 # A step may also carry a condition. It is not one of the fields above: it is
 # answered while the run goes on, and its answer decides whether the step runs.
 WHEN_KINDS = ("notVisible", "notVisibleId", "platform", "visible", "visibleId")
@@ -1275,7 +1438,7 @@ def guard(cond, span, src, idx):
     # the screen cannot change halfway through it, which is exactly what
     # happens if the condition is re-asked at every step of the block: the
     # first step dismisses the dialog, and the rest of the block is skipped.
-    return SEP.join(["__when", "", "", "", "", "", src, str(idx), cond, str(span)])
+    return SEP.join(["__when"] + [""] * (len(KEYS) - 1) + [src, str(idx), cond, str(span)])
 
 def fill(v, scope, at, inside):
     missing = []
@@ -1422,7 +1585,7 @@ PY
   # still reported PASS). Reading `<&3` also keeps the loop in THIS shell (not a
   # pipe subshell), so a step's `die` (exit 1) aborts the whole flow with a
   # non-zero status instead of being lost.
-  while IFS=$'\x1f' read -r -d '' do_ val x y mtch tmo src sidx wcond wspan <&3; do
+  while IFS=$'\x1f' read -r -d '' do_ val x y mtch tmo dir edg src sidx wcond wspan <&3; do
       # A guard is not a step: it takes no number of its own, and when it holds
       # the run says nothing about it - the steps that follow simply run. When it
       # does not hold, its whole group is read off the stream and every step in it
@@ -1458,6 +1621,11 @@ PY
       # it was honoured: tapText folds case and matches a substring whatever the
       # step says, and a suite written on that belief is weaker than it reads.
       [ -z "$mtch" ] || case "$do_" in assertText|assertNotText|waitFor) ;; *) die "step $FLOW_IDX '$do_' does not take a \"match\" - only assertText, assertNotText and waitFor do";; esac
+      # Same rule for the two keys scrollToText reads: a key a step ignores is a
+      # line of the flow file that does not do what it says. `scroll` carries its
+      # direction in "value", the way it always has.
+      [ -z "$dir" ] || case "$do_" in scrollToText) ;; *) die "step $FLOW_IDX '$do_' does not take a \"direction\" - only scrollToText does; scroll takes its direction as its \"value\"";; esac
+      [ -z "$edg" ] || case "$do_" in scrollToText) ;; *) die "step $FLOW_IDX '$do_' does not take an \"edges\" - only scrollToText does";; esac
       # Same rule, the other way round: hideKeyboard closes whatever keyboard is
       # up and has nothing to read a value with. Carrying one means the author
       # meant pressKey, and a key silently ignored is a flow that believes it
@@ -1481,7 +1649,7 @@ PY
         tapText)     say "tap '$val'"; tap_text "$val";;
         optionalTapText) tap_text_optional "$val";;
         scroll)      scroll "${val:-down}";;
-        scrollToText) scroll_to_step "$val" >/dev/null;;
+        scrollToText) scroll_to_step "$val" "${dir:-down}" "$edg" >/dev/null;;
         dismiss)     dismiss;;
         clearText)   clear_field $(scale_xy "$x" "$y");;
         pressKey)    press_key "$val";;
@@ -1568,7 +1736,8 @@ ${B}yukti v$YUKTI_VERSION${R} — YUKTI — smart mobile-app QA automation for R
   yukti tap <x> <y>         tap
   yukti type "<text>"       type (char-by-char = reliable; idb bulk-type drops chars)
   yukti clear <x> <y>       clear a text field
-  yukti scroll <up|down>   scroll the screen · yukti scroll-to "<label>" scroll a label into view, fail on a miss
+  yukti scroll <up|down|left|right>
+                            scroll the screen · yukti scroll-to "<label>" [dir] [clear] scroll a label into view, fail on a miss
   yukti dismiss             auto-dismiss common modals (Not Now / Skip / OK / Close…)
   yukti assert "<text>"     assert the text is on screen (perceivable text only, no scroll)
   yukti stop-app <variant>  force-stop the app of that variant
@@ -1587,6 +1756,8 @@ ${B}yukti v$YUKTI_VERSION${R} — YUKTI — smart mobile-app QA automation for R
               stopApp force-stops the app, clearState wipes its data (Android only); both take the variant name
               assertText matches the whole label as written; "match":"contains" asks for a substring
               waitFor polls for an element and fails on timeout ("timeout": seconds, default 10); it never scrolls
+              scroll takes up, down, left or right as its "value"; scrollToText takes the same four as "direction"
+              (default down) and "edges":"clear" to land the element away from the band edges, failing if it cannot
               assertNotText / assertNotId state that something is NOT on the screen as it is now; they never scroll
               any step, and an include, may carry "when": {"visible"|"notVisible"|"visibleId"|"notVisibleId"|"platform"} -
               all the conditions in one "when" have to hold; the step is skipped when they do not, and the run stops when

@@ -144,7 +144,7 @@ inside a verb could stop a run - `adb` refusing a tap, a launch of a package
 that is not installed, a `clearText` on a dead device all reported PASS, and the
 JUnit file said `failures="0"`.
 
-Thirteen more ways a flow stops, the first four of them typos that used to pass:
+Sixteen more ways a flow stops, the first four of them typos that used to pass:
 
 - a step name the runner does not know;
 - a `"match"` value that is neither `exact` nor `contains`;
@@ -153,6 +153,12 @@ Thirteen more ways a flow stops, the first four of them typos that used to pass:
 - a `"value"` on a `hideKeyboard`, which has nothing to read one with;
 - a `pressKey` naming a key the tool does not have;
 - a `pressKey` asking for `back` on iOS, which has no Back key;
+- a `scroll`, or a `scrollToText`, given a direction that is not `up`, `down`,
+  `left` or `right` - the unknown ones used to swipe down and say nothing;
+- an `"edges"` value other than `clear`, and a `"direction"` or an `"edges"` on
+  a step that does not take one;
+- a `scrollToText` with `"edges":"clear"` whose element comes into view and never
+  lands clear of the edges - a row under a sticky bar, most often;
 - a `clearText` whose coordinates land on something that is not a text field;
 - a `clearText` whose coordinates land on a disabled field, or on one that
   cannot take focus, or a tap that leaves focus in a different field than the
@@ -237,6 +243,52 @@ quoted a string the flow file did not contain.
 `dismiss` and `optionalTapText` keep their exception, and it is narrow: a label
 that is not on screen is the state those two exist to tolerate. A device that
 refuses the tap is not that state, and it fails the flow like any other step.
+
+`scrollToText` takes the direction to look in - `"direction"`: `up`, `down`
+(the default), `left`, `right` - and `"edges":"clear"` to land the element away
+from the band edges instead of merely inside the band. A plain `scroll` takes the
+same four directions as its `"value"`.
+
+On Android a sideways swipe goes across the widest element on screen that says it
+scrolls and is wider than it is tall: a carousel, a tab strip. When the screen
+has none, it goes across the middle and the run says so - and that line is a warning, not
+a note: a horizontal swipe over a row that does not claim the gesture can be
+taken for a press on it. Measured on the app under test, a `scroll left` across
+the Settings list opened the share sheet of the row it crossed, and a search of
+eight swipes did it eight times. A direction belongs where something scrolls
+that way.
+
+On iOS the sideways swipe goes across the middle of the screen and says nothing:
+the tree there does not report which elements scroll. Written, not measured - no
+Mac.
+
+No `scroll` step waits for the app to settle, in any direction, and none ever
+has. An assertion written straight after one can read a moving screen: leave a
+`wait` or a `waitFor` between them.
+
+`"edges":"clear"` keeps swiping until the element sits a fifth of the band in
+from both ends, and fails naming its position if it never does. A row under a
+sticky bottom bar cannot be moved, and that failure is the point: the tap that
+would follow is the thing the request exists to prevent.
+
+Those swipes follow the element's position, not the search direction. A row at
+the top edge travels down the screen; nudging it the way the search walked would
+push it out of view and report it missing. `"direction"` finds the element, the
+step places it.
+
+A miss reads as one of two things. Never seen: `not on screen after 8 swipes
+down`, with the direction, because the direction is what looked. Seen and swiped
+away: `came into view at 540 1879 and the swipes took it out of view again` -
+"not on screen" would be a false reason for an element the run had on the screen,
+which is the class the assertions themselves were fixed for.
+
+One limit, on x. The clear band is a little over half the width, and a sideways
+swipe travels three fifths of the scroller it crosses, so on a narrow screen -
+or against a list that moves content by the whole swipe - an element at one edge
+can fly past the other and be nudged back, until the swipes run out. The step
+then fails with the position it could not place, which is the honest answer; if
+it happens to you, place the element with a `scroll` of your own and drop the
+key.
 
 `scrollToText` fails the flow when the label never arrives: it swipes eight
 times, and a last look that finds nothing is the failure, named with the label.
