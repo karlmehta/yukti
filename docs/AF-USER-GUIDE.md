@@ -102,6 +102,9 @@ A flow is `{ "name": "...", "steps": [ ... ] }`. Common step verbs:
 | `{"do":"waitForId","value":"weight_card"}` | the same wait, matching the id exactly |
 | `{"do":"wait","value":3}` / `{"do":"dismiss"}` | sleep a fixed time (prefer `waitFor`) / dismiss a modal |
 | `{"do":"tap","x":201,"y":812}` | tap raw coordinates (last resort — brittle) |
+| `{"do":"clearText","x":201,"y":400}` | empty the field at those coordinates, and fail if it is not empty afterwards (Android 11+) |
+| `{"do":"pressKey","value":"enter"}` | press one key: `back`, `enter`, `home`, `delete`, `tab`, `escape` (`back` is Android only) |
+| `{"do":"hideKeyboard"}` | close the keyboard and fail if it is still up — a form longer than one field needs this between fields on Android |
 | `{"do":"stopApp","value":"qa"}` | force-stop the app of that variant |
 | `{"do":"clearState","value":"qa"}` | wipe the app's data, Android only (the app stops — `launch` it again) |
 

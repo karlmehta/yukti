@@ -211,7 +211,81 @@ atype(){ apaths; local s="$1" q
   q=$(printf '%s' "$s" | sed "s/'/'\\\\''/g")
   q=${q// /%s}
   adb shell "input text '$q'"; }
-aclear(){ apaths; adb shell input tap "$1" "$2"; local i; for i in $(seq 1 40); do adb shell input keyevent 67 >/dev/null 2>&1; done; }
+# Keys are named in the flow file, never numbered: a step that says `66` reads as
+# noise and stops being true the moment the platform changes. These six names are
+# the whole vocabulary - anything else stops the run instead of pressing nothing.
+KEY_NAMES="back enter home delete tab escape"
+akey(){ apaths; local c
+  case "$1" in back) c=4;; enter) c=66;; home) c=3;; delete) c=67;; tab) c=61;; escape) c=111;; esac
+  adb shell input keyevent "$c"; }
+# The IME's own answer about itself. A soft keyboard draws in its own window and
+# never appears in the view dump the flows read, so "is it up" cannot be asked of
+# the screen. Three outcomes, not two: up (0), down (1), and the device did not
+# answer (2) - answering "down" to the third would let a step report success on a
+# device that said nothing.
+akb_shown(){ apaths; local s
+  s="$(adb shell dumpsys input_method 2>/dev/null | grep -o "mInputShown=[a-z]*" | head -1 | cut -d= -f2 | tr -d "\r")"
+  [ -n "$s" ] || return 2
+  [ "$s" = true ]; }
+# What sits under a point: its class, then its text. The rig has to be able to
+# say what a field holds AFTER acting on it - a clear that is not checked is the
+# same silent success this tool keeps finding elsewhere - and the class comes
+# with it because "the text did not change" proves an empty field only when the
+# thing under the point is a field. Aimed at a caption, it proves nothing at all.
+afield(){ apaths; aui | "$PY" -c '
+import re,sys
+x0,y0=int(sys.argv[1]),int(sys.argv[2])
+best=None; best_area=0; best_edit=False
+for m in re.finditer(r"<node[^>]*?>", sys.stdin.read()):
+    tag=m.group(0)
+    b=re.search(r"bounds=\"\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]\"", tag)
+    if not b: continue
+    x1,y1,x2,y2=map(int,b.groups())
+    if not (x2>x1 and y2>y1): continue
+    if not (x1<=x0<x2 and y1<=y0<y2): continue
+    cls=re.search(r"class=\"([^\"]*)\"", tag)
+    txt=re.search(r"text=\"([^\"]*)\"", tag)
+    edit="EditText" in (cls.group(1) if cls else "")
+    area=(x2-x1)*(y2-y1)
+    # The field wins over the row that contains it; among equals, the smaller.
+    if best is None or (edit and not best_edit) or (edit==best_edit and area<best_area):
+        best=(cls.group(1) if cls else "", txt.group(1) if txt else ""); best_area=area; best_edit=edit
+if best is None: sys.exit(3)
+sys.stdout.write("%s\x1f%s" % best)
+' "$1" "$2"; }
+# Select all, then one delete. Forty blind deletes were a guess about how much
+# was in the field and about where the caret sat; two calls are neither. The
+# result is then read back, because the only fact that matters here is the state
+# of the field, not that the keys were accepted.
+aclear(){ apaths; local x="$1" y="$2" sdk before after probe
+  sdk="$(adb shell getprop ro.build.version.sdk 2>/dev/null | tr -d "\r")"
+  case "$sdk" in ""|*[!0-9]*) die "clearText: the device did not report its Android version";; esac
+  # No quiet fallback to deleting character by character: on an OS without
+  # `input keycombination` the step says so and stops. A clear that only looks
+  # like one is the failure this verb exists to end.
+  [ "$sdk" -ge 30 ] || die "clearText needs Android 11 (API 30) or newer - 'input keycombination' does not exist on API $sdk"
+  adb shell input tap "$x" "$y" || die "clearText: the device refused the tap on the field"
+  local cls out
+  # The dump is read into a variable first: `read` from a process substitution
+  # reports ITS own end-of-input, not whether the dump could be taken, and a
+  # value without a trailing newline made a good read look like a failed one.
+  out="$(afield "$x" "$y")" || die "clearText: no element at $x,$y - see the error above"
+  IFS=$'\x1f' read -r cls before <<<"$out"
+  case "$cls" in *EditText*) ;; *) die "clearText: the element at $x,$y is a ${cls:-node with no class}, not a text field";; esac
+  adb shell input keycombination 113 29 || die "clearText: the device refused select-all (Ctrl+A)"
+  adb shell input keyevent 67 || die "clearText: the device refused the delete key"
+  out="$(afield "$x" "$y")" || die "clearText: cannot read the screen - see the error above"
+  IFS=$'\x1f' read -r cls after <<<"$out"
+  { [ -n "$after" ] && [ "$after" = "$before" ]; } || { ok "clearText: field empty at $x,$y"; return 0; }
+  # Unchanged and not empty reads two ways, and the view dump cannot tell them
+  # apart: an EditText with no text reports its HINT in the same attribute that
+  # carries its text. Either the field was already empty, or the clear did
+  # nothing. One more delete decides it - on an empty field it changes nothing.
+  adb shell input keyevent 67 || die "clearText: the device refused the delete key"
+  out="$(afield "$x" "$y")" || die "clearText: cannot read the screen - see the error above"
+  IFS=$'\x1f' read -r cls probe <<<"$out"
+  [ "$probe" = "$after" ] || die "clearText: the field still holds text after select-all and delete"
+  ok "clearText: field empty at $x,$y"; }
 
 # ── doctor: verify/report the toolchain ──────────────────────────────────────
 doctor(){
@@ -513,7 +587,108 @@ dismiss(){ local L xy; for L in "Not Now" "Not now" "Maybe Later" "Later" "Skip 
     [ -n "$xy" ] && { tap $xy || die "dismiss: the device refused the tap on '$L'"; sleep 0.6; ok "dismissed '$L'"; }
   done; }  # only SAFE interstitial labels — never Cancel/Close/OK (those navigate/confirm)
 type_str(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { atype "$1"; return; }; paths; local s="${1:?text}" i; for ((i=0;i<${#s};i++)); do idb ui text --udid "$(U)" "${s:$i:1}" >/dev/null 2>&1; sleep 0.12; done; }  # char-by-char = reliable
-clear_field(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { aclear "$1" "$2"; return; }; paths; local x="${1:?x}" y="${2:?y}" i; idb ui tap --udid "$(U)" "$x" "$y"; sleep .4; idb ui tap --udid "$(U)" 360 "$y"; sleep .3; for i in $(seq 1 32); do idb ui key --udid "$(U)" 42 >/dev/null 2>&1; done; }
+# The right edge of the field under a point, and what it holds. Both come out of
+# one dump: on iOS the caret has to be put at the end of THIS field before
+# deleting, and the old code tapped a fixed x=360 - right for one screen width
+# and silently wrong for every other.
+ifield_probe(){ paths; ui | "$PY" -c '
+import json,sys
+x0,y0=float(sys.argv[1]),float(sys.argv[2])
+def frame(e):
+    b=e.get("frame") or {}
+    g=lambda *k: float(next((b[n] for n in k if n in b), 0) or 0)
+    return g("x","X"), g("y","Y"), g("width","Width"), g("height","Height")
+best=None; best_area=0.0
+try: els=json.loads(sys.stdin.read())
+except ValueError: sys.exit(2)
+for e in els:
+    x,y,w,h=frame(e)
+    if w<=0 or h<=0: continue
+    if not (x<=x0<x+w and y<=y0<y+h): continue
+    if best is None or w*h<best_area: best, best_area = e, w*h
+if best is None: sys.exit(3)
+x,y,w,h=frame(best)
+v=str(best.get("AXValue") or "")
+t=(str(best.get("type") or "")+" "+str(best.get("role_description") or "")).lower()
+sys.stdout.write("%d\x1f%s\x1f%s" % (int(x+w-4), "field" if ("field" in t or "textview" in t) else t or "element", v.replace("\n"," ")))
+' "$1" "$2"; }
+# iOS has no select-all through idb, so the deletes are counted from what the
+# field actually holds - measured in the dump, not a constant that was right for
+# one form. The read-back after them is the same rule as on Android.
+iclear(){ paths; local x="${1:?x}" y="${2:?y}" u out edge val after i kind
+  u="$(U)"
+  idb ui tap --udid "$u" "$x" "$y" || die "clearText: the simulator refused the tap on the field"
+  sleep .4
+  out="$(ifield_probe "$x" "$y")" || die "clearText: no element at $x,$y - see the error above"
+  local kind
+  IFS=$'\x1f' read -r edge kind val <<<"$out"
+  [ "$kind" = field ] || die "clearText: the element at $x,$y is a $kind, not a text field"
+  [ -n "$val" ] || { ok "clearText: the field was already empty"; return 0; }
+  idb ui tap --udid "$u" "$edge" "$y" || die "clearText: the simulator refused the tap at the end of the field"
+  sleep .3
+  for i in $(seq 1 ${#val}); do idb ui key --udid "$u" 42 >/dev/null 2>&1 || die "clearText: the simulator refused the delete key"; done
+  out="$(ifield_probe "$x" "$y")" || die "clearText: cannot read the screen - see the error above"
+  IFS=$'\x1f' read -r edge kind after <<<"$out"
+  [ -z "$after" ] || die "clearText: the field still holds text after ${#val} deletes"
+  ok "clearText: field empty at $x,$y"; }
+clear_field(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { aclear "$1" "$2"; return; }; iclear "$1" "$2"; }
+# One key, by name, on either platform. iOS has no Back key at all - saying so is
+# the whole point: a flow that asks for one on iOS is wrong about the platform,
+# and pressing nothing would let it believe otherwise.
+press_key(){ local name="${1:-}" u
+  [ -n "$name" ] || die "pressKey needs a key name - one of: $KEY_NAMES"
+  case " $KEY_NAMES " in *" $name "*) ;; *) die "pressKey does not know the key '$name' - use one of: $KEY_NAMES";; esac
+  if [ "${YUKTI_PLATFORM:-ios}" = android ]; then
+    akey "$name" || die "pressKey '$name': the device refused the key"
+  else
+    paths; u="$(U)"
+    case "$name" in
+      back) die "pressKey 'back' is Android only - iOS has no Back key; tap the screen's own back control with tapText or tapId";;
+      home)   idb ui button HOME --udid "$u" || die "pressKey 'home': the simulator refused the button";;
+      enter)  idb ui key --udid "$u" 40 || die "pressKey 'enter': the simulator refused the key";;
+      escape) idb ui key --udid "$u" 41 || die "pressKey 'escape': the simulator refused the key";;
+      delete) idb ui key --udid "$u" 42 || die "pressKey 'delete': the simulator refused the key";;
+      tab)    idb ui key --udid "$u" 43 || die "pressKey 'tab': the simulator refused the key";;
+    esac
+  fi
+  ok "pressKey '$name'"; }
+# Whether a keyboard is up, asked of iOS the only way idb allows: the tree names
+# the keyboard as an element. Same three outcomes as the Android side.
+ikb_shown(){ paths; ui | "$PY" -c '
+import json,sys
+try: els=json.loads(sys.stdin.read())
+except ValueError: sys.exit(2)   # an unreadable tree is not "no keyboard"
+for e in els:
+    t=(str(e.get("type") or "")+" "+str(e.get("role_description") or "")).lower()
+    if "keyboard" in t: sys.exit(0)
+sys.exit(1)
+'; }
+# hideKeyboard is pressKey with a postcondition, which is why it is built on it
+# rather than beside it. The postcondition is the verb: an Android form longer
+# than one field cannot be filled while the keyboard is up, so "the keys were
+# accepted" is not an answer - "the keyboard is down" is.
+kb_shown(){ if [ "${YUKTI_PLATFORM:-ios}" = android ]; then akb_shown; else ikb_shown; fi; }
+hide_keyboard(){ local st=0
+  kb_shown || st=$?
+  if [ "$st" -eq 2 ]; then die "hideKeyboard: the device did not report its input method state"; fi
+  if [ "$st" -eq 1 ]; then ok "hideKeyboard: no keyboard was up"; return 0; fi
+  press_key escape >/dev/null || die "hideKeyboard: the device refused the escape key"
+  sleep 0.6
+  st=0; kb_shown || st=$?
+  if [ "$st" -eq 2 ]; then die "hideKeyboard: the device did not report its input method state"; fi
+  if [ "$st" -eq 1 ]; then ok "hideKeyboard: keyboard closed"; return 0; fi
+  if [ "${YUKTI_PLATFORM:-ios}" != android ]; then die "hideKeyboard: the keyboard is still up after escape"; fi
+  # Back is the fallback and never the mechanism, and only while the keyboard is
+  # still up: the IME consumes it then. Measured on API 35 - with the keyboard
+  # already down the same key walked the rig out of the app and, one screen
+  # later, out to the launcher.
+  warn "hideKeyboard: escape did not close the keyboard - trying Back"
+  akey back || die "hideKeyboard: the device refused the back key"
+  sleep 0.6
+  st=0; akb_shown || st=$?
+  if [ "$st" -eq 2 ]; then die "hideKeyboard: the device did not report its input method state"; fi
+  if [ "$st" -eq 1 ]; then ok "hideKeyboard: keyboard closed (Back)"; return 0; fi
+  die "hideKeyboard: the keyboard is still up after escape and Back"; }
 # An assert must prove the element is ON SCREEN, not that the string appears
 # somewhere in the dump. `ui | grep` matched invisible nodes, off-screen rows and
 # attribute values, so an assertText passed on a screen that never opened. Reuse
@@ -790,7 +965,7 @@ PY
 
 # ── deterministic flow runner: a JSON list of steps ──────────────────────────
 # step keys: launch|stopApp|clearState|wait|waitFor[timeout,match]|waitForId[timeout]|screenshot|
-#            tap[x,y]|tapText|optionalTapText|tapId|type|clearText[x,y]|scroll|
+#            tap[x,y]|tapText|optionalTapText|tapId|type|clearText[x,y]|pressKey|hideKeyboard|scroll|
 #            scrollToText|dismiss|assertText[match]|assertId
 #
 # The same names the dispatcher inside flow() knows, as a list a check can read.
@@ -798,7 +973,7 @@ PY
 # step, and one check below has to ask before the step runs. A verb added to the
 # `case` has to be added here too: nothing but this comment ties the two, and
 # the `*)` arm of the dispatcher stays as the backstop.
-FLOW_VERBS="launch stopApp clearState wait waitFor waitForId screenshot tap tapText optionalTapText tapId type clearText scroll scrollToText dismiss assertText assertId"
+FLOW_VERBS="launch stopApp clearState wait waitFor waitForId screenshot tap tapText optionalTapText tapId type clearText pressKey hideKeyboard scroll scrollToText dismiss assertText assertId"
 flow(){
   local f="${1:?usage: yukti flow <file.json>}" st; [ -f "$f" ] || die "no flow file '$f'"; paths
   say "running flow: $f"
@@ -899,6 +1074,11 @@ PY
       # it was honoured: tapText folds case and matches a substring whatever the
       # step says, and a suite written on that belief is weaker than it reads.
       [ -z "$mtch" ] || case "$do_" in assertText|waitFor) ;; *) die "step $FLOW_IDX '$do_' does not take a \"match\" - only assertText and waitFor do";; esac
+      # Same rule, the other way round: hideKeyboard closes whatever keyboard is
+      # up and has nothing to read a value with. Carrying one means the author
+      # meant pressKey, and a key silently ignored is a flow that believes it
+      # pressed something.
+      case "$do_" in hideKeyboard) [ -z "$val" ] || die "step $FLOW_IDX 'hideKeyboard' does not take a \"value\" - it closes whatever keyboard is up; to press a named key use pressKey";; esac
       set +e   # a step must not abort the loop by itself: the status is read
                # right after the dispatcher, so the failure is attributed to
                # THIS step and the flow stops with a message.
@@ -920,6 +1100,8 @@ PY
         scrollToText) scroll_to_step "$val" >/dev/null;;
         dismiss)     dismiss;;
         clearText)   clear_field $(scale_xy "$x" "$y");;
+        pressKey)    press_key "$val";;
+        hideKeyboard) hide_keyboard;;
         type)        say "type ${#val} chars"; type_str "$val";;
         assertText)  assert_text "$val" "${mtch:-exact}";;
         tapId)       say "tap id '$val'"; tap_id "$val";;
@@ -1010,7 +1192,7 @@ ${B}yukti v$YUKTI_VERSION${R} — YUKTI — smart mobile-app QA automation for R
   yukti tap-id "<id>"       tap the element with this a11y id / resource-id segment
   yukti assert-id "<id>"    assert an element with this id is on screen
 
-  flow steps: wait · waitFor · waitForId · screenshot · tap · tapText · optionalTapText · tapId · scroll · scrollToText · dismiss · type · clearText · assertText · assertId · launch · stopApp · clearState
+  flow steps: wait · waitFor · waitForId · screenshot · tap · tapText · optionalTapText · tapId · scroll · scrollToText · dismiss · type · clearText · pressKey · hideKeyboard · assertText · assertId · launch · stopApp · clearState
               stopApp force-stops the app, clearState wipes its data (Android only); both take the variant name
               assertText matches the whole label as written; "match":"contains" asks for a substring
               waitFor polls for an element and fails on timeout ("timeout": seconds, default 10); it never scrolls
