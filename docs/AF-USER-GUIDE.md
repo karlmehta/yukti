@@ -93,7 +93,7 @@ A flow is `{ "name": "...", "steps": [ ... ] }`. Common step verbs:
 | `{"do":"tapText","value":"Sign In"}` | tap an element by its visible label (preferred — resilient) |
 | `{"do":"optionalTapText","value":"Skip"}` | tap if present, don't fail if absent |
 | `{"do":"type","value":"165"}` | type into the focused field (`${TEST_EMAIL}` / `${TEST_PASSWORD}` inject creds) |
-| `{"do":"scrollToText","value":"Weight History"}` | scroll until visible, and fail the flow if it never becomes visible |
+| `{"do":"scrollToText","value":"Weight History"}` | scroll until visible, and fail the flow if it never becomes visible. `"direction"` is `up`, `down` (the default), `left` or `right`; `"edges":"clear"` asks for it to land away from the edges |
 | `{"do":"tapId","value":"submit"}` | tap the element with this a11y id / `resource-id` segment, exact match |
 | `{"do":"assertText","value":"Logged"}` | verify the text is on screen (the test's checkpoint — perceivable text only, no scroll). Matches the whole label, case as written; add `"match":"contains"` for a partial match |
 | `{"do":"assertId","value":"weight_card"}` | verify an element with this id is on screen |
@@ -102,6 +102,7 @@ A flow is `{ "name": "...", "steps": [ ... ] }`. Common step verbs:
 | `{"do":"screenshot","value":"x.png"}` | capture for review |
 | `{"do":"waitFor","value":"Weight History","timeout":15}` | poll until the text is on screen, fail on timeout (seconds, default 10; no scrolling). Matches like `assertText`, `"match":"contains"` included |
 | `{"do":"waitForId","value":"weight_card"}` | the same wait, matching the id exactly |
+| `{"do":"scroll","value":"down"}` | one swipe: `up`, `down`, `left` or `right` |
 | `{"do":"wait","value":3}` / `{"do":"dismiss"}` | sleep a fixed time (prefer `waitFor`) / dismiss a modal |
 | `{"do":"tap","x":201,"y":812}` | tap raw coordinates (last resort — brittle) |
 | `{"do":"clearText","x":201,"y":400}` | empty the field at those coordinates, and fail if it is not empty afterwards (Android 12+) |
@@ -217,6 +218,71 @@ the flow file, with the label spelled out instead of hidden in the engine:
 ```json
 { "do": "tapText", "value": "Skip", "when": { "visible": "Skip" } }
 ```
+
+### Reaching something that is not below
+
+`scrollToText` swiped down and nothing else, so an element above the current
+position was unreachable: the flow scrolled away from it, eight times, and
+reported that it was not there. It now takes the direction to look in.
+
+```json
+{ "do": "scrollToText", "value": "Good Morning", "direction": "up" }
+{ "do": "scrollToText", "value": "Sleep", "direction": "left" }
+```
+
+`up`, `down` (the default), `left`, `right`. The message on a miss names the
+direction it tried, so a wrong one reads as a wrong one.
+
+The same four are the `"value"` of a plain `scroll` step. A direction the tool
+does not know used to swipe down and say nothing; it now stops the flow.
+
+**A sideways swipe needs something that scrolls sideways.** On Android it goes
+across the widest element on screen that says it scrolls and is wider than it is
+tall - a carousel, a tab strip - and when the screen has none, across the middle,
+with a line in the run saying so. On iOS it goes across the middle of the screen
+and says nothing: the tree there does not report which elements scroll. Written,
+not measured - no Mac. That line is worth reading: a horizontal swipe over a
+row that does not claim the gesture can be taken for a press on it. Measured on
+this app: a `scroll left` across the Settings list opened the share sheet of the
+row it crossed. Use a direction where something actually scrolls that way.
+
+Whatever the direction, a `scroll` step does not wait for the app to settle, and
+never has. An assertion written straight after one can read a screen that is
+still moving; put a `wait` or a `waitFor` between them.
+
+### Landing clear of the edges
+
+An element inside the viewport can still sit under a sticky header or a bottom
+bar, where the tap that follows hits the overlay instead of the element.
+
+```json
+{ "do": "scrollToText", "value": "Sleep score", "edges": "clear" }
+```
+
+`"edges":"clear"` asks for it to end up away from the edges - a fifth of the
+band in from each end - and keeps swiping until it does.
+
+Which way those swipes go is decided by where the element is, not by the
+direction the search came from. A row at the top edge has to travel down the
+screen: a search that walked downwards to find it would push it out of view
+instead and then report it missing. `"direction"` is for finding the element;
+placing it is a different question, and the step answers that one itself.
+
+If the element never lands clear, the step fails and says where it is: a bottom
+bar cannot be moved, and a tap into it is the thing the request exists to
+prevent. Without the key, inside the viewport is enough, exactly as before.
+
+Two misses to tell apart. An element that was never on the screen fails with
+`not on screen after 8 swipes <direction>`. One that appeared and was swiped away
+again says that instead - `came into view at 540 1879 and the swipes took it out
+of view again` - because "not on screen" is a false reason for something the run
+had already seen.
+
+Sideways, the request has a limit worth knowing: the clear band is a little over
+half the width and a swipe travels three fifths of the scroller, so on a narrow
+screen an element at one edge can fly past the other and be nudged back until the
+swipes run out. The step fails with the position it could not place; place it
+with a `scroll` of your own instead.
 
 ### Saying something is NOT there
 
