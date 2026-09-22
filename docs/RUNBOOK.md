@@ -175,6 +175,13 @@ one the tap focused: when the keyboard opens and the layout moves, the field is
 no longer under the coordinates that reached it, and the step says so in a
 warning rather than reading a different node.
 
+`pressKey tab` moves focus without a tap, which reaches a field the keyboard is
+covering - the keyboard stays up through it. It is not a way to walk from field
+to field, though: it follows the whole focus order. On a two-field form measured
+here the second field was three presses away, behind a button and a dropdown,
+and that count belongs to that layout and no other. Tap the field, or close the
+keyboard and tap it.
+
 Not everything that looks like a field is one. A composer or a search bar can be
 a plain view that carries the placeholder as its accessibility label and becomes
 a real text field only once it is tapped - `clearText` refuses it until then,
