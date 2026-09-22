@@ -137,10 +137,13 @@ Nine more ways a flow stops, the first four of them typos that used to pass:
 - a `pressKey` naming a key the tool does not have;
 - a `pressKey` asking for `back` on iOS, which has no Back key;
 - a `clearText` whose coordinates land on something that is not a text field;
-- a `clearText` that ran and left text in the field, or ran on Android 10 or
+- a `clearText` whose coordinates land on a disabled field, which takes no keys;
+- a `clearText` that ran and left text in the field, or ran on Android 11 or
   older, where the key combination it uses does not exist. There is no quiet
   fallback to deleting character by character: on such a device the step says so
-  and stops.
+  and stops. On Android 11 the shell answers an unknown command with its usage
+  text and a zero exit code, so what catches it there is the read-back, not the
+  version check.
 
 ### Forms with more than one field (Android)
 
@@ -163,7 +166,16 @@ Two consequences worth knowing before writing flows:
 
 `clearText` empties a field with select-all and one delete, then reads the field
 back and fails if anything is left. It never prints what the field held - a
-password reaches the log as a count and nothing else.
+password reaches the log as a count and nothing else. The field it clears is the
+one the tap focused: when the keyboard opens and the layout moves, the field is
+no longer under the coordinates that reached it, and the step says so in a
+warning rather than reading a different node.
+
+One contract to know before pointing it at a field that is not a plain text box:
+it deletes, and a delete on an empty input means whatever the app decides. In a
+chip field it removes the last chip, in a split OTP input it moves into the
+previous cell. That is true of the delete the verb sends and of the one it sends
+to tell an empty field from a hint.
 
 The flow file itself is now read in full before the first step runs, and a file
 the runner cannot turn into steps stops the run there: JSON it cannot parse, no

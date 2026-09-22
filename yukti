@@ -216,7 +216,8 @@ atype(){ apaths; local s="$1" q
 # the whole vocabulary - anything else stops the run instead of pressing nothing.
 KEY_NAMES="back enter home delete tab escape"
 akey(){ apaths; local c
-  case "$1" in back) c=4;; enter) c=66;; home) c=3;; delete) c=67;; tab) c=61;; escape) c=111;; esac
+  case "$1" in back) c=4;; enter) c=66;; home) c=3;; delete) c=67;; tab) c=61;; escape) c=111;;
+    *) die "pressKey: no Android key code for '$1'";; esac
   adb shell input keyevent "$c"; }
 # The IME's own answer about itself. A soft keyboard draws in its own window and
 # never appears in the view dump the flows read, so "is it up" cannot be asked of
@@ -232,9 +233,16 @@ akb_shown(){ apaths; local s
 # same silent success this tool keeps finding elsewhere - and the class comes
 # with it because "the text did not change" proves an empty field only when the
 # thing under the point is a field. Aimed at a caption, it proves nothing at all.
+# Two questions, one dump. "at" answers what sits under a point - the flow's own
+# coordinates, before anything is touched. "focused" answers which text field
+# holds focus now, and that is the field the keys will reach: after the keyboard
+# opens the layout can move the field out from under the coordinates that opened
+# it, and a check that kept hit-testing the old point would be reading a
+# different node than the one being cleared.
 afield(){ apaths; aui | "$PY" -c '
 import re,sys
-x0,y0=int(sys.argv[1]),int(sys.argv[2])
+mode=sys.argv[1]
+x0,y0=(int(sys.argv[2]),int(sys.argv[3])) if mode=="at" else (0,0)
 best=None; best_area=0; best_edit=False
 for m in re.finditer(r"<node[^>]*?>", sys.stdin.read()):
     tag=m.group(0)
@@ -242,17 +250,23 @@ for m in re.finditer(r"<node[^>]*?>", sys.stdin.read()):
     if not b: continue
     x1,y1,x2,y2=map(int,b.groups())
     if not (x2>x1 and y2>y1): continue
-    if not (x1<=x0<x2 and y1<=y0<y2): continue
     cls=re.search(r"class=\"([^\"]*)\"", tag)
     txt=re.search(r"text=\"([^\"]*)\"", tag)
-    edit="EditText" in (cls.group(1) if cls else "")
+    enb=re.search(r"enabled=\"([^\"]*)\"", tag)
+    foc=re.search(r"focused=\"([^\"]*)\"", tag)
+    cls=cls.group(1) if cls else ""; edit="EditText" in cls
+    if mode=="focused":
+        if not (edit and foc and foc.group(1)=="true"): continue
+    else:
+        if not (x1<=x0<x2 and y1<=y0<y2): continue
     area=(x2-x1)*(y2-y1)
     # The field wins over the row that contains it; among equals, the smaller.
     if best is None or (edit and not best_edit) or (edit==best_edit and area<best_area):
-        best=(cls.group(1) if cls else "", txt.group(1) if txt else ""); best_area=area; best_edit=edit
+        best=(cls, (enb.group(1) if enb else ""), "%d %d %d %d"%(x1,y1,x2,y2), txt.group(1) if txt else "")
+        best_area=area; best_edit=edit
 if best is None: sys.exit(3)
-sys.stdout.write("%s\x1f%s" % best)
-' "$1" "$2"; }
+sys.stdout.write("%s\x1f%s\x1f%s\x1f%s" % best)
+' "$@"; }
 # Select all, then one delete. Forty blind deletes were a guess about how much
 # was in the field and about where the caret sat; two calls are neither. The
 # result is then read back, because the only fact that matters here is the state
@@ -262,28 +276,41 @@ aclear(){ apaths; local x="$1" y="$2" sdk before after probe
   case "$sdk" in ""|*[!0-9]*) die "clearText: the device did not report its Android version";; esac
   # No quiet fallback to deleting character by character: on an OS without
   # `input keycombination` the step says so and stops. A clear that only looks
-  # like one is the failure this verb exists to end.
-  [ "$sdk" -ge 30 ] || die "clearText needs Android 11 (API 30) or newer - 'input keycombination' does not exist on API $sdk"
-  adb shell input tap "$x" "$y" || die "clearText: the device refused the tap on the field"
-  local cls out
-  # The dump is read into a variable first: `read` from a process substitution
-  # reports ITS own end-of-input, not whether the dump could be taken, and a
-  # value without a trailing newline made a good read look like a failed one.
-  out="$(afield "$x" "$y")" || die "clearText: no element at $x,$y - see the error above"
-  IFS=$'\x1f' read -r cls before <<<"$out"
+  # like one is the failure this verb exists to end. The version is a better
+  # message and not the safety: on API 30 the shell answers an unknown command
+  # with its usage text and exit code 0, so this check would never fire - what
+  # actually catches it is the read-back at the end.
+  [ "$sdk" -ge 31 ] || die "clearText needs Android 12 (API 31) or newer - 'input keycombination' does not exist on API $sdk"
+  local cls enb box out
+  # What the flow aimed at, read BEFORE the tap: a disabled or read-only field
+  # takes no focus and no keys, and its text would sit there unchanged through
+  # select-all, delete and the probe below - three readings agreeing on a lie.
+  out="$(afield at "$x" "$y")" || die "clearText: no element at $x,$y - see the error above"
+  IFS=$'\x1f' read -r cls enb box before <<<"$out"
   case "$cls" in *EditText*) ;; *) die "clearText: the element at $x,$y is a ${cls:-node with no class}, not a text field";; esac
+  [ "$enb" = true ] || die "clearText: the field at $x,$y is disabled - it takes no keys"
+  adb shell input tap "$x" "$y" || die "clearText: the device refused the tap on the field"
+  # From here on the focused field is the subject: it is the one the keys reach.
+  out="$(afield focused)" || die "clearText: the tap at $x,$y did not put focus in a text field"
+  IFS=$'\x1f' read -r cls enb box before <<<"$out"
+  set -- $box
+  if [ "$x" -lt "$1" ] || [ "$x" -ge "$3" ] || [ "$y" -lt "$2" ] || [ "$y" -ge "$4" ]; then
+    warn "clearText: the focused field is at $box, not under $x,$y - the layout moved when the keyboard opened"
+  fi
   adb shell input keycombination 113 29 || die "clearText: the device refused select-all (Ctrl+A)"
   adb shell input keyevent 67 || die "clearText: the device refused the delete key"
-  out="$(afield "$x" "$y")" || die "clearText: cannot read the screen - see the error above"
-  IFS=$'\x1f' read -r cls after <<<"$out"
-  { [ -n "$after" ] && [ "$after" = "$before" ]; } || { ok "clearText: field empty at $x,$y"; return 0; }
-  # Unchanged and not empty reads two ways, and the view dump cannot tell them
-  # apart: an EditText with no text reports its HINT in the same attribute that
-  # carries its text. Either the field was already empty, or the clear did
-  # nothing. One more delete decides it - on an empty field it changes nothing.
+  out="$(afield focused)" || die "clearText: cannot read the screen - see the error above"
+  IFS=$'\x1f' read -r cls enb box after <<<"$out"
+  [ -n "$after" ] || { ok "clearText: field empty at $x,$y"; return 0; }
+  # Any text left is unresolved, whatever it is and whether or not it changed:
+  # an EditText with nothing in it reports its HINT in the same attribute that
+  # carries its text, and a select-all that did not take leaves the delete to
+  # remove ONE character - which also changes the text and would read as
+  # success. One more delete separates the two: on an empty field it changes
+  # nothing, on a field still holding text it takes another character.
   adb shell input keyevent 67 || die "clearText: the device refused the delete key"
-  out="$(afield "$x" "$y")" || die "clearText: cannot read the screen - see the error above"
-  IFS=$'\x1f' read -r cls probe <<<"$out"
+  out="$(afield focused)" || die "clearText: cannot read the screen - see the error above"
+  IFS=$'\x1f' read -r cls enb box probe <<<"$out"
   [ "$probe" = "$after" ] || die "clearText: the field still holds text after select-all and delete"
   ok "clearText: field empty at $x,$y"; }
 
@@ -616,11 +643,11 @@ sys.stdout.write("%d\x1f%s\x1f%s" % (int(x+w-4), "field" if ("field" in t or "te
 # field actually holds - measured in the dump, not a constant that was right for
 # one form. The read-back after them is the same rule as on Android.
 iclear(){ paths; local x="${1:?x}" y="${2:?y}" u out edge val after i kind
+  # iOS is written from the idb docs and has not been run - see AF-USER-GUIDE.
   u="$(U)"
   idb ui tap --udid "$u" "$x" "$y" || die "clearText: the simulator refused the tap on the field"
   sleep .4
   out="$(ifield_probe "$x" "$y")" || die "clearText: no element at $x,$y - see the error above"
-  local kind
   IFS=$'\x1f' read -r edge kind val <<<"$out"
   [ "$kind" = field ] || die "clearText: the element at $x,$y is a $kind, not a text field"
   [ -n "$val" ] || { ok "clearText: the field was already empty"; return 0; }
@@ -1193,6 +1220,7 @@ ${B}yukti v$YUKTI_VERSION${R} — YUKTI — smart mobile-app QA automation for R
   yukti assert-id "<id>"    assert an element with this id is on screen
 
   flow steps: wait · waitFor · waitForId · screenshot · tap · tapText · optionalTapText · tapId · scroll · scrollToText · dismiss · type · clearText · pressKey · hideKeyboard · assertText · assertId · launch · stopApp · clearState
+              (clearText · pressKey · hideKeyboard: measured on Android, iOS not yet run)
               stopApp force-stops the app, clearState wipes its data (Android only); both take the variant name
               assertText matches the whole label as written; "match":"contains" asks for a substring
               waitFor polls for an element and fails on timeout ("timeout": seconds, default 10); it never scrolls
