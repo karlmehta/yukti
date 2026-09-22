@@ -1,0 +1,34 @@
+# Checks this repository itself. The engine is one bash script and everything it
+# ships beside it is JSON, so both are checkable on a Linux runner in seconds -
+# no simulator, no device, no secrets. The template that drives a real app lives
+# in examples/ci/ and is not run from here.
+
+name: CI
+
+on:
+  pull_request:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: yukti parses
+        run: bash -n yukti
+
+      - name: shipped JSON is valid
+        run: |
+          set -u
+          status=0
+          found=0
+          while IFS= read -r -d '' f; do
+            found=$((found + 1))
+            python3 -m json.tool "$f" > /dev/null || { echo "invalid JSON: $f"; status=1; }
+          done < <(find flows examples -type f -name '*.json' -print0)
+          # A check that examined nothing passes, and a pass that examined
+          # nothing is the failure this repository already paid for once.
+          [ "$found" -gt 0 ] || { echo "no JSON files found under flows/ or examples/"; status=1; }
+          echo "checked $found JSON file(s)"
+          exit $status
