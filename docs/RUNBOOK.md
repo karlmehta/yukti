@@ -175,6 +175,11 @@ one the tap focused: when the keyboard opens and the layout moves, the field is
 no longer under the coordinates that reached it, and the step says so in a
 warning rather than reading a different node.
 
+Not everything that looks like a field is one. A composer or a search bar can be
+a plain view that carries the placeholder as its accessibility label and becomes
+a real text field only once it is tapped - `clearText` refuses it until then,
+and correctly: there is nothing to clear yet. Tap it first, then clear.
+
 One contract to know before pointing it at a field that is not a plain text box:
 it deletes, and a delete on an empty input means whatever the app decides. In a
 chip field it removes the last chip, in a split OTP input it moves into the

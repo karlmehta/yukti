@@ -285,7 +285,7 @@ aclear(){ apaths; local x="$1" y="$2" sdk before after probe
   # ever turns out to be wrong again. No quiet fallback to deleting character by
   # character: a clear that only looks like one is what this verb exists to end.
   [ "$sdk" -ge 31 ] || die "clearText needs Android 12 (API 31) or newer - 'input keycombination' does not exist on API $sdk"
-  local cls enb fcb res box out cls2 res2 box2 txt2
+  local cls enb fcb res box out res2 box2 txt2
   # What the flow aimed at, read BEFORE the tap: a disabled or read-only field
   # takes no focus and no keys, and its text would sit there unchanged through
   # select-all, delete and the probe below - three readings agreeing on a lie.
@@ -300,10 +300,15 @@ aclear(){ apaths; local x="$1" y="$2" sdk before after probe
   # or landed on a keyboard the dump does not show, leaves focus where it was,
   # and clearing that field would be reported as clearing this one.
   out="$(afield focused)" || die "clearText: the tap at $x,$y did not put focus in a text field"
-  IFS=$'\x1f' read -r cls2 enb fcb res2 box2 txt2 <<<"$out"
-  if [ -n "$res" ] && [ -n "$res2" ]; then
-    [ "$res" = "$res2" ] || die "clearText: focus is in a different field ($res2), not the one at $x,$y ($res)"
-  elif [ "$box" != "$box2" ] && [ "$before" != "$txt2" ]; then
+  IFS=$'\x1f' read -r cls enb fcb res2 box2 txt2 <<<"$out"
+  # Two ids that differ settle it. Two that MATCH settle nothing: a resource id
+  # is not unique - the rows of a list and the repeated rows of a form share
+  # one. So the second question is asked every time: the same rectangle, or the
+  # same text it had before the tap. A field that is neither is another field.
+  if [ -n "$res" ] && [ -n "$res2" ] && [ "$res" != "$res2" ]; then
+    die "clearText: focus is in a different field ($res2), not the one at $x,$y ($res)"
+  fi
+  if [ "$box" != "$box2" ] && [ "$before" != "$txt2" ]; then
     die "clearText: focus is in a different field than the one at $x,$y"
   fi
   if [ "$box" != "$box2" ]; then
