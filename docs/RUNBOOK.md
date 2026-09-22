@@ -49,7 +49,8 @@ a QA build and vice-versa. Use the matching account per variant.
 Flows are JSON in `flows/`. Steps: `wait`, `waitFor`, `waitForId`, `screenshot`,
 `tap {x,y}`, `tapText`, `optionalTapText`, `tapId`, `type`, `clearText {x,y}`,
 `pressKey`, `hideKeyboard`, `scroll`, `scrollToText`, `dismiss`, `assertText`,
-`assertId`, `launch`, `stopApp`, `clearState`, `include`. Coordinates are **points**
+`assertId`, `launch`, `stopApp`, `clearState`, `include`. Coordinates are
+**points**
 (iPhone 16 Pro = 402×874). Prefer `tapText` (finds by accessibility label) over
 raw coords so flows survive layout changes. `${VARS}` in `value` expand from env,
 and a variable that is not set stops the flow before its first step, naming it -
@@ -334,8 +335,10 @@ A `${VARIABLE}` in the path expands like one in any other value: `${BLOCKS}/sign
 works, and an unset name stops the flow before its first step like any other.
 
 Nesting stops at a block inside a block; a file that includes itself and a circle
-of files fail before the run starts, with the chain printed - `a.json ->
-blocks/b.json -> a.json`. A block reached through a symlink resolves its own
+of files fail before the run starts, with the chain printed - `a.json -> b.json ->
+a.json`. The chain prints each name the way the include wrote it, so a block one
+directory down closes the circle as `../a.json`, which is what it had to
+write. A block reached through a symlink resolves its own
 includes next to the real file, not next to the link.
 
 Two flows whose files have the same name write the same JUnit file, because the
