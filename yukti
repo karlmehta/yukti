@@ -28,7 +28,15 @@ ok(){  printf '%s✓%s %s\n' "$G" "$R" "$*"; }
 warn(){ printf '%s!%s %s\n' "$Y" "$R" "$*"; }
 # The last words of a failing step are also the message its result entry needs,
 # so keep a copy when a flow is running. The console output is unchanged.
-die(){ printf '%s✗%s %s\n' "$E" "$R" "$*" >&2; [ -n "${YUKTI_STEP_ERR:-}" ] && printf '%s' "$*" > "$YUKTI_STEP_ERR"; exit 1; }
+#
+# Where the step was written is part of those words. The verbs that fail most -
+# tapText, waitFor, assertText, assertId, tapId, screenshot - die on their own
+# and never come back with a status, so a suffix added where the status is read
+# would be missing from exactly the steps a shared block is made of: the report
+# would say `03 tapText Sign In` for forty-five flows and never name the one
+# file to fix. The flow loop sets YUKTI_STEP_SRC for the step it is running.
+die(){ local m="$*"; if [ -n "${YUKTI_STEP_SRC:-}" ]; then m="$m ($YUKTI_STEP_SRC)"; fi
+  printf '%s✗%s %s\n' "$E" "$R" "$m" >&2; [ -n "${YUKTI_STEP_ERR:-}" ] && printf '%s' "$m" > "$YUKTI_STEP_ERR"; exit 1; }
 
 need_config(){ [ -f "$CONFIG" ] || die "no config at '$CONFIG' — run 'yukti init' or set YUKTI_CONFIG"; }
 
@@ -1017,6 +1025,10 @@ PY
 # step, and one check below has to ask before the step runs. A verb added to the
 # `case` has to be added here too: nothing but this comment ties the two, and
 # the `*)` arm of the dispatcher stays as the backstop.
+#
+# `include` is deliberately in neither: the builder runs it while it reads the
+# file and emits the block's steps in its place, so no record ever carries it
+# and the dispatcher never sees it.
 FLOW_VERBS="launch stopApp clearState wait waitFor waitForId screenshot tap tapText optionalTapText tapId type clearText pressKey hideKeyboard scroll scrollToText dismiss assertText assertId"
 flow(){
   local f="${1:?usage: yukti flow <file.json>}" st; [ -f "$f" ] || die "no flow file '$f'"; paths
@@ -1061,17 +1073,17 @@ KEYS = ("do", "value", "x", "y", "match", "timeout")
 # instead of watching the run expand.
 MAX_DEPTH = 2
 
-def load(path, what):
+def load(path, what, pre=""):
     try:
         with open(path, encoding="utf-8") as fh: doc = json.load(fh)
     except ValueError as e:
-        fail("%s is not valid JSON: %s" % (what, e))
+        fail("%s%s is not valid JSON: %s" % (pre, what, e))
     except OSError as e:
-        fail("%s cannot be read: %s" % (what, e))
+        fail("%s%s cannot be read: %s" % (pre, what, e))
     if not isinstance(doc, dict) or not isinstance(doc.get("steps"), list):
-        fail('%s has no "steps" list' % what)
+        fail('%s%s has no "steps" list' % (pre, what))
     if not doc["steps"]:
-        fail("%s has no steps - it would pass without doing anything" % what)
+        fail("%s%s has no steps - it would pass without doing anything" % (pre, what))
     return doc["steps"]
 
 def fill(v, scope, at, inside):
@@ -1090,12 +1102,15 @@ def fill(v, scope, at, inside):
 
 recs = []
 
-def build(path, shown, src, scope, chain, depth):
+def build(path, shown, src, scope, chain, depth, pre=""):
     # A block is named relative to the file that includes it: a suite is moved,
     # copied and run from anywhere as one directory, and the working directory
-    # of the run is not something the flow file can know.
-    base = os.path.dirname(os.path.abspath(path))
-    for idx, step in enumerate(load(path, shown), 1):
+    # of the run is not something the flow file can know. Through the real path,
+    # not the link: one shared directory of blocks symlinked into two suites
+    # resolved the blocks' own includes next to the LINK, which is where a
+    # same-named file of the borrowing suite sits.
+    base = os.path.dirname(os.path.realpath(path))
+    for idx, step in enumerate(load(path, shown, pre), 1):
         of = " of %s" % shown if src else ""
         if not isinstance(step, dict): fail("step %d%s is not an object" % (idx, of))
         verb = step.get("do") or ""
@@ -1122,6 +1137,9 @@ def build(path, shown, src, scope, chain, depth):
         # Which file the step was written in, carried so that a failure names it.
         # Empty for the flow file itself: the run already says which flow it is.
         fields.append(src)
+        # And where it is in that file: the run numbers steps end to end, so the
+        # number a failure prints is not the one to look for in the file.
+        fields.append(str(idx))
         recs.append(SEP.join(fields))
 
 def include(step, at, base, src, scope, chain, depth):
@@ -1159,11 +1177,12 @@ def include(step, at, base, src, scope, chain, depth):
         if not NAME.match(key):
             fail("%s: '%s' cannot be the name of a parameter - letters, digits "
                  "and _, not starting with a digit" % (at, key))
-        if v is None or isinstance(v, (dict, list)):
+        if v is None or isinstance(v, (dict, list, bool)):
             fail("%s: parameter '%s' must be text or a number" % (at, key))
         v = v if isinstance(v, str) else str(v)
         inner[key] = fill(v, scope, at, bool(src))
-    build(path, "block '%s'" % name, name, inner, chain + [(real, name)], depth + 1)
+    build(path, "block '%s'" % name, name, inner, chain + [(real, name)],
+          depth + 1, "%s: " % at)
 
 flow = sys.argv[1]
 build(flow, "flow file", "", dict(os.environ),
@@ -1182,28 +1201,36 @@ PY
   # still reported PASS). Reading `<&3` also keeps the loop in THIS shell (not a
   # pipe subshell), so a step's `die` (exit 1) aborts the whole flow with a
   # non-zero status instead of being lost.
-  while IFS=$'\x1f' read -r -d '' do_ val x y mtch tmo src <&3; do
+  while IFS=$'\x1f' read -r -d '' do_ val x y mtch tmo src sidx <&3; do
       # Record the step BEFORE running it and again once it survived: the one
       # step that has a start and no end is the step that failed, and that is
       # the single fact a report cannot reconstruct from console text.
       FLOW_IDX=$((FLOW_IDX+1)); FLOW_S0="$(now)"; FLOW_ART=""
+      # The number the run counts and the number the author has to look for are
+      # the same file only while a flow has no includes. Once it has one, step 4
+      # of the run can be step 2 of the block, or step 2 of the flow file after
+      # a block of three - so a failure says which file and which step in it,
+      # and says nothing extra when the two numbers agree.
+      if [ -n "$src" ]; then export YUKTI_STEP_SRC="block '$src', step $sidx"
+      elif [ "$sidx" != "$FLOW_IDX" ]; then export YUKTI_STEP_SRC="step $sidx of this flow file"
+      else export YUKTI_STEP_SRC=""; fi
       printf '%s\x1f%s\x1f%s\x1f%s\n' "$FLOW_IDX" "$do_" "${val//[$'\n\r']/ }" "$FLOW_S0" > "$FLOW_CUR"
       : > "$FLOW_ERR"
       # The name first, the keys after it, because the order decides what a typo
       # hears. A step named `tpText` carrying a `match` would otherwise be told
       # that `tpText` does not take the key - a message that asserts the verb
       # exists and costs the author a second run to find the real mistake.
-      case " $FLOW_VERBS " in *" $do_ "*) ;; *) die "unknown step '$do_' - check ${src:-the flow file}";; esac
+      case " $FLOW_VERBS " in *" $do_ "*) ;; *) die "unknown step '$do_' - check the flow file";; esac
       # `match` belongs to the assertion contract, so only the verb that reads
       # it may be given it. A locator that ignored the key told the flow author
       # it was honoured: tapText folds case and matches a substring whatever the
       # step says, and a suite written on that belief is weaker than it reads.
-      [ -z "$mtch" ] || case "$do_" in assertText|waitFor) ;; *) die "step $FLOW_IDX '$do_'${src:+ of block '$src'} does not take a \"match\" - only assertText and waitFor do";; esac
+      [ -z "$mtch" ] || case "$do_" in assertText|waitFor) ;; *) die "step $FLOW_IDX '$do_' does not take a \"match\" - only assertText and waitFor do";; esac
       # Same rule, the other way round: hideKeyboard closes whatever keyboard is
       # up and has nothing to read a value with. Carrying one means the author
       # meant pressKey, and a key silently ignored is a flow that believes it
       # pressed something.
-      case "$do_" in hideKeyboard) [ -z "$val" ] || die "step $FLOW_IDX 'hideKeyboard'${src:+ of block '$src'} does not take a \"value\" - it closes whatever keyboard is up; to press a named key use pressKey";; esac
+      case "$do_" in hideKeyboard) [ -z "$val" ] || die "step $FLOW_IDX 'hideKeyboard' does not take a \"value\" - it closes whatever keyboard is up; to press a named key use pressKey";; esac
       set +e   # a step must not abort the loop by itself: the status is read
                # right after the dispatcher, so the failure is attributed to
                # THIS step and the flow stops with a message.
@@ -1237,7 +1264,7 @@ PY
         # A name the dispatcher does not know is a typo in the flow file, and a
         # typo must not pass: `warn` returns zero, so this case has to die on its
         # own - reading the status below would not catch it.
-        *) die "unknown step '$do_' - check ${src:-the flow file}";;
+        *) die "unknown step '$do_' - check the flow file";;
       esac
       st=$?
       # A step that failed without dying used to be recorded as passed: the
@@ -1250,10 +1277,11 @@ PY
       # non-zero when a label is simply absent, which is the state they exist
       # to tolerate.
       case "$do_" in dismiss|optionalTapText) st=0;; esac
-      [ "$st" -eq 0 ] || die "step $FLOW_IDX '$do_'${src:+ of block '$src'} failed (exit $st)"
+      [ "$st" -eq 0 ] || die "step $FLOW_IDX '$do_' failed (exit $st)"
       printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' "$FLOW_IDX" "$do_" "${val//[$'\n\r']/ }" "$FLOW_S0" "$(now)" "$FLOW_ART" >> "$FLOW_REC"
   done
   exec 3<&-
+  export YUKTI_STEP_SRC=""
   ok "flow complete: $f"
 }
 

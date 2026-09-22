@@ -46,10 +46,10 @@ a QA build and vice-versa. Use the matching account per variant.
 
 ## Add a test case
 
-Flows are JSON in `flows/`. Steps: `wait`, `screenshot`, `tap {x,y}`, `tapText`,
-`optionalTapText`, `tapId`, `type`, `clearText {x,y}`, `pressKey`, `hideKeyboard`,
-`scroll`, `scrollToText`, `dismiss`, `assertText`, `assertId`, `launch`,
-`include`. Coordinates are **points**
+Flows are JSON in `flows/`. Steps: `wait`, `waitFor`, `waitForId`, `screenshot`,
+`tap {x,y}`, `tapText`, `optionalTapText`, `tapId`, `type`, `clearText {x,y}`,
+`pressKey`, `hideKeyboard`, `scroll`, `scrollToText`, `dismiss`, `assertText`,
+`assertId`, `launch`, `stopApp`, `clearState`, `include`. Coordinates are **points**
 (iPhone 16 Pro = 402×874). Prefer `tapText` (finds by accessibility label) over
 raw coords so flows survive layout changes. `${VARS}` in `value` expand from env,
 and a variable that is not set stops the flow before its first step, naming it -
@@ -323,11 +323,20 @@ says nothing about it. A name that is in neither stops the flow before its first
 step and says where to pass it.
 
 Its steps are ordinary steps. They are numbered in sequence with the flow's own,
-the console prints them the same way, each is one testcase in the JUnit file, and
-a failure inside a block names the file: `step 4 'tapText' of block
-'blocks/sign-in.json' failed (exit 1)`. Nesting stops at a block inside a block; a
-file that includes itself and a circle of files fail before the run starts, with
-the chain printed - `a.json -> blocks/b.json -> a.json`.
+the console prints them the same way, and each is one testcase in the JUnit file.
+That end-to-end number is not the number to look for in a file, so a failure adds
+where the step was written - `cannot read the screen - see the error above (block
+'blocks/sign-in.json', step 4)` - and a step of the flow itself that sits after a
+block says `(step 2 of this flow file)`. Both the console line and the JUnit
+failure carry it, whichever way the step failed.
+
+A `${VARIABLE}` in the path expands like one in any other value: `${BLOCKS}/sign-in.json`
+works, and an unset name stops the flow before its first step like any other.
+
+Nesting stops at a block inside a block; a file that includes itself and a circle
+of files fail before the run starts, with the chain printed - `a.json ->
+blocks/b.json -> a.json`. A block reached through a symlink resolves its own
+includes next to the real file, not next to the link.
 
 Two flows whose files have the same name write the same JUnit file, because the
 report is named after the file and not after its directory. Keep block names

@@ -144,11 +144,15 @@ does not pass falls through to the environment; a name neither of them has stops
 the flow before its first step, naming it.
 
 The block's steps enter the run as ordinary steps — numbered in sequence with the
-rest, one testcase each in the JUnit file, and a failure inside the block names
-the file it was written in: `step 4 'tapText' of block 'blocks/sign-in.json'
-failed`. A flow may include a block and that block one more; deeper than that, a
-file that includes itself, and a circle of files each stop the run with the chain
-printed.
+rest, one testcase each in the JUnit file. The run numbers them end to end, so a
+failure adds where the step is written: `cannot read the screen - see the error
+above (block 'blocks/sign-in.json', step 4)`, and for a step of the flow itself
+that sits after a block, `(step 2 of this flow file)`. A flow may include a block
+and that block one more; deeper than that, a file that includes itself, and a
+circle of files each stop the run with the chain printed.
+
+A `${VARIABLE}` in the path is expanded like one in any other value, so a suite
+can keep its blocks behind `${BLOCKS}/sign-in.json`.
 
 The recorder writes flat flows and never an include. Record first, then move the
 shared opening into a block by hand.
