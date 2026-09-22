@@ -34,7 +34,11 @@ warn(){ printf '%s!%s %s\n' "$Y" "$R" "$*"; }
 # and never come back with a status, so a suffix added where the status is read
 # would be missing from exactly the steps a shared block is made of: the report
 # would say `03 tapText Sign In` for forty-five flows and never name the one
-# file to fix. The flow loop sets YUKTI_STEP_SRC for the step it is running.
+# file to fix. The flow loop sets YUKTI_STEP_SRC for the step it is running -
+# and this process owns that variable, whatever it inherited: a value left in
+# the environment by a caller used to be printed after a message that belongs to
+# no step at all, `no flow file 'x.json' (stale from parent)`.
+YUKTI_STEP_SRC=""
 die(){ local m="$*"; if [ -n "${YUKTI_STEP_SRC:-}" ]; then m="$m ($YUKTI_STEP_SRC)"; fi
   printf '%s✗%s %s\n' "$E" "$R" "$m" >&2; [ -n "${YUKTI_STEP_ERR:-}" ] && printf '%s' "$m" > "$YUKTI_STEP_ERR"; exit 1; }
 
