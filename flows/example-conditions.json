@@ -1,0 +1,21 @@
+{
+  "name": "example: steps that only run sometimes",
+  "steps": [
+    { "do": "launch", "value": "qa" },
+    { "do": "wait", "value": "5" },
+
+    { "do": "include", "value": "blocks/example-sign-in.json",
+      "with": { "TEST_EMAIL": "beth@example.com",
+                "TEST_PASSWORD": "${TEST_PASSWORD}" },
+      "when": { "notVisible": "Today" } },
+
+    { "do": "tapText", "value": "Allow", "when": { "platform": "android" } },
+    { "do": "tapText", "value": "OK", "when": { "platform": "ios" } },
+
+    { "do": "tapText", "value": "Skip", "when": { "visible": "Skip" } },
+
+    { "do": "waitFor", "value": "Today", "timeout": 20 },
+    { "do": "assertNotText", "value": "Sign In" },
+    { "do": "assertNotId", "value": "error_banner" }
+  ]
+}

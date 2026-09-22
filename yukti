@@ -26,6 +26,9 @@ c(){ printf '\033[%sm' "$1"; }; R=$(c 0); B=$(c '1;36'); G=$(c '1;32'); Y=$(c '1
 say(){ printf '%s▸%s %s\n' "$B" "$R" "$*"; }
 ok(){  printf '%s✓%s %s\n' "$G" "$R" "$*"; }
 warn(){ printf '%s!%s %s\n' "$Y" "$R" "$*"; }
+# A step a condition switched off. Not a warning (nothing went wrong) and not a
+# pass (nothing was done), so it gets its own mark in the run.
+skipped(){ printf '%s~%s %s\n' "$Y" "$R" "$*"; }
 # The last words of a failing step are also the message its result entry needs,
 # so keep a copy when a flow is running. The console output is unchanged.
 #
@@ -145,6 +148,10 @@ q_raw=norm(sys.argv[1]); q=q_raw.lower()
 mode=(sys.argv[2] if len(sys.argv)>2 else "text")
 match=(sys.argv[3] if len(sys.argv)>3 else "exact")
 xml=sys.stdin.read()
+# Nothing arrived: the dump failed and said so on its own line. Status 1 is "the
+# screen could not be read"; status 3 below is the different, quieter case where
+# a tree did arrive and cannot be judged.
+if not xml.strip(): sys.exit(1)
 # Screen rect = the bounds of the ROOT node, i.e. the first bounds= in the dump.
 # Anything whose centre falls outside it is scrolled away or parked off-screen:
 # present in the tree, invisible to the user. Taking the maximum over every node
@@ -158,7 +165,11 @@ if _m: SX1,SY1,SX2,SY2=map(int,_m.groups())
 # worth attempting, but a check that cannot check must not report success - and
 # assertId is as much an oracle as assertText. tapId loses nothing by it: it does
 # not scroll, and a tap outside the window is useless anyway.
-if mode in ("assert","id") and not (SX2>SX1 and SY2>SY1): sys.exit(0)
+#
+# Status 3, not silence: an empty answer means "the element is not there", and a
+# negative assertion or a `when` condition PASSES on that answer. The screen that
+# cannot be judged has to say so in a way the caller can read.
+if mode in ("assert","id") and not (SX2>SX1 and SY2>SY1): sys.exit(3)
 best=None; best_score=0
 for m in re.finditer(r"<node\b[^>]*>", xml):
     tag=m.group(0)
@@ -534,7 +545,7 @@ q_raw=norm(sys.argv[1]); q=q_raw.lower()
 mode=(sys.argv[2] if len(sys.argv)>2 else "text")
 match=(sys.argv[3] if len(sys.argv)>3 else "exact")
 raw=sys.stdin.read().strip()
-if not raw: sys.exit(0)
+if not raw: sys.exit(1)   # 1 = the tree never arrived; ui() has already said why
 els=json.loads(raw)
 def frame(e):
     # idb builds disagree on the case of the frame keys, so read both spellings.
@@ -576,7 +587,7 @@ def centre(e):
 # and it always contains itself, so on such an idb build the off-screen filter
 # stops discriminating. Requiring a named window here would fail closed on every
 # build that names none, which cannot be verified without a Mac.
-if mode in ("assert","id") and not (SW>0 and SH>0): sys.exit(0)
+if mode in ("assert","id") and not (SW>0 and SH>0): sys.exit(3)   # 3 = read, not judgeable
 best=None; best_score=-1
 for e in els:
     label_raw=norm(str(e.get("AXLabel") or "")); label=label_raw.lower()
@@ -751,18 +762,49 @@ hide_keyboard(){ local st=0
 # the same lookup taps use: relevance, ranking and real non-zero bounds.
 # The match rule is part of the assertion, so the flow states it and the log
 # repeats it: a green line that does not say how it matched cannot be read back.
-assert_text(){ local q="${1:-}" m="${2:-exact}" xy
+assert_text(){ local q="${1:-}" m="${2:-exact}" xy st=0
   [ -n "$q" ] || die "assertText needs a non-empty value"
   case "$m" in exact|contains) ;; *) die "assertText: unknown match '$m' - use exact or contains";; esac
-  xy="$(find_el "$q" assert "$m")" || die "assert FAILED: cannot read the screen - see the error above"
+  xy="$(find_el "$q" assert "$m")" || st=$?
+  [ "$st" -eq 0 ] || die "assert FAILED: $(lookup_err "$st")"
   [ -n "$xy" ] && ok "assert ($m): '$q' on screen at $xy" || die "assert FAILED ($m match): '$q' not on screen"; }
 # Explicit-selector variants. tapText/assertText match on visible text and can
 # land on a neighbouring caption; these two take an accessibility id / resource-id
 # segment and match it exactly, or fail. An empty id is a failure, never a match:
 # a flow step with a missing or misspelled `value` must stop the run, not tap a
 # random point. Neither scrolls — use scrollToText first for a target below the fold.
-tap_id(){ local q="${1:-}"; [ -n "$q" ] || die "tapId needs a non-empty id"; local xy; xy="$(find_el "$q" id)" || die "cannot read the screen - see the error above"; [ -n "$xy" ] || die "no element with id '$q'"; tap $xy; }
-assert_id(){ local q="${1:-}"; [ -n "$q" ] || die "assertId needs a non-empty id"; local xy; xy="$(find_el "$q" id)" || die "assert FAILED: cannot read the screen - see the error above"; [ -n "$xy" ] && ok "assert id: '$q' on screen at $xy" || die "assert FAILED: no element with id '$q'"; }
+tap_id(){ local q="${1:-}"; [ -n "$q" ] || die "tapId needs a non-empty id"; local xy st=0; xy="$(find_el "$q" id)" || st=$?; [ "$st" -eq 0 ] || die "$(lookup_err "$st")"; [ -n "$xy" ] || die "no element with id '$q'"; tap $xy; }
+assert_id(){ local q="${1:-}"; [ -n "$q" ] || die "assertId needs a non-empty id"; local xy st=0; xy="$(find_el "$q" id)" || st=$?; [ "$st" -eq 0 ] || die "assert FAILED: $(lookup_err "$st")"; [ -n "$xy" ] && ok "assert id: '$q' on screen at $xy" || die "assert FAILED: no element with id '$q'"; }
+# A lookup answers with coordinates, with "no such element", or with no answer at
+# all - and "no answer" comes in two flavours the caller has to tell apart: the
+# screen could not be read (status 1: the dump failed) and the screen was read but
+# cannot be judged (status 3: it does not report its own bounds, so nothing on it
+# can be called visible). Neither of them means the element is absent.
+lookup_err(){ case "${1:-1}" in
+    3) printf '%s' "the screen was read but does not report its own bounds, so nothing on it can be called visible";;
+    *) printf '%s' "cannot read the screen - see the error above";; esac; }
+# The negative assertions. Absence is the one verdict where an EMPTY answer is the
+# pass, which makes it the one verdict that a missing answer passes by accident:
+# an unreadable screen has no element on it either. Both statuses are checked
+# before the verdict.
+#
+# Neither verb scrolls, by contract: eight swipes cannot prove that something is
+# absent, and they change the state the next step is about to check. What these
+# two state is "not on the screen as it is now", and the guide says so in those
+# words - a flow that means "not anywhere in this list" scrolls for itself.
+assert_not_text(){ local q="${1:-}" m="${2:-exact}" xy st=0
+  [ -n "$q" ] || die "assertNotText needs a non-empty value"
+  case "$m" in exact|contains) ;; *) die "assertNotText: unknown match '$m' - use exact or contains";; esac
+  xy="$(find_el "$q" assert "$m")" || st=$?
+  [ "$st" -eq 0 ] || die "assertNot FAILED: $(lookup_err "$st")"
+  [ -z "$xy" ] || die "assertNot FAILED ($m match): '$q' IS on the screen, at $xy"
+  ok "assertNot ($m): '$q' not on the current screen"; }
+assert_not_id(){ local q="${1:-}" xy st=0
+  [ -n "$q" ] || die "assertNotId needs a non-empty id"
+  xy="$(find_el "$q" id)" || st=$?
+  [ "$st" -eq 0 ] || die "assertNot FAILED: $(lookup_err "$st")"
+  [ -z "$xy" ] || die "assertNot FAILED: an element with id '$q' IS on the screen, at $xy"
+  ok "assertNot id: '$q' not on the current screen"; }
 wait_s(){ sleep "${1:-2}"; }
 # `wait` is a sleep, and a sleep is the wrong tool for a screen that loads its
 # content: too short and the flow goes red at random, too long and every run
@@ -777,7 +819,7 @@ wait_s(){ sleep "${1:-2}"; }
 # An unreadable screen is not "not there yet". The poll keeps going while the
 # screen cannot be read, and the timeout then says which of the two happened -
 # the distinction the lookup verbs already make.
-wait_for(){ local q="${1:-}" t="${2:-10}" m="${3:-exact}" mode="${4:-assert}" xy readable=1 t0 el label
+wait_for(){ local q="${1:-}" t="${2:-10}" m="${3:-exact}" mode="${4:-assert}" xy readable=1 lst=1 t0 el label
   [ -n "$q" ] || die "waitFor needs a non-empty value"
   case "$t" in ''|*[!0-9]*|0) die "waitFor: timeout must be a whole number of seconds greater than zero, got '$t'";; esac
   case "$m" in exact|contains) ;; *) die "waitFor: unknown match '$m' - use exact or contains";; esac
@@ -787,11 +829,11 @@ wait_for(){ local q="${1:-}" t="${2:-10}" m="${3:-exact}" mode="${4:-assert}" xy
   while :; do
     if xy="$(find_el "$q" "$mode" "$m")"; then readable=1
       [ -n "$xy" ] && { el=$((SECONDS - t0)); ok "$label: '$q' on screen at $xy after ${el}s"; return 0; }
-    else readable=0; fi
+    else lst=$?; readable=0; fi
     [ $((SECONDS - t0)) -lt "$t" ] || break
     sleep 0.5
   done
-  [ "$readable" = 1 ] || die "$label FAILED: the screen could not be read while waiting ${t}s for '$q' - see the error above"
+  [ "$readable" = 1 ] || die "$label FAILED after ${t}s waiting for '$q': $(lookup_err "$lst")"
   die "$label FAILED: '$q' not on screen after ${t}s"; }
 scroll(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { apaths; if [ "${1:-down}" = up ]; then adb shell input swipe 200 300 200 700 300; else adb shell input swipe 200 700 200 300 300; fi; return; }
   paths; if [ "${1:-down}" = up ]; then idb ui swipe --udid "$(U)" 200 320 200 720; else idb ui swipe --udid "$(U)" 200 720 200 320; fi; }
@@ -949,15 +991,18 @@ for line in read(rec).split("\n"):
     parts = line.split(SEP)
     if len(parts) < 6: continue
     i, verb, value, s0, s1, art = parts[:6]
+    # The seventh field is the condition that switched the step off, and it is
+    # only there for a step that was skipped. Older records have six fields.
+    skip = parts[6] if len(parts) > 6 else ""
     steps.append({"i": int(num(i)), "verb": verb, "value": value,
-                  "t": max(0.0, num(s1) - num(s0)), "art": art})
+                  "t": max(0.0, num(s1) - num(s0)), "art": art, "skip": skip})
 
 failing = None
 if int(num(st)) != 0:
     parts = read(cur).strip("\n").split(SEP)
     if len(parts) >= 4 and parts[0] and not any(x["i"] == int(num(parts[0])) for x in steps):
         failing = {"i": int(num(parts[0])), "verb": parts[1], "value": parts[2],
-                   "t": max(0.0, num(t1) - num(parts[3])), "art": ""}
+                   "t": max(0.0, num(t1) - num(parts[3])), "art": "", "skip": ""}
 
 msg = read(errf).strip() or "the run stopped with exit code %d" % int(num(st))
 
@@ -975,8 +1020,18 @@ def shown(step):
 stem = os.path.splitext(os.path.basename(flow))[0] or "flow"
 cases = []
 for step in steps:
-    cases.append('    <testcase classname=%s name=%s time="%.3f"/>'
-                 % (quoteattr(stem), quoteattr(shown(step)), step["t"]))
+    if step["skip"]:
+        # A step that did not run is not a step that passed. Reported as skipped,
+        # with the condition in the message: a reader of the file can see which
+        # part of the flow was switched off and by what.
+        cases.append('    <testcase classname=%s name=%s time="%.3f">\n'
+                     '      <skipped message=%s/>\n'
+                     '    </testcase>'
+                     % (quoteattr(stem), quoteattr(shown(step)), step["t"],
+                        quoteattr("condition not met: " + step["skip"])))
+    else:
+        cases.append('    <testcase classname=%s name=%s time="%.3f"/>'
+                     % (quoteattr(stem), quoteattr(shown(step)), step["t"]))
 if failing is not None:
     cases.append('    <testcase classname=%s name=%s time="%.3f">\n'
                  '      <failure message=%s type="StepFailed"/>\n'
@@ -989,13 +1044,14 @@ elif int(num(st)) != 0:
                  '      <failure message=%s type="FlowFailed"/>\n'
                  '    </testcase>' % (quoteattr(stem), quoteattr(msg)))
 
+skips = sum(1 for s in steps if s["skip"])
 arts = [s["art"] for s in steps if s["art"]]
 out = [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<testsuites>',
-    '  <testsuite name=%s tests="%d" failures="%d" errors="0" skipped="0" time="%.3f" timestamp=%s>'
+    '  <testsuite name=%s tests="%d" failures="%d" errors="0" skipped="%d" time="%.3f" timestamp=%s>'
     % (quoteattr(stem), len(cases), 0 if failing is None and int(num(st)) == 0 else 1,
-       max(0.0, num(t1) - num(t0)),
+       skips, max(0.0, num(t1) - num(t0)),
        quoteattr(time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(num(t0))))),
     '    <properties>',
     '      <property name="platform" value=%s/>' % quoteattr(plat),
@@ -1022,7 +1078,9 @@ PY
 # ── deterministic flow runner: a JSON list of steps ──────────────────────────
 # step keys: include[with]|launch|stopApp|clearState|wait|waitFor[timeout,match]|waitForId[timeout]|screenshot|
 #            tap[x,y]|tapText|optionalTapText|tapId|type|clearText[x,y]|pressKey|hideKeyboard|scroll|
-#            scrollToText|dismiss|assertText[match]|assertId
+#            scrollToText|dismiss|assertText[match]|assertId|assertNotText[match]|assertNotId
+#            any step, and an include, may carry "when": {visible|notVisible|
+#            visibleId|notVisibleId|platform} - all of them have to hold
 #
 # The same names the dispatcher inside flow() knows, as a list a check can read.
 # The dispatcher cannot answer "do you know this name?" without running the
@@ -1032,8 +1090,86 @@ PY
 #
 # `include` is deliberately in neither: the builder runs it while it reads the
 # file and emits the block's steps in its place, so no record ever carries it
-# and the dispatcher never sees it.
-FLOW_VERBS="launch stopApp clearState wait waitFor waitForId screenshot tap tapText optionalTapText tapId type clearText pressKey hideKeyboard scroll scrollToText dismiss assertText assertId"
+# and the dispatcher never sees it. `__when` is not in either list for the same
+# reason from the other side: it is a record the loop answers itself, never a
+# name a flow file may use - a step whose name starts with "__" is refused as
+# unknown by the check above the dispatcher.
+# ── step conditions (`when`) ─────────────────────────────────────────────────
+# A condition has three outcomes, and only one of them is a skip:
+#   it holds          - the guarded steps run, and the run says nothing about it
+#   it does not hold  - they are skipped, out loud: a line each and `skipped` in
+#                       the report, because a condition that quietly removes
+#                       steps from a suite is a worse defect than the missing
+#                       `when` it replaces
+#   it cannot be answered - the run stops
+#
+# The third one is why conditions and the negative assertions are one change: an
+# unreadable screen, or a screen that does not report its own bounds, answers
+# every "is this visible?" with "no". Taken as an answer, that switches parts of
+# a suite off and keeps the run green.
+#
+# `visible`/`notVisible` ask the ASSERTION oracle, not the tap locator. The
+# locator folds case, matches substrings and looks into resource-ids, so a
+# condition answered by it can be satisfied by markup - and this condition
+# decides whether a step runs at all. `visibleId`/`notVisibleId` are the exact
+# id selector, the rule assertId already follows. The cost is named in the
+# guide: a condition is stricter than tapText, so it can skip a step tapText
+# would have found - and the skip is never silent.
+COND_KV=$'\x1d'; COND_SEP=$'\x1e'
+cond_holds(){ local spec="$1" pair kind val xy st
+  while [ -n "$spec" ]; do
+    case "$spec" in *"$COND_SEP"*) pair="${spec%%"$COND_SEP"*}"; spec="${spec#*"$COND_SEP"}";; *) pair="$spec"; spec="";; esac
+    kind="${pair%%"$COND_KV"*}"; val="${pair#*"$COND_KV"}"
+    case "$kind" in
+      # The platform of this run, as the engine resolved it at start-up: the
+      # variant's platform, else the config's, else ios. That last fallback is
+      # issue #36 and a condition inherits it, so the skip line below names the
+      # platform it compared against - an author who expected android sees why
+      # the step did not run instead of wondering.
+      platform) [ "$val" = "${YUKTI_PLATFORM:-}" ] || return 1;;
+      visible|notVisible|visibleId|notVisibleId)
+        st=0
+        case "$kind" in
+          visible|notVisible)     xy="$(find_el "$val" assert exact)" || st=$?;;
+          visibleId|notVisibleId) xy="$(find_el "$val" id)" || st=$?;;
+        esac
+        [ "$st" -eq 0 ] || die "when ($kind '$val'): $(lookup_err "$st")"
+        case "$kind" in
+          visible|visibleId)       [ -n "$xy" ] || return 1;;
+          notVisible|notVisibleId) [ -z "$xy" ] || return 1;;
+        esac;;
+      # The builder refuses an unknown condition before the run starts. This arm
+      # is the backstop for a record that reached the loop some other way.
+      *) die "when: '$kind' is not a condition this version knows";;
+    esac
+  done
+  return 0; }
+# The condition in the author's words, for the line that says what was skipped.
+cond_words(){ local spec="$1" pair kind val out=""
+  while [ -n "$spec" ]; do
+    case "$spec" in *"$COND_SEP"*) pair="${spec%%"$COND_SEP"*}"; spec="${spec#*"$COND_SEP"}";; *) pair="$spec"; spec="";; esac
+    kind="${pair%%"$COND_KV"*}"; val="${pair#*"$COND_KV"}"
+    case "$kind" in
+      platform) out="$out${out:+ and }platform '$val' (this run: ${YUKTI_PLATFORM:-unset})";;
+      *)        out="$out${out:+ and }$kind '$val'";;
+    esac
+  done
+  printf '%s' "$out"; }
+FLOW_VERBS="launch stopApp clearState wait waitFor waitForId screenshot tap tapText optionalTapText tapId type clearText pressKey hideKeyboard scroll scrollToText dismiss assertText assertId assertNotText assertNotId"
+# The steps a condition switched off. They keep their numbers - the numbering is
+# end to end, and a skipped step that gave its number away would move every step
+# after it - they say so on the console, and they land in the report as `skipped`
+# with the condition that switched them off. A nested guard inside the group is
+# not a step and takes no number: it is skipped together with its group.
+flow_skip(){ local n="${1:-1}" why="$2" i=0 d v xx yy mm tt ss si wc ws t
+  why="${why//[$'\n\r']/ }"
+  while [ "$i" -lt "$n" ] && IFS=$'\x1f' read -r -d '' d v xx yy mm tt ss si wc ws <&3; do
+    i=$((i+1))
+    if [ "$d" = "__when" ]; then continue; fi
+    FLOW_IDX=$((FLOW_IDX+1)); t="$(now)"
+    skipped "step $FLOW_IDX '$d' skipped: $why"
+    printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' "$FLOW_IDX" "$d" "${v//[$'\n\r']/ }" "$t" "$t" "" "$why" >> "$FLOW_REC"
+  done; }
 flow(){
   local f="${1:?usage: yukti flow <file.json>}" st; [ -f "$f" ] || die "no flow file '$f'"; paths
   say "running flow: $f"
@@ -1066,6 +1202,14 @@ NAME = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]*\Z")
 # first half as the step and read the second as a step of its own.
 SEP, END = "\x1f", "\0"
 KEYS = ("do", "value", "x", "y", "match", "timeout")
+# A step may also carry a condition. It is not one of the fields above: it is
+# answered while the run goes on, and its answer decides whether the step runs.
+WHEN_KINDS = ("notVisible", "notVisibleId", "platform", "visible", "visibleId")
+STEP_KEYS = set(KEYS) | {"when"}
+INCLUDE_KEYS = {"do", "value", "with", "when"}
+# One condition is a kind and a value; several in one `when` all have to hold.
+# These two characters separate them inside the single field that carries them.
+KV, CSEP = "\x1d", "\x1e"
 # `include` runs the steps of another flow file here. It is resolved while the
 # steps are built, not while they run: the block's steps enter the stream as
 # ordinary records, so the runner, the console and the JUnit file treat them
@@ -1089,6 +1233,49 @@ def load(path, what, pre=""):
     if not doc["steps"]:
         fail("%s%s has no steps - it would pass without doing anything" % (pre, what))
     return doc["steps"]
+
+def when_spec(step, at, scope, src):
+    if "when" not in step: return ""
+    w = step["when"]
+    if not isinstance(w, dict):
+        fail('%s: "when" is an object of conditions, for instance '
+             '{"visible": "Continue"} or {"platform": "android"}' % at)
+    if not w:
+        fail('%s: "when" is empty - name a condition (%s) or drop the key'
+             % (at, ", ".join(WHEN_KINDS)))
+    pairs = []
+    for key in sorted(w):
+        if key not in WHEN_KINDS:
+            fail("%s: '%s' is not a condition - this version knows %s"
+                 % (at, key, ", ".join(WHEN_KINDS)))
+        v = w[key]
+        if v is None or isinstance(v, (dict, list, bool)):
+            fail("%s: condition '%s' must be text or a number" % (at, key))
+        v = fill(v if isinstance(v, str) else str(v), scope, at, bool(src)).strip()
+        if not v:
+            fail("%s: condition '%s' has no value" % (at, key))
+        if any(ch in v for ch in (SEP, END, KV, CSEP)):
+            fail("%s: condition '%s' contains a character the runner separates "
+                 "fields with" % (at, key))
+        # A platform nobody runs on is not a condition, it is an off switch: the
+        # step would be skipped on every run and the run would stay green.
+        if key == "platform" and v not in ("android", "ios"):
+            fail("%s: '%s' is not a platform - use android or ios" % (at, v))
+        pairs.append(key + KV + v)
+    return CSEP.join(pairs)
+
+def guard(cond, span, src, idx):
+    # A condition is a record of its own, not another field on the step it
+    # guards: a block included under a condition may carry a condition on its
+    # own first step, and two conditions do not fit in one set of fields.
+    #
+    # The guard says how many of the records that follow belong to it, counted
+    # here, where the group is still a group - by the time the run reads them
+    # they are a flat stream. One answer then switches the whole group off, and
+    # the screen cannot change halfway through it, which is exactly what
+    # happens if the condition is re-asked at every step of the block: the
+    # first step dismisses the dialog, and the rest of the block is skipped.
+    return SEP.join(["__when", "", "", "", "", "", src, str(idx), cond, str(span)])
 
 def fill(v, scope, at, inside):
     missing = []
@@ -1119,11 +1306,32 @@ def build(path, shown, src, scope, chain, depth, pre=""):
         if not isinstance(step, dict): fail("step %d%s is not an object" % (idx, of))
         verb = step.get("do") or ""
         at = "step %d '%s'%s" % (idx, verb, of)
+        # The runner's own records are named with two leading underscores. A flow
+        # file that used such a name would hand the loop a record it answers
+        # itself - a forged guard, i.e. a step that quietly does nothing.
+        if isinstance(verb, str) and verb.startswith("__"):
+            fail("%s: a step name cannot start with __ - those belong to the "
+                 "runner's own records" % at)
         if "with" in step and verb != "include":
             fail('%s: "with" passes values to an include - only include takes it'
                  % at)
+        # A key nobody reads used to be mentioned by nobody. Tolerable while every
+        # key did something visible; not tolerable next to a condition, where
+        # `wehn` means a step that runs every time while the file says it is
+        # conditional. The 45 flows this was measured against carry do, value, x
+        # and y, so nothing in the suite depends on the old silence.
+        if verb != "include":
+            extra = sorted(k for k in step if k not in STEP_KEYS)
+            if extra:
+                fail("%s: '%s' is not a key a step takes - those are %s"
+                     % (at, extra[0], ", ".join(sorted(STEP_KEYS))))
+        cond = when_spec(step, at, scope, src)
         if verb == "include":
+            # The guard is inserted after the block is built, because only then is
+            # it known how many records it covers.
+            pos = len(recs)
             include(step, at, base, src, scope, chain, depth)
+            if cond: recs.insert(pos, guard(cond, len(recs) - pos, src, idx))
             continue
         fields = []
         for key in KEYS:
@@ -1144,6 +1352,11 @@ def build(path, shown, src, scope, chain, depth, pre=""):
         # And where it is in that file: the run numbers steps end to end, so the
         # number a failure prints is not the one to look for in the file.
         fields.append(str(idx))
+        # The two fields a guard record uses. A step carries them empty: one
+        # record shape for the loop to read, whatever the record is.
+        fields.append("")
+        fields.append("")
+        if cond: recs.append(guard(cond, 1, src, idx))
         recs.append(SEP.join(fields))
 
 def include(step, at, base, src, scope, chain, depth):
@@ -1151,6 +1364,10 @@ def include(step, at, base, src, scope, chain, depth):
         if key in step:
             fail('%s: "%s" is not a key an include takes - it runs the steps '
                  "of a file, and those steps carry their own keys" % (at, key))
+    extra = sorted(k for k in step if k not in INCLUDE_KEYS)
+    if extra:
+        fail("%s: '%s' is not a key an include takes - those are %s"
+             % (at, extra[0], ", ".join(sorted(INCLUDE_KEYS))))
     name = step.get("value")
     if not isinstance(name, str) or not name.strip():
         fail('%s: "value" is the flow file to run here, for instance '
@@ -1205,7 +1422,18 @@ PY
   # still reported PASS). Reading `<&3` also keeps the loop in THIS shell (not a
   # pipe subshell), so a step's `die` (exit 1) aborts the whole flow with a
   # non-zero status instead of being lost.
-  while IFS=$'\x1f' read -r -d '' do_ val x y mtch tmo src sidx <&3; do
+  while IFS=$'\x1f' read -r -d '' do_ val x y mtch tmo src sidx wcond wspan <&3; do
+      # A guard is not a step: it takes no number of its own, and when it holds
+      # the run says nothing about it - the steps that follow simply run. When it
+      # does not hold, its whole group is read off the stream and every step in it
+      # is recorded as skipped.
+      if [ "$do_" = "__when" ]; then
+        if [ -n "$src" ]; then export YUKTI_STEP_SRC="block '$src', step $sidx"
+        else export YUKTI_STEP_SRC="step $sidx of this flow file"; fi
+        if cond_holds "$wcond"; then continue; fi
+        flow_skip "${wspan:-1}" "$(cond_words "$wcond")"
+        continue
+      fi
       # Record the step BEFORE running it and again once it survived: the one
       # step that has a start and no end is the step that failed, and that is
       # the single fact a report cannot reconstruct from console text.
@@ -1229,7 +1457,7 @@ PY
       # it may be given it. A locator that ignored the key told the flow author
       # it was honoured: tapText folds case and matches a substring whatever the
       # step says, and a suite written on that belief is weaker than it reads.
-      [ -z "$mtch" ] || case "$do_" in assertText|waitFor) ;; *) die "step $FLOW_IDX '$do_' does not take a \"match\" - only assertText and waitFor do";; esac
+      [ -z "$mtch" ] || case "$do_" in assertText|assertNotText|waitFor) ;; *) die "step $FLOW_IDX '$do_' does not take a \"match\" - only assertText, assertNotText and waitFor do";; esac
       # Same rule, the other way round: hideKeyboard closes whatever keyboard is
       # up and has nothing to read a value with. Carrying one means the author
       # meant pressKey, and a key silently ignored is a flow that believes it
@@ -1260,6 +1488,8 @@ PY
         hideKeyboard) hide_keyboard;;
         type)        say "type ${#val} chars"; type_str "$val";;
         assertText)  assert_text "$val" "${mtch:-exact}";;
+        assertNotText) assert_not_text "$val" "${mtch:-exact}";;
+        assertNotId) assert_not_id "$val";;
         tapId)       say "tap id '$val'"; tap_id "$val";;
         assertId)    assert_id "$val";;
         launch)      launch "$val";;
@@ -1348,14 +1578,22 @@ ${B}yukti v$YUKTI_VERSION${R} — YUKTI — smart mobile-app QA automation for R
                             poll until the text is on screen, fail on timeout (default 10s)
   yukti tap-id "<id>"       tap the element with this a11y id / resource-id segment
   yukti assert-id "<id>"    assert an element with this id is on screen
+  yukti assert-not "<text>" assert the text is NOT on the current screen (no scroll)
+  yukti assert-not-id "<id>"
+                            assert no element with this id is on the current screen
 
-  flow steps: wait · waitFor · waitForId · screenshot · tap · tapText · optionalTapText · tapId · scroll · scrollToText · dismiss · type · clearText · pressKey · hideKeyboard · assertText · assertId · launch · stopApp · clearState · include
+  flow steps: wait · waitFor · waitForId · screenshot · tap · tapText · optionalTapText · tapId · scroll · scrollToText · dismiss · type · clearText · pressKey · hideKeyboard · assertText · assertId · assertNotText · assertNotId · launch · stopApp · clearState · include
               (clearText · pressKey · hideKeyboard: measured on Android, iOS not yet run)
               stopApp force-stops the app, clearState wipes its data (Android only); both take the variant name
               assertText matches the whole label as written; "match":"contains" asks for a substring
               waitFor polls for an element and fails on timeout ("timeout": seconds, default 10); it never scrolls
+              assertNotText / assertNotId state that something is NOT on the screen as it is now; they never scroll
+              any step, and an include, may carry "when": {"visible"|"notVisible"|"visibleId"|"notVisibleId"|"platform"} -
+              all the conditions in one "when" have to hold; the step is skipped when they do not, and the run stops when
+              they cannot be answered (unreadable screen, unknown platform). A skipped step is in the report as skipped
               include runs another flow file here as a block, path relative to the including file; "with" passes values into it,
-              its steps are ordinary steps in the report, and nesting stops at a block inside a block
+              its steps are ordinary steps in the report, and nesting stops at a block inside a block;
+              "when" on an include is answered once and covers the whole block
   config: \$YUKTI_CONFIG or ./yukti.config.json  ·  cross-platform: set variant "platform":"android"
 EOF
 }
@@ -1420,6 +1658,8 @@ case "$cmd" in
   assert) assert_text "$@";;
   "tap-id"|tapId) tap_id "$@";;
   "assert-id"|assertId) assert_id "$@";;
+  "assert-not"|assertNotText) assert_not_text "$@";;
+  "assert-not-id"|assertNotId) assert_not_id "$@";;
   "wait-for"|waitFor) wait_for "$@";;
   ""|-h|--help|help) usage;;
   *) die "unknown command '$cmd' — see 'yukti help'";;

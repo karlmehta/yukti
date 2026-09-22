@@ -89,6 +89,21 @@ fold case, and they rank the candidates. What `scrollToText` does on a miss is
 new, and it is below. Naming a button is not a statement about its
 capitalisation; asserting one is.
 
+The other direction is `assertNotText` and `assertNotId`: the checkpoint for
+what must be gone - the error message after a valid retry, the paywall a
+subscriber must not see, the row that was deleted. They match exactly as their
+positive halves do, `"match":"contains"` included, and they fail when the element
+IS found.
+
+They are about the screen as it is now and they never scroll. Eight swipes cannot
+prove that something is absent, and they change the state the next step is about
+to check; "not anywhere in this list" is a `scroll` of your own followed by the
+assertion. The case they are built around is the other one: a screen that could
+not be read has no element on it either, and a negative assertion that took that
+for an answer would pass on every broken dump. Both of them fail instead - an
+unreadable screen, and a screen whose own bounds are missing so that nothing on
+it can be called visible, are failures of the step, never absence.
+
 `match` belongs to the assertion, so `assertText` and the wait that follows the
 same rules - `waitFor`, below - are the only steps that take it. Any other step
 given a `match` fails instead of ignoring it: a step that reads as exact while
@@ -129,7 +144,7 @@ inside a verb could stop a run - `adb` refusing a tap, a launch of a package
 that is not installed, a `clearText` on a dead device all reported PASS, and the
 JUnit file said `failures="0"`.
 
-Ten more ways a flow stops, the first four of them typos that used to pass:
+Thirteen more ways a flow stops, the first four of them typos that used to pass:
 
 - a step name the runner does not know;
 - a `"match"` value that is neither `exact` nor `contains`;
@@ -142,6 +157,14 @@ Ten more ways a flow stops, the first four of them typos that used to pass:
 - a `clearText` whose coordinates land on a disabled field, or on one that
   cannot take focus, or a tap that leaves focus in a different field than the
   one named;
+- a condition that cannot be answered: a screen that could not be read, or one
+  whose own bounds are missing so that nothing on it can be called visible;
+- a `"when"` that is not an object of conditions, is empty, names a condition the
+  tool does not know, carries a value that is not text, or names a platform that
+  is neither `ios` nor `android` - all of them before the first step runs;
+- a key the tool does not know on a step or on an `include`, `wehn` for `when`
+  first among them: a key nobody reads is a line of the file that does not do
+  what it says, and a mistyped condition means a step that runs every time;
 - a `clearText` that ran and left text in the field, or ran on Android 11 or
   older, where the key combination it uses does not exist. There is no quiet
   fallback to deleting character by character: on such a device the step says so
@@ -344,6 +367,46 @@ includes next to the real file, not next to the link.
 Two flows whose files have the same name write the same JUnit file, because the
 report is named after the file and not after its directory. Keep block names
 distinct from flow names.
+
+### A step that only runs sometimes
+
+`"when"` on a step, or on an `include`, says under which conditions it runs:
+
+```json
+{"do":"tapText","value":"Accept","when":{"visible":"We use cookies"}},
+{"do":"tapText","value":"Allow","when":{"platform":"android"}},
+{"do":"include","value":"blocks/consent.json","when":{"notVisible":"Today"}}
+```
+
+`visible`, `notVisible`, `visibleId`, `notVisibleId`, `platform`; several in one
+`"when"` all have to hold. On an `include` the condition is answered once, before
+the block starts, and covers all of it: asking again at each step of the block
+would run half of it as soon as its first step changed the screen - the dialog is
+dismissed, so the rest of the block is skipped.
+
+A condition that does not hold **skips** the step. The skip is loud: a `~` line
+in the console naming the condition, and a `skipped` testcase in the JUnit file
+with the same words. The step keeps its number - the numbering runs end to end
+and a skipped step that gave its number away would move every step after it.
+
+A condition that **cannot be answered** stops the flow. That is the whole reason
+conditions and the negative assertions arrived together: an unreadable screen
+answers "is this visible?" with "no", and a suite that accepts that answer
+switches parts of itself off and stays green.
+
+`visible` and `notVisible` ask the same oracle as `assertText` - perceivable
+text, whole label, case as written - and `visibleId` / `notVisibleId` the exact
+id. That is stricter than `tapText`, so a condition can skip a step `tapText`
+would have found; the `~` line and the `skipped` entry are how you see it happen.
+
+`platform` is `ios` or `android` against the platform of the run, and the skip
+line names that platform: `skipped: platform 'android' (this run: ios)`. Nothing
+else in the tool says out loud which platform it resolved, so this line is worth
+reading when a step you expected to run did not.
+
+`optionalTapText` and `dismiss` stay as they are. What is new is that the same
+thing can be written in the flow file, with the label in the file instead of in
+the engine: `{"do":"tapText","value":"Skip","when":{"visible":"Skip"}}`.
 
 ## CI (every PR)
 
