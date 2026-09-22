@@ -127,7 +127,7 @@ inside a verb could stop a run - `adb` refusing a tap, a launch of a package
 that is not installed, a `clearText` on a dead device all reported PASS, and the
 JUnit file said `failures="0"`.
 
-Nine more ways a flow stops, the first four of them typos that used to pass:
+Ten more ways a flow stops, the first four of them typos that used to pass:
 
 - a step name the runner does not know;
 - a `"match"` value that is neither `exact` nor `contains`;
@@ -137,13 +137,17 @@ Nine more ways a flow stops, the first four of them typos that used to pass:
 - a `pressKey` naming a key the tool does not have;
 - a `pressKey` asking for `back` on iOS, which has no Back key;
 - a `clearText` whose coordinates land on something that is not a text field;
-- a `clearText` whose coordinates land on a disabled field, which takes no keys;
+- a `clearText` whose coordinates land on a disabled field, or on one that
+  cannot take focus, or a tap that leaves focus in a different field than the
+  one named;
 - a `clearText` that ran and left text in the field, or ran on Android 11 or
   older, where the key combination it uses does not exist. There is no quiet
   fallback to deleting character by character: on such a device the step says so
-  and stops. On Android 11 the shell answers an unknown command with its usage
-  text and a zero exit code, so what catches it there is the read-back, not the
-  version check.
+  and stops. The version check is what stops it, and it fires before the first
+  key is sent. What it covers for is the line after it: on Android 11 the shell
+  answers an unknown command with its usage text and a zero exit code, so a
+  refusal from the key combination itself would go unnoticed there - and the
+  read-back at the end is the guard if this threshold is ever wrong again.
 
 ### Forms with more than one field (Android)
 

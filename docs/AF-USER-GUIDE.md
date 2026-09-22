@@ -105,11 +105,12 @@ A flow is `{ "name": "...", "steps": [ ... ] }`. Common step verbs:
 | `{"do":"clearText","x":201,"y":400}` | empty the field at those coordinates, and fail if it is not empty afterwards (Android 12+) |
 | `{"do":"pressKey","value":"enter"}` | press one key: `back`, `enter`, `home`, `delete`, `tab`, `escape` (`back` is Android only) |
 | `{"do":"hideKeyboard"}` | close the keyboard and fail if it is still up — a form longer than one field needs this between fields on Android |
-
-These three were measured on Android; their iOS halves are written and not yet
-run, so treat an iOS failure in them as a bug in the tool before doubting the app.
 | `{"do":"stopApp","value":"qa"}` | force-stop the app of that variant |
 | `{"do":"clearState","value":"qa"}` | wipe the app's data, Android only (the app stops — `launch` it again) |
+
+`clearText`, `pressKey` and `hideKeyboard` were measured on Android; their iOS
+halves are written and have not been run on a simulator, so treat an iOS failure
+in them as a bug in the tool before doubting the app.
 
 A step that fails now fails the flow, and the message names the step. Two
 exceptions stay, and they are narrow: `dismiss` and `optionalTapText` tolerate a
