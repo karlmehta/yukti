@@ -48,7 +48,8 @@ a QA build and vice-versa. Use the matching account per variant.
 
 Flows are JSON in `flows/`. Steps: `wait`, `screenshot`, `tap {x,y}`, `tapText`,
 `optionalTapText`, `tapId`, `type`, `clearText {x,y}`, `pressKey`, `hideKeyboard`,
-`scroll`, `scrollToText`, `dismiss`, `assertText`, `assertId`, `launch`. Coordinates are **points**
+`scroll`, `scrollToText`, `dismiss`, `assertText`, `assertId`, `launch`,
+`include`. Coordinates are **points**
 (iPhone 16 Pro = 402×874). Prefer `tapText` (finds by accessibility label) over
 raw coords so flows survive layout changes. `${VARS}` in `value` expand from env,
 and a variable that is not set stops the flow before its first step, naming it -
@@ -196,7 +197,9 @@ to tell an empty field from a hint.
 The flow file itself is now read in full before the first step runs, and a file
 the runner cannot turn into steps stops the run there: JSON it cannot parse, no
 `steps` list, a `null` where a value belongs, a variable that is not set, or a
-value carrying the character the runner separates its fields with. None of those
+value carrying the character the runner separates its fields with. A block the
+flow includes is read at the same moment and answers the same way, naming itself
+rather than the flow that pulled it in. None of those
 produced a failure before - the steps were generated straight into the loop,
 where the generator's status was lost, so a file that yielded no steps at all
 still ended with `flow complete`.
@@ -295,6 +298,40 @@ not a failure - that is the state the step exists to reach. On iOS that warning
 currently covers any refusal from `simctl`, a simulator that is not booted
 included, so read a warning there as "not stopped, reason unknown". The iOS half
 of both steps has not been exercised on a Mac.
+
+### A block several flows share
+
+`clearState` above makes every flow start from a clean app, which means every
+flow has to sign in — and the sign-in is then copied into forty-five files and
+edited in forty-five files the day that screen changes. `include` runs the steps
+of another flow file in place:
+
+```json
+{ "do": "include", "value": "blocks/sign-in.json",
+  "with": { "TEST_EMAIL": "beth@example.com" } }
+```
+
+The path is relative to the file that includes it, never to the directory the run
+started in: a suite is moved and copied as one tree. The block is an ordinary flow
+file and runs on its own — that is how it is debugged, and the recorder can write
+it like any other flow.
+
+`"with"` is read in the caller's scope and applies inside the block only, so the
+same block signs in as a different account from a different flow, and
+`${TEST_PASSWORD}` inside it still comes from the environment when the include
+says nothing about it. A name that is in neither stops the flow before its first
+step and says where to pass it.
+
+Its steps are ordinary steps. They are numbered in sequence with the flow's own,
+the console prints them the same way, each is one testcase in the JUnit file, and
+a failure inside a block names the file: `step 4 'tapText' of block
+'blocks/sign-in.json' failed (exit 1)`. Nesting stops at a block inside a block; a
+file that includes itself and a circle of files fail before the run starts, with
+the chain printed - `a.json -> blocks/b.json -> a.json`.
+
+Two flows whose files have the same name write the same JUnit file, because the
+report is named after the file and not after its directory. Keep block names
+distinct from flow names.
 
 ## CI (every PR)
 

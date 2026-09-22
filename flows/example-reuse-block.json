@@ -1,0 +1,11 @@
+{
+  "name": "Example: start clean, reuse the sign-in block",
+  "note": "Template. clearState leaves the app signed out, so every flow signs in - and the sign-in lives in one file instead of forty-five. Drop the \"with\" line and the block takes TEST_EMAIL from the environment like any other flow.",
+  "steps": [
+    { "do": "stopApp", "value": "qa" },
+    { "do": "clearState", "value": "qa" },
+    { "do": "launch", "value": "qa" },
+    { "do": "include", "value": "blocks/example-sign-in.json", "with": { "TEST_EMAIL": "beth@example.com" } },
+    { "do": "assertText", "value": "Today" }
+  ]
+}

@@ -107,6 +107,7 @@ A flow is `{ "name": "...", "steps": [ ... ] }`. Common step verbs:
 | `{"do":"hideKeyboard"}` | close the keyboard and fail if it is still up — a form longer than one field needs this between fields on Android |
 | `{"do":"stopApp","value":"qa"}` | force-stop the app of that variant |
 | `{"do":"clearState","value":"qa"}` | wipe the app's data, Android only (the app stops — `launch` it again) |
+| `{"do":"include","value":"blocks/sign-in.json"}` | run the steps of another flow file here, as if they were written in this one; `"with":{"TEST_EMAIL":"beth@example.com"}` passes values into it |
 
 `clearText`, `pressKey` and `hideKeyboard` were measured on Android; their iOS
 halves are written and have not been run on a simulator, so treat an iOS failure
@@ -119,7 +120,38 @@ verb, an unknown `"match"` value, a `"match"` on a step that does not take one,
 a non-numeric `wait`, and a `scrollToText` whose label never comes into view stop
 the flow as well. A flow file that is not valid JSON, one with no steps in it, and
 a `${VARIABLE}` that is not set in the environment stop it before the first step
-instead of running half of it.
+instead of running half of it. So does an `include`: a block that cannot be read,
+that is not valid JSON or that has no steps in it, a block that includes itself
+or closes a circle, and one nested deeper than a block inside a block.
+
+### A block several flows share
+
+Signing in, dismissing onboarding, walking to a section — the opening every flow
+repeats lives in one file, and each flow runs it by name:
+
+```json
+{ "do": "include", "value": "blocks/sign-in.json",
+  "with": { "TEST_EMAIL": "beth@example.com" } }
+```
+
+The path is read relative to the file that includes it, so a suite moves and is
+copied as one directory. The block is an ordinary flow file — `{ "name": …,
+"steps": [ … ] }` — and runs on its own, which is how it is debugged.
+
+`"with"` sets variables for that block and only for it: inside it `${TEST_EMAIL}`
+is the value passed in, and nothing outside the block changes. A name the include
+does not pass falls through to the environment; a name neither of them has stops
+the flow before its first step, naming it.
+
+The block's steps enter the run as ordinary steps — numbered in sequence with the
+rest, one testcase each in the JUnit file, and a failure inside the block names
+the file it was written in: `step 4 'tapText' of block 'blocks/sign-in.json'
+failed`. A flow may include a block and that block one more; deeper than that, a
+file that includes itself, and a circle of files each stop the run with the chain
+printed.
+
+The recorder writes flat flows and never an include. Record first, then move the
+shared opening into a block by hand.
 
 Save it in `.yukti/flows/` and it's part of the suite the next Run All.
 
