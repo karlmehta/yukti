@@ -1,0 +1,14 @@
+{
+  "name": "Block: sign in",
+  "note": "A block other flows include: {\"do\":\"include\",\"value\":\"blocks/example-sign-in.json\"}. It is an ordinary flow and runs on its own. Creds come from the environment (TEST_EMAIL/TEST_PASSWORD) unless the include passes them in \"with\". Coords are POINTS - customize for your app.",
+  "steps": [
+    { "do": "waitFor", "value": "Welcome", "timeout": 20 },
+    { "do": "dismiss" },
+    { "do": "clearText", "x": 201, "y": 548 }, { "do": "tap", "x": 201, "y": 548 }, { "do": "type", "value": "${TEST_EMAIL}" },
+    { "do": "hideKeyboard" },
+    { "do": "clearText", "x": 191, "y": 608 }, { "do": "tap", "x": 191, "y": 608 }, { "do": "type", "value": "${TEST_PASSWORD}" },
+    { "do": "hideKeyboard" },
+    { "do": "tapText", "value": "Sign In" },
+    { "do": "waitFor", "value": "Today", "timeout": 20 }
+  ]
+}

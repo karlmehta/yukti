@@ -28,7 +28,19 @@ ok(){  printf '%s✓%s %s\n' "$G" "$R" "$*"; }
 warn(){ printf '%s!%s %s\n' "$Y" "$R" "$*"; }
 # The last words of a failing step are also the message its result entry needs,
 # so keep a copy when a flow is running. The console output is unchanged.
-die(){ printf '%s✗%s %s\n' "$E" "$R" "$*" >&2; [ -n "${YUKTI_STEP_ERR:-}" ] && printf '%s' "$*" > "$YUKTI_STEP_ERR"; exit 1; }
+#
+# Where the step was written is part of those words. The verbs that fail most -
+# tapText, waitFor, assertText, assertId, tapId, screenshot - die on their own
+# and never come back with a status, so a suffix added where the status is read
+# would be missing from exactly the steps a shared block is made of: the report
+# would say `03 tapText Sign In` for forty-five flows and never name the one
+# file to fix. The flow loop sets YUKTI_STEP_SRC for the step it is running -
+# and this process owns that variable, whatever it inherited: a value left in
+# the environment by a caller used to be printed after a message that belongs to
+# no step at all, `no flow file 'x.json' (stale from parent)`.
+YUKTI_STEP_SRC=""
+die(){ local m="$*"; if [ -n "${YUKTI_STEP_SRC:-}" ]; then m="$m ($YUKTI_STEP_SRC)"; fi
+  printf '%s✗%s %s\n' "$E" "$R" "$m" >&2; [ -n "${YUKTI_STEP_ERR:-}" ] && printf '%s' "$m" > "$YUKTI_STEP_ERR"; exit 1; }
 
 need_config(){ [ -f "$CONFIG" ] || die "no config at '$CONFIG' — run 'yukti init' or set YUKTI_CONFIG"; }
 
@@ -1008,7 +1020,7 @@ PY
 }
 
 # ── deterministic flow runner: a JSON list of steps ──────────────────────────
-# step keys: launch|stopApp|clearState|wait|waitFor[timeout,match]|waitForId[timeout]|screenshot|
+# step keys: include[with]|launch|stopApp|clearState|wait|waitFor[timeout,match]|waitForId[timeout]|screenshot|
 #            tap[x,y]|tapText|optionalTapText|tapId|type|clearText[x,y]|pressKey|hideKeyboard|scroll|
 #            scrollToText|dismiss|assertText[match]|assertId
 #
@@ -1017,6 +1029,10 @@ PY
 # step, and one check below has to ask before the step runs. A verb added to the
 # `case` has to be added here too: nothing but this comment ties the two, and
 # the `*)` arm of the dispatcher stays as the backstop.
+#
+# `include` is deliberately in neither: the builder runs it while it reads the
+# file and emits the block's steps in its place, so no record ever carries it
+# and the dispatcher never sees it.
 FLOW_VERBS="launch stopApp clearState wait waitFor waitForId screenshot tap tapText optionalTapText tapId type clearText pressKey hideKeyboard scroll scrollToText dismiss assertText assertId"
 flow(){
   local f="${1:?usage: yukti flow <file.json>}" st; [ -f "$f" ] || die "no flow file '$f'"; paths
@@ -1038,21 +1054,11 @@ import json, os, re, sys
 def fail(msg):
     sys.stderr.write(msg + "\n"); sys.exit(2)
 
-try:
-    with open(sys.argv[1], encoding="utf-8") as fh: doc = json.load(fh)
-except ValueError as e:
-    fail("flow file is not valid JSON: %s" % e)
-except OSError as e:
-    fail("flow file cannot be read: %s" % e)
-if not isinstance(doc, dict) or not isinstance(doc.get("steps"), list):
-    fail('flow file has no "steps" list')
-if not doc["steps"]:
-    fail("flow file has no steps - it would pass without doing anything")
-
 # The same forms os.path.expandvars accepted, minus its silence: it returns the
 # text unchanged when the variable is not set, so ${TEST_PASSWORD} was typed
 # into whatever held focus as a literal and the log said `type 16 chars`.
 VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+NAME = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]*\Z")
 # A record ends with NUL, the fields inside it are separated by US. A newline is
 # then just a character in a value: a caption that wraps on screen is what an
 # author copies out of it, and the lookup already folds whitespace on both sides
@@ -1060,33 +1066,131 @@ VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
 # first half as the step and read the second as a step of its own.
 SEP, END = "\x1f", "\0"
 KEYS = ("do", "value", "x", "y", "match", "timeout")
+# `include` runs the steps of another flow file here. It is resolved while the
+# steps are built, not while they run: the block's steps enter the stream as
+# ordinary records, so the runner, the console and the JUnit file treat them
+# exactly like steps written in the file itself - a failure inside the login
+# block is a failed step in the report, not a silence.
+#
+# A flow may include a block, and that block may include one more. Deeper than
+# that has no use we can name, and an author who hits the limit reads a message
+# instead of watching the run expand.
+MAX_DEPTH = 2
+
+def load(path, what, pre=""):
+    try:
+        with open(path, encoding="utf-8") as fh: doc = json.load(fh)
+    except ValueError as e:
+        fail("%s%s is not valid JSON: %s" % (pre, what, e))
+    except OSError as e:
+        fail("%s%s cannot be read: %s" % (pre, what, e))
+    if not isinstance(doc, dict) or not isinstance(doc.get("steps"), list):
+        fail('%s%s has no "steps" list' % (pre, what))
+    if not doc["steps"]:
+        fail("%s%s has no steps - it would pass without doing anything" % (pre, what))
+    return doc["steps"]
+
+def fill(v, scope, at, inside):
+    missing = []
+    def one(m, missing=missing):
+        name = m.group(1) or m.group(2)
+        if name not in scope: missing.append(name); return ""
+        return scope[name]
+    v = VAR.sub(one, v)
+    if missing:
+        fail("%s: $%s is not set %s - the step would have used the text as "
+             "written" % (at, missing[0],
+                          'here: pass it in "with" on the include, or set it in '
+                          "the environment" if inside else "in the environment"))
+    return v
 
 recs = []
-for idx, step in enumerate(doc["steps"], 1):
-    if not isinstance(step, dict): fail("step %d is not an object" % idx)
-    verb = step.get("do") or ""
-    fields = []
-    for key in KEYS:
-        v = step.get(key, "")
-        if v is None:
-            fail('step %d \'%s\': "%s" is null - remove the key or give it a value'
-                 % (idx, verb, key))
+
+def build(path, shown, src, scope, chain, depth, pre=""):
+    # A block is named relative to the file that includes it: a suite is moved,
+    # copied and run from anywhere as one directory, and the working directory
+    # of the run is not something the flow file can know. Through the real path,
+    # not the link: one shared directory of blocks symlinked into two suites
+    # resolved the blocks' own includes next to the LINK, which is where a
+    # same-named file of the borrowing suite sits.
+    base = os.path.dirname(os.path.realpath(path))
+    for idx, step in enumerate(load(path, shown, pre), 1):
+        of = " of %s" % shown if src else ""
+        if not isinstance(step, dict): fail("step %d%s is not an object" % (idx, of))
+        verb = step.get("do") or ""
+        at = "step %d '%s'%s" % (idx, verb, of)
+        if "with" in step and verb != "include":
+            fail('%s: "with" passes values to an include - only include takes it'
+                 % at)
+        if verb == "include":
+            include(step, at, base, src, scope, chain, depth)
+            continue
+        fields = []
+        for key in KEYS:
+            v = step.get(key, "")
+            if v is None:
+                fail('%s: "%s" is null - remove the key or give it a value'
+                     % (at, key))
+            v = v if isinstance(v, str) else str(v)
+            if key == "value":
+                v = fill(v, scope, at, bool(src))
+            if SEP in v or END in v:
+                fail('%s: "%s" contains a character the runner separates fields '
+                     "with" % (at, key))
+            fields.append(v)
+        # Which file the step was written in, carried so that a failure names it.
+        # Empty for the flow file itself: the run already says which flow it is.
+        fields.append(src)
+        # And where it is in that file: the run numbers steps end to end, so the
+        # number a failure prints is not the one to look for in the file.
+        fields.append(str(idx))
+        recs.append(SEP.join(fields))
+
+def include(step, at, base, src, scope, chain, depth):
+    for key in ("x", "y", "match", "timeout"):
+        if key in step:
+            fail('%s: "%s" is not a key an include takes - it runs the steps '
+                 "of a file, and those steps carry their own keys" % (at, key))
+    name = step.get("value")
+    if not isinstance(name, str) or not name.strip():
+        fail('%s: "value" is the flow file to run here, for instance '
+             '"blocks/login.json"' % at)
+    name = fill(name.strip(), scope, at, bool(src))
+    if SEP in name or END in name:
+        fail('%s: "value" contains a character the runner separates fields '
+             "with" % at)
+    path = name if os.path.isabs(name) else os.path.join(base, name)
+    real = os.path.realpath(path)
+    trail = [c[1] for c in chain] + [name]
+    if any(c[0] == real for c in chain):
+        fail("%s: '%s' is already running - a block cannot include itself, "
+             "directly or in a circle: %s" % (at, name, " -> ".join(trail)))
+    if depth + 1 > MAX_DEPTH:
+        fail("%s: a flow may include a block, and a block one more - '%s' is "
+             "deeper than that: %s" % (at, name, " -> ".join(trail)))
+    with_ = step.get("with", {})
+    if not isinstance(with_, dict):
+        fail('%s: "with" is an object of name/value pairs, for instance '
+             '{"TEST_EMAIL": "beth@example.com"}' % at)
+    # The values a block is called with are read in the scope of the caller, so
+    # an include can pass an environment variable on, or one of its own
+    # parameters. Inside the block they shadow the environment, and only there.
+    inner = dict(scope)
+    for key in sorted(with_):
+        v = with_[key]
+        if not NAME.match(key):
+            fail("%s: '%s' cannot be the name of a parameter - letters, digits "
+                 "and _, not starting with a digit" % (at, key))
+        if v is None or isinstance(v, (dict, list, bool)):
+            fail("%s: parameter '%s' must be text or a number" % (at, key))
         v = v if isinstance(v, str) else str(v)
-        if key == "value":
-            missing = []
-            def one(m, missing=missing):
-                name = m.group(1) or m.group(2)
-                if name not in os.environ: missing.append(name); return ""
-                return os.environ[name]
-            v = VAR.sub(one, v)
-            if missing:
-                fail("step %d '%s': $%s is not set in the environment - the step "
-                     "would have used the text as written" % (idx, verb, missing[0]))
-        if SEP in v or END in v:
-            fail('step %d \'%s\': "%s" contains a character the runner separates '
-                 "fields with" % (idx, verb, key))
-        fields.append(v)
-    recs.append(SEP.join(fields))
+        inner[key] = fill(v, scope, at, bool(src))
+    build(path, "block '%s'" % name, name, inner, chain + [(real, name)],
+          depth + 1, "%s: " % at)
+
+flow = sys.argv[1]
+build(flow, "flow file", "", dict(os.environ),
+      [(os.path.realpath(flow), os.path.basename(flow))], 0)
 
 sys.stdout.write(END.join(recs) + (END if recs else ""))
 PY
@@ -1101,11 +1205,19 @@ PY
   # still reported PASS). Reading `<&3` also keeps the loop in THIS shell (not a
   # pipe subshell), so a step's `die` (exit 1) aborts the whole flow with a
   # non-zero status instead of being lost.
-  while IFS=$'\x1f' read -r -d '' do_ val x y mtch tmo <&3; do
+  while IFS=$'\x1f' read -r -d '' do_ val x y mtch tmo src sidx <&3; do
       # Record the step BEFORE running it and again once it survived: the one
       # step that has a start and no end is the step that failed, and that is
       # the single fact a report cannot reconstruct from console text.
       FLOW_IDX=$((FLOW_IDX+1)); FLOW_S0="$(now)"; FLOW_ART=""
+      # The number the run counts and the number the author has to look for are
+      # the same file only while a flow has no includes. Once it has one, step 4
+      # of the run can be step 2 of the block, or step 2 of the flow file after
+      # a block of three - so a failure says which file and which step in it,
+      # and says nothing extra when the two numbers agree.
+      if [ -n "$src" ]; then export YUKTI_STEP_SRC="block '$src', step $sidx"
+      elif [ "$sidx" != "$FLOW_IDX" ]; then export YUKTI_STEP_SRC="step $sidx of this flow file"
+      else export YUKTI_STEP_SRC=""; fi
       printf '%s\x1f%s\x1f%s\x1f%s\n' "$FLOW_IDX" "$do_" "${val//[$'\n\r']/ }" "$FLOW_S0" > "$FLOW_CUR"
       : > "$FLOW_ERR"
       # The name first, the keys after it, because the order decides what a typo
@@ -1173,6 +1285,7 @@ PY
       printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' "$FLOW_IDX" "$do_" "${val//[$'\n\r']/ }" "$FLOW_S0" "$(now)" "$FLOW_ART" >> "$FLOW_REC"
   done
   exec 3<&-
+  export YUKTI_STEP_SRC=""
   ok "flow complete: $f"
 }
 
@@ -1236,11 +1349,13 @@ ${B}yukti v$YUKTI_VERSION${R} — YUKTI — smart mobile-app QA automation for R
   yukti tap-id "<id>"       tap the element with this a11y id / resource-id segment
   yukti assert-id "<id>"    assert an element with this id is on screen
 
-  flow steps: wait · waitFor · waitForId · screenshot · tap · tapText · optionalTapText · tapId · scroll · scrollToText · dismiss · type · clearText · pressKey · hideKeyboard · assertText · assertId · launch · stopApp · clearState
+  flow steps: wait · waitFor · waitForId · screenshot · tap · tapText · optionalTapText · tapId · scroll · scrollToText · dismiss · type · clearText · pressKey · hideKeyboard · assertText · assertId · launch · stopApp · clearState · include
               (clearText · pressKey · hideKeyboard: measured on Android, iOS not yet run)
               stopApp force-stops the app, clearState wipes its data (Android only); both take the variant name
               assertText matches the whole label as written; "match":"contains" asks for a substring
               waitFor polls for an element and fails on timeout ("timeout": seconds, default 10); it never scrolls
+              include runs another flow file here as a block, path relative to the including file; "with" passes values into it,
+              its steps are ordinary steps in the report, and nesting stops at a block inside a block
   config: \$YUKTI_CONFIG or ./yukti.config.json  ·  cross-platform: set variant "platform":"android"
 EOF
 }
