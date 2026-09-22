@@ -47,8 +47,8 @@ a QA build and vice-versa. Use the matching account per variant.
 ## Add a test case
 
 Flows are JSON in `flows/`. Steps: `wait`, `screenshot`, `tap {x,y}`, `tapText`,
-`optionalTapText`, `tapId`, `type`, `clearText {x,y}`, `scroll`, `scrollToText`,
-`dismiss`, `assertText`, `assertId`, `launch`. Coordinates are **points**
+`optionalTapText`, `tapId`, `type`, `clearText {x,y}`, `pressKey`, `hideKeyboard`,
+`scroll`, `scrollToText`, `dismiss`, `assertText`, `assertId`, `launch`. Coordinates are **points**
 (iPhone 16 Pro = 402×874). Prefer `tapText` (finds by accessibility label) over
 raw coords so flows survive layout changes. `${VARS}` in `value` expand from env,
 and a variable that is not set stops the flow before its first step, naming it -
@@ -127,12 +127,71 @@ inside a verb could stop a run - `adb` refusing a tap, a launch of a package
 that is not installed, a `clearText` on a dead device all reported PASS, and the
 JUnit file said `failures="0"`.
 
-Four more ways a flow stops, all of them typos that used to pass:
+Ten more ways a flow stops, the first four of them typos that used to pass:
 
 - a step name the runner does not know;
 - a `"match"` value that is neither `exact` nor `contains`;
 - a `"match"` key on a step that does not take one;
-- a `wait` whose value is not a number - `sleep` refuses it.
+- a `wait` whose value is not a number - `sleep` refuses it;
+- a `"value"` on a `hideKeyboard`, which has nothing to read one with;
+- a `pressKey` naming a key the tool does not have;
+- a `pressKey` asking for `back` on iOS, which has no Back key;
+- a `clearText` whose coordinates land on something that is not a text field;
+- a `clearText` whose coordinates land on a disabled field, or on one that
+  cannot take focus, or a tap that leaves focus in a different field than the
+  one named;
+- a `clearText` that ran and left text in the field, or ran on Android 11 or
+  older, where the key combination it uses does not exist. There is no quiet
+  fallback to deleting character by character: on such a device the step says so
+  and stops. The version check is what stops it, and it fires before the first
+  key is sent. What it covers for is the line after it: on Android 11 the shell
+  answers an unknown command with its usage text and a zero exit code, so a
+  refusal from the key combination itself would go unnoticed there - and the
+  read-back at the end is the guard if this threshold is ever wrong again.
+
+### Forms with more than one field (Android)
+
+While the keyboard is up it covers the controls under it, so a flow that fills a
+second field, or taps Save, has to close it first: `hideKeyboard` between the
+fields. It asks the input method itself whether a keyboard is up, presses escape,
+and asks again - if one is still up after that, and after Back, the step fails
+rather than letting the next tap land on a key.
+
+Two consequences worth knowing before writing flows:
+
+- the field loses focus when the keyboard closes (measured on API 35), so tap the
+  field again before typing into it - `type` goes to whatever holds focus, and
+  with none it goes nowhere;
+- `pressKey` is the general form and `hideKeyboard` is built on it. Use
+  `pressKey enter` to submit a form from the keyboard, and `hideKeyboard` when
+  what you need is the keyboard gone. `pressKey back` is not a way to close a
+  keyboard: on a screen with nothing to go back to it leaves the app, which is
+  what it did to this rig at the second press.
+
+`clearText` empties a field with select-all and one delete, then reads the field
+back and fails if anything is left. It never prints what the field held - a
+password reaches the log as a count and nothing else. The field it clears is the
+one the tap focused: when the keyboard opens and the layout moves, the field is
+no longer under the coordinates that reached it, and the step says so in a
+warning rather than reading a different node.
+
+`pressKey tab` moves focus without a tap, which reaches a field the keyboard is
+covering - the keyboard stays up through it. It is not a way to walk from field
+to field, though: it follows the whole focus order. On a two-field form measured
+here the second field was three presses away, behind a button and a dropdown,
+and that count belongs to that layout and no other. Tap the field, or close the
+keyboard and tap it.
+
+Not everything that looks like a field is one. A composer or a search bar can be
+a plain view that carries the placeholder as its accessibility label and becomes
+a real text field only once it is tapped - `clearText` refuses it until then,
+and correctly: there is nothing to clear yet. Tap it first, then clear.
+
+One contract to know before pointing it at a field that is not a plain text box:
+it deletes, and a delete on an empty input means whatever the app decides. In a
+chip field it removes the last chip, in a split OTP input it moves into the
+previous cell. That is true of the delete the verb sends and of the one it sends
+to tell an empty field from a hint.
 
 The flow file itself is now read in full before the first step runs, and a file
 the runner cannot turn into steps stops the run there: JSON it cannot parse, no
