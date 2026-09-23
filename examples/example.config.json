@@ -1,5 +1,6 @@
 {
   "projectRoot": ".",
+  "platform": "ios",
   "workspace": "ios/YourApp.xcworkspace",
   "simulator": { "device": "iPhone 16 Pro" },
   "android": { "avd": "Pixel_7_API_34" },
