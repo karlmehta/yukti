@@ -34,6 +34,39 @@ for f in ~/yukti/flows/*.json; do ~/yukti/yukti flow "$f"; done
 Screenshots land in `$TMPDIR` (the flows name them). Review, or feed them to an
 AI agent for exploratory follow-up.
 
+### An APK that is already built (Android)
+
+`up` builds first, so `install` takes the APK the build step just produced. When
+the artifact came from somewhere else - an earlier CI job, a download, a colleague -
+name it and skip the build:
+
+```bash
+~/yukti/yukti boot
+~/yukti/yukti install android-qa --apk ~/Downloads/app-qa-release.apk
+~/yukti/yukti launch android-qa
+```
+
+A variant that always installs the same artifact can say so in the config
+instead, as `variants.<v>.apkPath`. Three sources, in this order: `--apk`, then
+`apkPath`, then the APK `yukti build` produced. A path that is not a file stops
+the run and says which of the three named it, rather than handing an empty path
+to `adb`.
+
+`apkPath` is a path, not a shell word: `~` in it is a directory called `~`, so
+write the path out or keep it relative to the config. A relative `apkPath` is
+relative to the config file that names it, not to the
+directory the command was typed in - the same config installs the same file from
+a laptop and from a CI job. A relative `--apk` is what you typed, so it is
+relative to where you typed it.
+
+`--apk` belongs to `install` alone. `up` builds and then installs what it built;
+naming an artifact means skipping the build, which is `boot`, `install --apk`
+and `launch` - and `up --apk` stops at once as an unknown variant rather than
+starting a build nobody wanted.
+
+`--apk` is Android only: on iOS `install` takes the `.app` that `yukti build` or
+`yukti pull` left, and the flag stops the run rather than being ignored.
+
 ## Which variant
 
 | Variant | Backend | Firebase project | Test account |
@@ -65,6 +98,26 @@ failures several steps away from the cause. `yukti init` writes the top-level
 field, so a config it made always answers; a hand-written config that keeps the
 platform only inside its variants needs either a variant on the command line,
 `$YUKTI_VARIANT`, or that field added.
+
+The QA panel answers the same question the same way, and hands its answer to
+every CLI call it makes rather than letting the child reach one of its own. It
+prints the answer and where it came from at startup
+(`platform: android (from variant 'android-qa')`) and serves both at
+`/api/health`, and the variant dropdown shows the platform each variant will
+actually run - a variant that names none shows the top-level one. The
+contradiction above stops the panel as it stops the CLI: it reports the same
+sentence at startup, at `/api/health` and in the panel's log, and claims no
+platform while it stands.
+
+That answer also decides what a tap recorded in the panel is written against. On
+Android the screenshot is in physical pixels and `adb shell input tap` takes the
+same pixels, so the basis is the screenshot itself; on iOS the PNG is a 2x/3x
+raster and carries no point size, so the device's point size stands (an iPhone 16
+Pro is 402x874, and `YUKTI_DEVICE_PT_W` / `YUKTI_DEVICE_PT_H` set it for another
+device - set by hand, they win on both platforms). Recording Android taps
+against a fixed iPhone pair is the reason this is written down: the coordinates
+land somewhere else on the screen, the tap misses, nothing fails, and the run
+breaks several steps later on an assert about something unrelated.
 
 ## Add a test case
 

@@ -51,6 +51,18 @@ YUKTI_AI_CMD = os.environ.get("YUKTI_AI_CMD", "").strip()
 # Overridable via env for other devices.
 DEVICE_PT_W = int(os.environ.get("YUKTI_DEVICE_PT_W", "402"))
 DEVICE_PT_H = int(os.environ.get("YUKTI_DEVICE_PT_H", "874"))
+# Set explicitly, that pair is the answer for whatever device is attached. Left
+# at its default it is an iOS answer, and only an iOS one: on Android the
+# screenshot is in physical pixels and `adb shell input tap` takes the same
+# pixels, so the basis is the PNG itself. A fixed iPhone pair used there records
+# points no tap will land on, and nothing fails — the tap misses, the flow
+# carries on, and the run breaks later on an assert about something else.
+DEVICE_PT_FIXED = bool(
+    os.environ.get("YUKTI_DEVICE_PT_W") or os.environ.get("YUKTI_DEVICE_PT_H")
+)
+# The basis of the last screenshot, so /api/health can answer by the same rule.
+# (0, 0) is "no screenshot yet", which the frontend reads as "keep what I have".
+LAST_PT = (0, 0)
 
 
 # ── yukti CLI wrapper ────────────────────────────────────────────────────────
@@ -63,7 +75,73 @@ def yukti_env():
     env = dict(os.environ)
     env["YUKTI_CONFIG"] = YUKTI_CONFIG
     env.update({k: v for k, v in RUN_ENV.items() if v})
+    # Hand the child the answer instead of letting it reach one of its own. The
+    # two agree on a variant that names its platform, and part on everything
+    # else — a variant that names none, a config read from a different path, an
+    # environment only one of them can see.
+    p = run_platform()
+    if p:
+        env["YUKTI_PLATFORM"] = p
     return env
+
+
+def platform_answer(variant=""):
+    """Which platform this run drives, by the CLI's rules and in its words: the
+    environment, then the platform of the variant in hand - the one picked in
+    the panel, or a $YUKTI_VARIANT exported before Studio started, which the
+    child inherits either way - then the config's top-level "platform".
+
+    Returns (platform, source, conflict). Studio never worked this out at all:
+    it passed the variant and let the child resolve on its own, so picking an
+    Android variant in the UI still sent the run looking for a simulator.
+
+    A variant that names its own platform states a fact about that variant, so
+    an environment pinning a different one is not a preference to resolve. The
+    CLI stops there, and a panel that answered anyway would show a platform
+    while every call it makes dies on the contradiction. A conflict is
+    therefore no platform at all, and it is reported in the words the CLI uses.
+    An empty answer is "not known", never iOS.
+    """
+    env = (os.environ.get("YUKTI_PLATFORM") or "").strip()
+    cfg = read_config()
+    v = (variant or RUN_ENV.get("YUKTI_VARIANT") or os.environ.get("YUKTI_VARIANT") or "").strip()
+    vp = ""
+    if v:
+        vp = str(((cfg.get("variants") or {}).get(v) or {}).get("platform") or "").strip()
+    if env:
+        if vp and vp != env:
+            return "", "", (
+                "$YUKTI_PLATFORM says %s and variant '%s' says %s - they cannot "
+                "both be the platform of this run" % (env, v, vp)
+            )
+        return env, "$YUKTI_PLATFORM", ""
+    if vp:
+        return vp, "variant '%s'" % v, ""
+    top = str(cfg.get("platform") or "").strip()
+    if top:
+        return top, '"platform" in %s' % YUKTI_CONFIG, ""
+    return "", "", ""
+
+
+def run_platform(variant=""):
+    return platform_answer(variant)[0]
+
+
+def point_basis(dims=(0, 0)):
+    """What a click on the screenshot is converted against. On Android the PNG's
+    own pixel size is the answer; on iOS the PNG is a 2x/3x raster and carries no
+    point size, so the configured pair stands. YUKTI_DEVICE_PT_W/H set by hand
+    win on both — that is the way out for a device this rule does not fit."""
+    if DEVICE_PT_FIXED:
+        return (DEVICE_PT_W, DEVICE_PT_H)
+    plat = run_platform()
+    if plat == "android":
+        return (int(dims[0]), int(dims[1]))
+    if plat == "ios":
+        return (DEVICE_PT_W, DEVICE_PT_H)
+    # No platform, so no basis. (0, 0) says that; the iPhone pair would have
+    # claimed a device this panel has not established.
+    return (0, 0)
 
 
 def run_yukti(args, timeout=180):
@@ -166,10 +244,15 @@ def list_variants():
     """Variant names + display info from the project's yukti config."""
     cfg = read_config()
     out = []
+    # A variant that names no platform takes the config's top-level one, exactly
+    # as the CLI does. It used to read "ios" here whatever the run would be, and
+    # the panel showing one platform while the run drives another is the whole
+    # subject of this endpoint.
+    top = str(cfg.get("platform") or "").strip()
     for name, v in (cfg.get("variants") or {}).items():
         out.append({
             "name": name,
-            "platform": v.get("platform", "ios"),
+            "platform": str(v.get("platform") or top or "").strip(),
             "scheme": v.get("scheme", ""),
             "configuration": v.get("configuration", ""),
             "bundleId": v.get("bundleId") or v.get("package", ""),
@@ -246,12 +329,16 @@ class Handler(BaseHTTPRequestHandler):
             if route == "/" or route == "/index.html":
                 return self._serve_index()
             if route == "/api/health":
+                plat, plat_src, plat_conflict = platform_answer()
                 return self._json(
                     {
                         "status": "ok",
                         "config": YUKTI_CONFIG,
                         "yukti_bin": YUKTI_BIN,
-                        "device_pt": [DEVICE_PT_W, DEVICE_PT_H],
+                        "device_pt": list(point_basis(LAST_PT)),
+                        "platform": plat,
+                        "platform_source": plat_src,
+                        "platform_conflict": plat_conflict,
                         "ai_configured": bool(YUKTI_AI_CMD),
                     }
                 )
@@ -370,14 +457,17 @@ class Handler(BaseHTTPRequestHandler):
         with open(path, "rb") as f:
             png = f.read()
         dims = read_png_dimensions(path) or (0, 0)
+        pt = point_basis(dims)
+        global LAST_PT
+        LAST_PT = pt
         self.send_response(200)
         self.send_header("Content-Type", "image/png")
         self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
         self.send_header("X-Yukti-Screen", "ok")
         self.send_header("X-Yukti-Png-W", str(dims[0]))
         self.send_header("X-Yukti-Png-H", str(dims[1]))
-        self.send_header("X-Yukti-Pt-W", str(DEVICE_PT_W))
-        self.send_header("X-Yukti-Pt-H", str(DEVICE_PT_H))
+        self.send_header("X-Yukti-Pt-W", str(pt[0]))
+        self.send_header("X-Yukti-Pt-H", str(pt[1]))
         self.send_header("Content-Length", str(len(png)))
         self.end_headers()
         self.wfile.write(png)
@@ -712,8 +802,23 @@ def main():
     print("YUKTI Studio → http://localhost:%d/" % PORT)
     print("  config : %s" % YUKTI_CONFIG)
     print("  yukti  : %s" % YUKTI_BIN)
-    print("  device : %dx%d pt   AI-heal: %s"
-          % (DEVICE_PT_W, DEVICE_PT_H, "configured" if YUKTI_AI_CMD else "off"))
+    # The banner used to state an iPhone basis whatever the run was. Say which
+    # platform this panel resolved and what a recorded tap will be written
+    # against, so a wrong variant shows here rather than in a flow of misses.
+    plat, plat_src, plat_conflict = platform_answer()
+    if plat_conflict:
+        print("  platform: %s" % plat_conflict)
+    else:
+        print("  platform: %s" % ("%s (from %s)" % (plat, plat_src) if plat
+                                  else "not resolved yet - pick a variant in the panel"))
+    if DEVICE_PT_FIXED or plat == "ios":
+        basis = "%dx%d pt" % (DEVICE_PT_W, DEVICE_PT_H)
+    elif not plat:
+        basis = "not known until the platform is"
+    else:
+        basis = "the screenshot's own pixels"
+    print("  device : %s   AI-heal: %s"
+          % (basis, "configured" if YUKTI_AI_CMD else "off"))
     try:
         srv.serve_forever()
     except KeyboardInterrupt:

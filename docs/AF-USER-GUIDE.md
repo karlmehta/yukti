@@ -42,6 +42,12 @@ against `1.24.30`. Repeat with `1.24.9` to compare.
   Same 45 flows, same run — YUKTI's engine is cross-platform (label-based taps
   work on both; a few coordinate taps may need one Android validation pass).
 
+The platform comes from the variant you pick, and the panel states it at startup
+and in `/api/health`; the dropdown shows it per variant. Coordinates recorded by
+clicking the screenshot follow that answer - Android taps are recorded in the
+screenshot's own pixels, iOS taps in device points - so a flow recorded on one
+platform records what that platform's driver accepts.
+
 ### b) Run against a store / QA build already on the device
 If QA already installed a `.app`/`.apk` (e.g. the 1.24.30 QA build) on a booted
 simulator/emulator, just skip the build: boot the device, make sure the app is
@@ -51,6 +57,11 @@ installed, and click **Run All**. YUKTI drives whatever is on screen.
 If your CI produces a **simulator** build, `yukti pull <variant>` fetches it and
 `Build & Launch` installs it — no local compile. (Device `.ipa`/`.apk` won't run
 on a simulator; you need a simulator-profile artifact.)
+
+On Android an APK you already have - a CI artifact, a download - is installed by
+naming it: `yukti install android-qa --apk path/to/app.apk`, no build step. A
+variant that always installs the same artifact can carry the path as
+`variants.<v>.apkPath` instead. See RUNBOOK, "An APK that is already built".
 
 > **Version × device matrix:** to run the 45 across several versions/devices at
 > once, boot multiple simulators and open one QA panel per device
