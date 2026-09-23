@@ -462,9 +462,9 @@ the engine: `{"do":"tapText","value":"Skip","when":{"visible":"Skip"}}`.
 
 ## CI (every PR)
 
-Copy `.github/workflows/yukti-qa.yml` into the app repo, add `TEST_EMAIL` /
-`TEST_PASSWORD` repo secrets, and each PR gets pass/fail + a screenshots/video
-artifact. Add the `prod` variant to the matrix once a prod test account exists.
+Copy `examples/ci/yukti-qa.yml` into the app repo's `.github/workflows/`, add
+`TEST_EMAIL` / `TEST_PASSWORD` repo secrets, and each PR gets pass/fail + a
+screenshots/video artifact. Add the `prod` variant to the matrix once a prod test account exists.
 
 ## Gotchas baked in (so you don't hit them)
 

@@ -107,9 +107,10 @@ yukti shot | ui | find "<label>" | tap <x> <y> | type "<text>" | clear <x> <y>
 
 ## CI
 
-`.github/workflows/yukti-qa.yml` runs the whole thing on GitHub **macOS runners** —
-build → boot → run flows → upload screenshots + video, on every PR. QA team guide:
-[`docs/RUNBOOK.md`](docs/RUNBOOK.md).
+[`examples/ci/yukti-qa.yml`](examples/ci/yukti-qa.yml) is a template for your app
+repo: copy it into `.github/workflows/` there and it runs the whole thing on GitHub
+**macOS runners** — build → boot → run flows → upload screenshots + video, on every
+PR. QA team guide: [`docs/RUNBOOK.md`](docs/RUNBOOK.md).
 
 ## Optional: official EAS builds
 
