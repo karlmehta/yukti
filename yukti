@@ -1334,12 +1334,39 @@ flow_skip(){ local n="${1:-1}" why="$2" i=0 d v xx yy mm tt dd ee ss si wc ws t
     printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' "$FLOW_IDX" "$d" "${v//[$'\n\r']/ }" "$t" "$t" "" "$why" >> "$FLOW_REC"
   done; }
 flow(){
-  local f="${1:?usage: yukti flow <file.json>}" st; [ -f "$f" ] || die "no flow file '$f'"; paths
-  say "running flow: $f"
+  # --check builds the flow and stops there: every step is read, resolved and
+  # validated, and not one of them is performed. It needs no simulator and no
+  # emulator, which is what makes it the only part of a flow a CI runner can
+  # look at. A step whose condition decides at run time whether it runs is
+  # checked all the same - the screen is never asked, so the condition is not
+  # answered here, only its spelling is.
+  local chk=0 a args=""
+  # The flag is read wherever it stands. Written after the file name it used to
+  # be one more argument nobody looked at, so `yukti flow x.json --check` ran the
+  # flow: a check that performs the steps it was asked to only inspect fails in
+  # the one direction a check must not. Anything else left over is a typo, and a
+  # typo that is ignored is an instruction that did not happen.
+  for a in "$@"; do
+    case "$a" in
+      --check) chk=1;;
+      -*) die "unknown option '$a' - usage: yukti flow [--check] <file.json>";;
+      *) [ -z "$args" ] || die "one flow file at a time - usage: yukti flow [--check] <file.json>"
+         args="$a";;
+    esac
+  done
+  [ -n "$args" ] || die "usage: yukti flow [--check] <file.json>"
+  local f="$args" st; [ -f "$f" ] || die "no flow file '$f'"; paths
   FLOW_FILE="$f"; FLOW_IDX=0; FLOW_ART=""
-  FLOW_REC="$(mktemp)"; FLOW_CUR="$(mktemp)"; FLOW_ERR="$(mktemp)"; FLOW_T0="$(now)"
-  export YUKTI_STEP_ERR="$FLOW_ERR"
-  trap 'flow_results $?; run_dir_cleanup' EXIT
+  if [ "$chk" = 1 ]; then
+    say "checking flow: $f"
+  else
+    say "running flow: $f"
+    FLOW_REC="$(mktemp)"; FLOW_CUR="$(mktemp)"; FLOW_ERR="$(mktemp)"; FLOW_T0="$(now)"
+    export YUKTI_STEP_ERR="$FLOW_ERR"
+    # Nothing ran, so nothing is reported: a JUnit file written by --check would
+    # say a flow passed on a machine that never had a device.
+    trap 'flow_results $?; run_dir_cleanup' EXIT
+  fi
   # The steps are built before the first one runs, and a flow file the builder
   # refuses never starts. It used to be generated straight into the loop, where
   # its status was lost with the process substitution: a flow file that is not
@@ -1593,6 +1620,11 @@ PY
       if [ "$do_" = "__when" ]; then
         if [ -n "$src" ]; then export YUKTI_STEP_SRC="block '$src', step $sidx"
         else export YUKTI_STEP_SRC="step $sidx of this flow file"; fi
+        # Answering a condition means reading the screen. --check has none, and
+        # skipping the group would leave the steps inside it unchecked - the
+        # steps most likely to be stale, because a condition is what keeps them
+        # off most runs.
+        if [ "$chk" = 1 ]; then continue; fi
         if cond_holds "$wcond"; then continue; fi
         flow_skip "${wspan:-1}" "$(cond_words "$wcond")"
         continue
@@ -1609,8 +1641,10 @@ PY
       if [ -n "$src" ]; then export YUKTI_STEP_SRC="block '$src', step $sidx"
       elif [ "$sidx" != "$FLOW_IDX" ]; then export YUKTI_STEP_SRC="step $sidx of this flow file"
       else export YUKTI_STEP_SRC=""; fi
-      printf '%s\x1f%s\x1f%s\x1f%s\n' "$FLOW_IDX" "$do_" "${val//[$'\n\r']/ }" "$FLOW_S0" > "$FLOW_CUR"
-      : > "$FLOW_ERR"
+      if [ "$chk" = 0 ]; then
+        printf '%s\x1f%s\x1f%s\x1f%s\n' "$FLOW_IDX" "$do_" "${val//[$'\n\r']/ }" "$FLOW_S0" > "$FLOW_CUR"
+        : > "$FLOW_ERR"
+      fi
       # The name first, the keys after it, because the order decides what a typo
       # hears. A step named `tpText` carrying a `match` would otherwise be told
       # that `tpText` does not take the key - a message that asserts the verb
@@ -1631,6 +1665,9 @@ PY
       # meant pressKey, and a key silently ignored is a flow that believes it
       # pressed something.
       case "$do_" in hideKeyboard) [ -z "$val" ] || die "step $FLOW_IDX 'hideKeyboard' does not take a \"value\" - it closes whatever keyboard is up; to press a named key use pressKey";; esac
+      # Everything above this line is answerable without a device. Everything
+      # below it touches one.
+      if [ "$chk" = 1 ]; then continue; fi
       set +e   # a step must not abort the loop by itself: the status is read
                # right after the dispatcher, so the failure is attributed to
                # THIS step and the flow stops with a message.
@@ -1684,7 +1721,7 @@ PY
   done
   exec 3<&-
   export YUKTI_STEP_SRC=""
-  ok "flow complete: $f"
+  if [ "$chk" = 1 ]; then ok "flow checks out: $f - $FLOW_IDX steps"; else ok "flow complete: $f"; fi
 }
 
 init(){ [ -f "$CONFIG" ] && die "$CONFIG exists"
@@ -1728,6 +1765,9 @@ ${B}yukti v$YUKTI_VERSION${R} — YUKTI — smart mobile-app QA automation for R
   yukti up    <variant>     build + boot + install + launch  (one shot)
   yukti flow  <file.json>   run a deterministic flow (Talos test-case engine — no AI, CI-ready)
                             leaves \$YUKTI_RESULTS_DIR/<flow>.xml (JUnit) — per-step result
+  yukti flow --check <file.json>
+                            build the flow and stop: verbs, keys, conditions,
+                            includes and variables, no device, nothing performed
 
   drive primitives (for flows or an AI agent — Claude Code / OpenAI):
   yukti shot [file]         screenshot the sim (an agent reads the PNG)
