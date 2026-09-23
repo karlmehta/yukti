@@ -65,7 +65,53 @@ app_dir(){ ROOT="$(cfg projectRoot .)"; cd "$ROOT" 2>/dev/null || die "projectRo
 paths(){ export PATH="$NODE22:$IDB_BIN:/opt/homebrew/bin:$PATH"; }
 udid_file(){ echo "${TMPDIR:-/tmp}/yukti-udid"; }
 booted(){ xcrun simctl list devices 2>/dev/null | grep -m1 Booted | grep -oE '[0-9A-F-]{36}' || true; }
-plat_of(){ cfg "variants.$1.platform" ios; }
+# The platform of this run, resolved once before the command runs (bottom of the
+# file). Every primitive asks this and nothing else, so one run drives one
+# platform: `yukti up android-qa` and `yukti flow` on the same config could
+# disagree, because the first read the variant and the second a global that
+# defaulted to iOS.
+is_android(){ [ "${YUKTI_PLATFORM:?the platform of this run was never resolved}" = android ]; }
+
+# Sources, in order: the environment, the platform of the variant this
+# invocation is about, the top-level "platform". The variant is the one named on
+# the command line, else $YUKTI_VARIANT, which is what Studio sets when a variant
+# is picked in the panel. Nothing left to ask is not an iOS run - it is a run
+# that cannot know what it is driving, so it says so and stops. The answer names
+# its source: which platform, and which of the three said so.
+resolve_platform(){
+  local v="${1:-}" p='' src='' vp='' why=''
+  [ -n "$v" ] || v="${YUKTI_VARIANT:-}"
+  [ -n "$v" ] && [ -f "$CONFIG" ] && vp="$(cfg "variants.$v.platform")"
+  if [ -n "${YUKTI_PLATFORM:-}" ]; then
+    p="$YUKTI_PLATFORM"; src='$YUKTI_PLATFORM'
+    # A variant that names its own platform states a fact about that variant,
+    # not a preference. When the environment pins a different one, one of the
+    # two is wrong, and picking either is the silent answer this whole change
+    # exists to end.
+    [ -z "$vp" ] || [ "$vp" = "$p" ] || die "\$YUKTI_PLATFORM says $p and variant '$v' says $vp - they cannot both be the platform of this run"
+  elif [ -f "$CONFIG" ]; then
+    if [ -n "$vp" ]; then p="$vp"; src="variant '$v'"
+    else p="$(cfg platform)"; [ -n "$p" ] && src="\"platform\" in $CONFIG"; fi
+  fi
+  if [ -z "$p" ]; then
+    # Say which of the three was asked and what it answered. Assembled here and
+    # not inside the message: a ${v:-...} there reads as the variant's own name.
+    if [ ! -f "$CONFIG" ]; then
+      why="and there is no config at '$CONFIG' - run 'yukti init' or set YUKTI_CONFIG"
+    else
+      if [ -z "$v" ]; then why="no variant was named (either a command that takes one, or \$YUKTI_VARIANT)"
+      elif [ -z "$(cfg "variants.$v")" ]; then why="there is no variant '$v' in $CONFIG, and it"
+      else why="variant '$v' does not name a platform, and $CONFIG"; fi
+      [ -n "$v" ] || why="$why, and $CONFIG"
+      why="$why has no top-level \"platform\""
+    fi
+    die "cannot tell which platform this run is for: \$YUKTI_PLATFORM is not set, $why"
+  fi
+  case "$p" in ios|android) ;; *) die "'$p' is not a platform - the only ones are ios and android (from $src)";; esac
+  export YUKTI_PLATFORM="$p"
+  # To stderr: `yukti find`, `yukti shot` and `yukti ui` put an answer on stdout
+  # that a caller reads.
+  say "platform: $p (from $src)" >&2; }
 
 # ── Android backend (adb + uiautomator + gradle) ─────────────────────────────
 # 1:1 mirror of the iOS path. Implemented; validate on a Mac with the Android SDK.
@@ -427,7 +473,7 @@ PY
 # ── build a signed arm64 simulator .app for a variant ────────────────────────
 build(){
   local V="${1:?usage: yukti build <variant>}"
-  [ "$(plat_of "$V")" = android ] && { build_android "$V"; return; }
+  is_android && { build_android "$V"; return; }
   app_dir; paths
   local scheme cfgn env dd
   scheme="$(cfg variants.$V.scheme)";        [ -n "$scheme" ] || die "unknown variant '$V'"
@@ -470,7 +516,7 @@ pull_eas(){
 
 # ── simulator lifecycle ──────────────────────────────────────────────────────
 boot(){
-  [ "${YUKTI_PLATFORM:-ios}" = android ] && { boot_android; return; }
+  is_android && { boot_android; return; }
   paths; local dev rt u
   dev="$(cfg simulator.device 'iPhone 16 Pro')"
   u="$(xcrun simctl list devices | grep -m1 "$dev (" | grep -oE '[0-9A-F-]{36}' || true)"
@@ -484,9 +530,9 @@ boot(){
   open -a Simulator
   echo "$u" > "$(udid_file)"; ok "booted $dev ($u)"
 }
-install(){ local V="${1:?variant}"; [ "$(plat_of "$V")" = android ] && { install_android "$V"; return; }; paths; local u a; u="$(cat "$(udid_file)")"; a="$(cat "${TMPDIR:-/tmp}/yukti-app-$V")"
+install(){ local V="${1:?variant}"; is_android && { install_android "$V"; return; }; paths; local u a; u="$(cat "$(udid_file)")"; a="$(cat "${TMPDIR:-/tmp}/yukti-app-$V")"
   xcrun simctl install "$u" "$a" && ok "installed $(basename "$a")"; }
-launch(){ local V="${1:?variant}"; [ "$(plat_of "$V")" = android ] && { launch_android "$V"; return; }; paths; local u b; u="$(cat "$(udid_file)")"; b="$(cfg variants.$V.bundleId)"
+launch(){ local V="${1:?variant}"; is_android && { launch_android "$V"; return; }; paths; local u b; u="$(cat "$(udid_file)")"; b="$(cfg variants.$V.bundleId)"
   xcrun simctl launch "$u" "$b" && ok "launched $b"; }
 # A flow inherits whatever the flow before it left behind - the session, the
 # onboarding, cached content, a half-filled form. The same flow is then green
@@ -497,13 +543,13 @@ launch(){ local V="${1:?variant}"; [ "$(plat_of "$V")" = android ] && { launch_a
 #
 # Both steps take the variant name, the way `launch` does, so the package and
 # the bundle id come from the config and never from the flow file.
-# The platform of a step is the platform of the RUN. plat_of() is not that: it
-# answers ios whenever the variant does not name a platform of its own, and a
-# config that names the platform once at the top level is legal - so a step
-# asking plat_of would take the iOS path in the middle of an Android run. The
-# run's platform is already resolved at startup (env, then the config, then the
-# ios default), which is what every drive primitive reads. Honour a variant that
-# names its own platform, and otherwise follow the run.
+# The platform of a step is the platform of the RUN. Asking the config for the
+# variant alone is not that: a variant that names no platform of its own does
+# not make the step iOS, and a config that names the platform once at the top
+# level is legal - so a step reading the variant on its own would take the iOS
+# path in the middle of an Android run. The run's platform is resolved once
+# before the command starts, and that is what every drive primitive reads.
+# Honour a variant that names its own platform, and otherwise follow the run.
 step_platform(){ local V="$1" p; p="$(cfg "variants.$V.platform")"; printf '%s' "${p:-$YUKTI_PLATFORM}"; }
 stop_app(){ local V="${1:-}" plat; [ -n "$V" ] || die "stopApp needs a variant name - the one used in $CONFIG"
   plat="$(step_platform "$V")"
@@ -551,19 +597,19 @@ clear_state(){ local V="${1:-}" plat; [ -n "$V" ] || die "clearState needs a var
     Success*) ok "cleared $pkg - the app is stopped now, launch it before the next step";;
     *) die "clearState: pm clear refused '$pkg': ${out:-no output}";;
   esac; }
-up(){ local V="${1:?usage: yukti up <variant>}"; export YUKTI_PLATFORM="$(plat_of "$V")"; build "$V"; boot; install "$V"; launch "$V"; ok "up: '$V' running — drive with 'yukti shot' / 'yukti flow'"; }
+up(){ local V="${1:?usage: yukti up <variant>}"; build "$V"; boot; install "$V"; launch "$V"; ok "up: '$V' running — drive with 'yukti shot' / 'yukti flow'"; }
 
 # ── drive primitives (used by flows AND by AI agents) ────────────────────────
 U(){ cat "$(udid_file)" 2>/dev/null || booted; }
 idb_ready(){ paths; idb connect "$(U)" >/dev/null 2>&1 || true; }
-shot(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { ashot "$@"; return; }; paths; local o; o="$(shot_path "${1:-}")"; mkdir -p "$(dirname "$o")"; xcrun simctl io "$(U)" screenshot "$o" >/dev/null 2>&1 && echo "$o"; }
-ui(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { aui; return; }; idb_ready; local u out i; u="$(U)"; for i in 1 2 3 4; do out="$(idb ui describe-all --udid "$u" 2>/dev/null)"; [ -n "$out" ] && { printf '%s' "$out"; return 0; }; sleep 0.6; done
+shot(){ is_android && { ashot "$@"; return; }; paths; local o; o="$(shot_path "${1:-}")"; mkdir -p "$(dirname "$o")"; xcrun simctl io "$(U)" screenshot "$o" >/dev/null 2>&1 && echo "$o"; }
+ui(){ is_android && { aui; return; }; idb_ready; local u out i; u="$(U)"; for i in 1 2 3 4; do out="$(idb ui describe-all --udid "$u" 2>/dev/null)"; [ -n "$out" ] && { printf '%s' "$out"; return 0; }; sleep 0.6; done
   # An empty tree after four tries is idb failing, not a screen with nothing on
   # it: a booted simulator always reports at least its window. Returning the
   # empty string made every caller read it as "the element is not there". The
   # Android path already fails here; this is the same rule for iOS.
   die "idb returned no accessibility tree after 4 tries - is the simulator booted?"; }
-find_el(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { afind "$1" "${2:-text}" "${3:-exact}"; return; }; paths; ui | "$PY" -c '
+find_el(){ is_android && { afind "$1" "${2:-text}" "${3:-exact}"; return; }; paths; ui | "$PY" -c '
 import json,sys
 # Rank candidates instead of the first AXLabel/AXValue substring hit: honor the
 # accessibility identifier (AXUniqueId) and prefer the actual field/control over
@@ -665,7 +711,7 @@ for e in els:
     best=(int(x+w/2),int(y+h/2)); best_score=score
 if best: print(best[0],best[1])
 ' "$1" "${2:-text}" "${3:-exact}"; }
-tap(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { atap "$1" "$2"; return; }; paths; idb ui tap --udid "$(U)" "${1:?x}" "${2:?y}"; }
+tap(){ is_android && { atap "$1" "$2"; return; }; paths; idb ui tap --udid "$(U)" "${1:?x}" "${2:?y}"; }
 # A lookup has three outcomes, not two: coordinates, "no such element", and
 # "the screen could not be read at all". The third one used to arrive as the
 # second, because `die` inside aui/ui exits a command-substitution subshell and
@@ -688,7 +734,7 @@ dismiss(){ local L xy; for L in "Not Now" "Not now" "Maybe Later" "Later" "Skip 
     xy="$(find_el "$L")" || die "cannot read the screen - see the error above"
     [ -n "$xy" ] && { tap $xy || die "dismiss: the device refused the tap on '$L'"; sleep 0.6; ok "dismissed '$L'"; }
   done; }  # only SAFE interstitial labels — never Cancel/Close/OK (those navigate/confirm)
-type_str(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { atype "$1"; return; }; paths; local s="${1:?text}" i; for ((i=0;i<${#s};i++)); do idb ui text --udid "$(U)" "${s:$i:1}" >/dev/null 2>&1; sleep 0.12; done; }  # char-by-char = reliable
+type_str(){ is_android && { atype "$1"; return; }; paths; local s="${1:?text}" i; for ((i=0;i<${#s};i++)); do idb ui text --udid "$(U)" "${s:$i:1}" >/dev/null 2>&1; sleep 0.12; done; }  # char-by-char = reliable
 # The right edge of the field under a point, and what it holds. Both come out of
 # one dump: on iOS the caret has to be put at the end of THIS field before
 # deleting, and the old code tapped a fixed x=360 - right for one screen width
@@ -733,14 +779,14 @@ iclear(){ paths; local x="${1:?x}" y="${2:?y}" u out edge val after i kind
   IFS=$'\x1f' read -r edge kind after <<<"$out"
   [ -z "$after" ] || die "clearText: the field still holds text after ${#val} deletes"
   ok "clearText: field empty at $x,$y"; }
-clear_field(){ [ "${YUKTI_PLATFORM:-ios}" = android ] && { aclear "$1" "$2"; return; }; iclear "$1" "$2"; }
+clear_field(){ is_android && { aclear "$1" "$2"; return; }; iclear "$1" "$2"; }
 # One key, by name, on either platform. iOS has no Back key at all - saying so is
 # the whole point: a flow that asks for one on iOS is wrong about the platform,
 # and pressing nothing would let it believe otherwise.
 press_key(){ local name="${1:-}" u
   [ -n "$name" ] || die "pressKey needs a key name - one of: $KEY_NAMES"
   case " $KEY_NAMES " in *" $name "*) ;; *) die "pressKey does not know the key '$name' - use one of: $KEY_NAMES";; esac
-  if [ "${YUKTI_PLATFORM:-ios}" = android ]; then
+  if is_android; then
     akey "$name" || die "pressKey '$name': the device refused the key"
   else
     paths; u="$(U)"
@@ -769,7 +815,7 @@ sys.exit(1)
 # rather than beside it. The postcondition is the verb: an Android form longer
 # than one field cannot be filled while the keyboard is up, so "the keys were
 # accepted" is not an answer - "the keyboard is down" is.
-kb_shown(){ if [ "${YUKTI_PLATFORM:-ios}" = android ]; then akb_shown; else ikb_shown; fi; }
+kb_shown(){ if is_android; then akb_shown; else ikb_shown; fi; }
 hide_keyboard(){ local st=0
   kb_shown || st=$?
   if [ "$st" -eq 2 ]; then die "hideKeyboard: the device did not report its input method state"; fi
@@ -779,7 +825,7 @@ hide_keyboard(){ local st=0
   st=0; kb_shown || st=$?
   if [ "$st" -eq 2 ]; then die "hideKeyboard: the device did not report its input method state"; fi
   if [ "$st" -eq 1 ]; then ok "hideKeyboard: keyboard closed"; return 0; fi
-  if [ "${YUKTI_PLATFORM:-ios}" != android ]; then die "hideKeyboard: the keyboard is still up after escape"; fi
+  if ! is_android; then die "hideKeyboard: the keyboard is still up after escape"; fi
   # Back is the fallback and never the mechanism, and only while the keyboard is
   # still up: the IME consumes it then. Measured on API 35 - with the keyboard
   # already down the same key walked the rig out of the app and, one screen
@@ -887,7 +933,7 @@ wait_for(){ local q="${1:-}" t="${2:-10}" m="${3:-exact}" mode="${4:-assert}" xy
 # a line in the run to say that is what happened.
 scroll(){ local d="${1:-down}" w h
   case "$d" in up|down|left|right) ;; *) die "scroll: '$d' is not a direction - use up, down, left or right";; esac
-  if [ "${YUKTI_PLATFORM:-ios}" = android ]; then apaths
+  if is_android; then apaths
     case "$d" in
       up)    adb shell input swipe 200 300 200 700 300;;
       down)  adb shell input swipe 200 700 200 300 300;;
@@ -968,10 +1014,10 @@ run_dir(){ printf '%s' "${YUKTI_RUN_DIR:-}"; }
 screen_wh(){ local d f m out w h
   d="$(run_dir)"; f=''; m=''
   # No run directory, no cache: both halves stay empty and every lookup asks.
-  [ -n "$d" ] && { f="$d/screen-${YUKTI_PLATFORM:-ios}"; m="$f.fallback"; }
+  [ -n "$d" ] && { f="$d/screen-$YUKTI_PLATFORM"; m="$f.fallback"; }
   [ -n "$f" ] && [ -s "$f" ] && { cat "$f"; return 0; }
   out=''
-  if [ "${YUKTI_PLATFORM:-ios}" = android ]; then
+  if is_android; then
     apaths   # platform-tools go into PATH here; without it adb is simply absent
     out="$(adb shell wm size 2>/dev/null | tr -d '\r' | sed -n 's/.*: *\([0-9][0-9]*\)x\([0-9][0-9]*\).*/\1 \2/p' | tail -1 || true)"
   else
@@ -1129,7 +1175,7 @@ flow_results(){
   local st="${1:-0}" out
   [ -n "${FLOW_REC:-}" ] || return 0
   trap - EXIT
-  out="$("$PY" - "$FLOW_FILE" "$FLOW_REC" "$FLOW_CUR" "$FLOW_ERR" "$FLOW_T0" "$(now)" "$st" "$RESULTS_DIR" "${YUKTI_PLATFORM:-ios}" <<'PY'
+  out="$("$PY" - "$FLOW_FILE" "$FLOW_REC" "$FLOW_CUR" "$FLOW_ERR" "$FLOW_T0" "$(now)" "$st" "$RESULTS_DIR" "$YUKTI_PLATFORM" <<'PY'
 import os, sys, time
 from xml.sax.saxutils import escape, quoteattr
 
@@ -1809,17 +1855,6 @@ ${B}yukti v$YUKTI_VERSION${R} — YUKTI — smart mobile-app QA automation for R
 EOF
 }
 
-# Resolve the target platform ONCE per invocation (env wins, else config), and
-# export it so every primitive agrees. Previously each primitive defaulted to
-# iOS (${YUKTI_PLATFORM:-ios}); a caller that hadn't exported it — the Studio
-# server, or a bare `yukti flow` on an Android config — silently ran the iOS
-# path (build/boot/find/tap/type). Config source of truth: top-level "platform",
-# else the qa variant's platform, else ios.
-if [ -z "${YUKTI_PLATFORM:-}" ] && [ -f "$CONFIG" ]; then
-  YUKTI_PLATFORM="$(cfg platform "$(cfg variants.qa.platform ios)")"
-fi
-export YUKTI_PLATFORM="${YUKTI_PLATFORM:-ios}"
-
 # One directory per run for anything measured from the device, made here and
 # removed on the way out. Nested calls - the agent shelling out to `yukti tap`,
 # Studio driving a flow - inherit it and share the measurement; only the shell
@@ -1843,6 +1878,23 @@ run_dir_cleanup(){
 trap run_dir_cleanup EXIT
 
 cmd="${1:-}"; shift || true
+
+# Which platform this run drives is answered once, here, and only for the
+# commands that drive something. init, doctor, scan and help touch no device,
+# and `flow --check` reads a flow without performing any of it - all of them
+# still run where there is no config at all, which is the case in CI.
+case "$cmd" in
+  flow) case " $* " in *" --check "*) ;; *) resolve_platform;; esac;;
+  build|pull|install|launch|up|"stop-app"|stopApp|"clear-state"|clearState) resolve_platform "${1:-}";;
+  boot|shot|ui|find|tap|"tap-text"|tapText|scroll|"scroll-to"|scrollToText|dismiss|type|clear|assert|\
+  "tap-id"|tapId|"assert-id"|assertId|"assert-not"|assertNotText|"assert-not-id"|assertNotId|"wait-for"|waitFor)
+    resolve_platform;;
+  # init, doctor, scan and help drive nothing, and a command this tool does not
+  # know is answered by the dispatcher below - neither is a reason to ask which
+  # platform a run is for.
+  *) ;;
+esac
+
 case "$cmd" in
   doctor) doctor;;
   init) init "$@";;

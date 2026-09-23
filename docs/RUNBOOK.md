@@ -44,6 +44,28 @@ AI agent for exploratory follow-up.
 A QA account only exists in its own Firebase project — a prod account will 400 on
 a QA build and vice-versa. Use the matching account per variant.
 
+## Which platform
+
+One run drives one platform, resolved before the command starts and printed as
+`platform: android (from variant 'android-qa')`. Three sources, in this order:
+
+1. `$YUKTI_PLATFORM`, which beats everything - this is how CI pins a run.
+2. The platform of the variant this command is about: the one you named
+   (`yukti up android-qa`), else `$YUKTI_VARIANT`.
+3. The top-level `"platform"` in the config.
+
+A variant that names its own platform states a fact about that variant, so
+`$YUKTI_PLATFORM` saying one thing and the variant in hand another is not a
+preference to resolve: the run stops and prints both. Pin the environment for a
+suite, name the variant for a one-off, and the two never need to argue.
+
+When none of the three answers, the run stops and says so. It does not pick one:
+a run that guesses the platform drives the wrong tooling and reports ordinary
+failures several steps away from the cause. `yukti init` writes the top-level
+field, so a config it made always answers; a hand-written config that keeps the
+platform only inside its variants needs either a variant on the command line,
+`$YUKTI_VARIANT`, or that field added.
+
 ## Add a test case
 
 Flows are JSON in `flows/`. Steps: `wait`, `waitFor`, `waitForId`, `screenshot`,
@@ -452,9 +474,9 @@ id. That is stricter than `tapText`, so a condition can skip a step `tapText`
 would have found; the `~` line and the `skipped` entry are how you see it happen.
 
 `platform` is `ios` or `android` against the platform of the run, and the skip
-line names that platform: `skipped: platform 'android' (this run: ios)`. Nothing
-else in the tool says out loud which platform it resolved, so this line is worth
-reading when a step you expected to run did not.
+line names that platform: `skipped: platform 'android' (this run: ios)`. The run
+says which platform it resolved and where that came from on its first line (see
+"Which platform"), so the two lines together explain a step that did not run.
 
 `optionalTapText` and `dismiss` stay as they are. What is new is that the same
 thing can be written in the flow file, with the label in the file instead of in

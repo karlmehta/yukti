@@ -228,6 +228,13 @@ is too strict shows up.
 the skip line names that platform - `skipped: platform 'android' (this run: ios)`
 - so a run that resolved its platform differently than you expected says so.
 
+The platform of a run is settled before the first step and printed once, as
+`platform: android (from variant 'android-qa')`. It comes from `$YUKTI_PLATFORM`
+if that is set, else from the platform of the variant the command is about (the
+one you named, or `$YUKTI_VARIANT`), else from the top-level `"platform"` in the
+config. If none of the three answers, the run stops there rather than picking a
+platform for you.
+
 `optionalTapText` and `dismiss` are the two states that were common enough to be
 built into the tool. They stay, and they now have an equivalent you can write in
 the flow file, with the label spelled out instead of hidden in the engine:
