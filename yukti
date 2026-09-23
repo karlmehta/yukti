@@ -343,7 +343,14 @@ import re,sys
 mode=sys.argv[1]
 x0,y0=(int(sys.argv[2]),int(sys.argv[3])) if mode=="at" else (0,0)
 best=None; best_area=0; best_edit=False
-for m in re.finditer(r"<node[^>]*?>", sys.stdin.read()):
+xml=sys.stdin.read()
+# Nothing arrived: the dump failed and aui has already said so. Status 1 is "the
+# screen could not be read", and it has to leave here as 1 - status 3 below is
+# "the screen was read and there is no such field", which the caller reports in
+# its own words. Without this line an unreadable screen left as 3 and clearText
+# blamed the point it was aimed at.
+if not xml.strip(): sys.exit(1)
+for m in re.finditer(r"<node[^>]*?>", xml):
     tag=m.group(0)
     b=re.search(r"bounds=\"\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]\"", tag)
     if not b: continue
@@ -388,7 +395,7 @@ aclear(){ apaths; local x="$1" y="$2" sdk before after probe
   # What the flow aimed at, read BEFORE the tap: a disabled or read-only field
   # takes no focus and no keys, and its text would sit there unchanged through
   # select-all, delete and the probe below - three readings agreeing on a lie.
-  out="$(afield at "$x" "$y")" || die "clearText: no element at $x,$y - see the error above"
+  out="$(afield at "$x" "$y")" || lookup_die $? "clearText: no element at $x,$y"
   IFS=$'\x1f' read -r cls enb fcb res box before <<<"$out"
   case "$cls" in *EditText*) ;; *) die "clearText: the element at $x,$y is a ${cls:-node with no class}, not a text field";; esac
   [ "$enb" = true ] || die "clearText: the field at $x,$y is disabled - it takes no keys"
@@ -415,7 +422,7 @@ aclear(){ apaths; local x="$1" y="$2" sdk before after probe
   fi
   adb shell input keycombination 113 29 || die "clearText: the device refused select-all (Ctrl+A)"
   adb shell input keyevent 67 || die "clearText: the device refused the delete key"
-  out="$(afield focused)" || die "clearText: cannot read the screen - see the error above"
+  out="$(afield focused)" || lookup_die $? "clearText: nothing on the screen has focus"
   IFS=$'\x1f' read -r cls enb fcb res box after <<<"$out"
   [ -n "$after" ] || { ok "clearText: field empty at $x,$y"; return 0; }
   # Any text left is unresolved, whatever it is and whether or not it changed:
@@ -425,7 +432,7 @@ aclear(){ apaths; local x="$1" y="$2" sdk before after probe
   # success. One more delete separates the two: on an empty field it changes
   # nothing, on a field still holding text it takes another character.
   adb shell input keyevent 67 || die "clearText: the device refused the delete key"
-  out="$(afield focused)" || die "clearText: cannot read the screen - see the error above"
+  out="$(afield focused)" || lookup_die $? "clearText: nothing on the screen has focus"
   IFS=$'\x1f' read -r cls enb fcb res box probe <<<"$out"
   [ "$probe" = "$after" ] || die "clearText: the field still holds text after select-all and delete"
   ok "clearText: field empty at $x,$y"; }
@@ -610,7 +617,16 @@ ui(){ is_android && { aui; return; }; idb_ready; local u out i; u="$(U)"; for i 
   # Android path already fails here; this is the same rule for iOS.
   die "idb returned no accessibility tree after 4 tries - is the simulator booted?"; }
 find_el(){ is_android && { afind "$1" "${2:-text}" "${3:-exact}"; return; }; paths; ui | "$PY" -c '
-import json,sys
+import json,sys,os,traceback
+# A lookup must never leave with status 1: that status now means the screen
+# could not be read AND the reason is already printed. Anything unforeseen in
+# here is the other kind - the device answered with something this code cannot
+# use - so it leaves as 2 and the caller says what that means rather than dying
+# without any words. The traceback still reaches stderr: a lookup that crashes
+# is a bug in this tool, not a state of the app.
+def _unforeseen(t,v,tb):
+    traceback.print_exception(t,v,tb); sys.stderr.flush(); os._exit(2)
+sys.excepthook=_unforeseen
 # Rank candidates instead of the first AXLabel/AXValue substring hit: honor the
 # accessibility identifier (AXUniqueId) and prefer the actual field/control over
 # a nearby static caption — same bug the Android path had ("Email" hit the "or
@@ -622,7 +638,11 @@ mode=(sys.argv[2] if len(sys.argv)>2 else "text")
 match=(sys.argv[3] if len(sys.argv)>3 else "exact")
 raw=sys.stdin.read().strip()
 if not raw: sys.exit(1)   # 1 = the tree never arrived; ui() has already said why
-els=json.loads(raw)
+# Something arrived and it is not a tree: a traceback here would leave the step
+# with no words of its own, so this is status 2 - answered, unreadable - the way
+# ifield_probe already reports it.
+try: els=json.loads(raw)
+except ValueError: sys.exit(2)
 def frame(e):
     # idb builds disagree on the case of the frame keys, so read both spellings.
     b=e.get("frame") or {}
@@ -722,16 +742,16 @@ tap(){ is_android && { atap "$1" "$2"; return; }; paths; idb ui tap --udid "$(U)
 # verb must not tap it: an element that left the screen is an element that is not
 # there, which is the answer it has always given.
 tap_text(){ local xy st=0; xy="$(scroll_to "$1")" || st=$?
-  case "$st" in 0) ;; 5) die "no element matching '$1'";; *) die "cannot read the screen - see the error above";; esac
+  case "$st" in 0) ;; 5) die "no element matching '$1'";; *) lookup_die "$st";; esac
   [ -n "$xy" ] || die "no element matching '$1'"; tap $xy; }  # auto-scrolls off-screen elements into view
 # The exception these two verbs enjoy is about an ABSENT label, and nothing else.
 # A device that refuses the tap is not an absent label: the status of `tap` is
 # checked here, or the step keeps its exception and reports a tap that never
 # happened - the very class of lie the status check above exists to end.
-tap_text_optional(){ local xy; xy="$(find_el "$1")" || die "cannot read the screen - see the error above"; [ -n "$xy" ] && { tap $xy || die "optional tap '$1': the device refused the tap"; ok "optional tap '$1'"; } || warn "optional '$1' not present — skipped"; }
+tap_text_optional(){ local xy st=0; xy="$(find_el "$1")" || st=$?; [ "$st" -eq 0 ] || lookup_die "$st"; [ -n "$xy" ] && { tap $xy || die "optional tap '$1': the device refused the tap"; ok "optional tap '$1'"; } || warn "optional '$1' not present — skipped"; }
 # Auto-dismiss the interstitials that derail flows (Save Password, notifications, promos…)
-dismiss(){ local L xy; for L in "Not Now" "Not now" "Maybe Later" "Later" "Skip for now" "Skip" "No thanks" "No Thanks" "Got it"; do
-    xy="$(find_el "$L")" || die "cannot read the screen - see the error above"
+dismiss(){ local L xy st; for L in "Not Now" "Not now" "Maybe Later" "Later" "Skip for now" "Skip" "No thanks" "No Thanks" "Got it"; do
+    st=0; xy="$(find_el "$L")" || st=$?; [ "$st" -eq 0 ] || lookup_die "$st"
     [ -n "$xy" ] && { tap $xy || die "dismiss: the device refused the tap on '$L'"; sleep 0.6; ok "dismissed '$L'"; }
   done; }  # only SAFE interstitial labels — never Cancel/Close/OK (those navigate/confirm)
 type_str(){ is_android && { atype "$1"; return; }; paths; local s="${1:?text}" i; for ((i=0;i<${#s};i++)); do idb ui text --udid "$(U)" "${s:$i:1}" >/dev/null 2>&1; sleep 0.12; done; }  # char-by-char = reliable
@@ -740,7 +760,16 @@ type_str(){ is_android && { atype "$1"; return; }; paths; local s="${1:?text}" i
 # deleting, and the old code tapped a fixed x=360 - right for one screen width
 # and silently wrong for every other.
 ifield_probe(){ paths; ui | "$PY" -c '
-import json,sys
+import json,sys,os,traceback
+# A lookup must never leave with status 1: that status now means the screen
+# could not be read AND the reason is already printed. Anything unforeseen in
+# here is the other kind - the device answered with something this code cannot
+# use - so it leaves as 2 and the caller says what that means rather than dying
+# without any words. The traceback still reaches stderr: a lookup that crashes
+# is a bug in this tool, not a state of the app.
+def _unforeseen(t,v,tb):
+    traceback.print_exception(t,v,tb); sys.stderr.flush(); os._exit(2)
+sys.excepthook=_unforeseen
 x0,y0=float(sys.argv[1]),float(sys.argv[2])
 def frame(e):
     b=e.get("frame") or {}
@@ -768,14 +797,14 @@ iclear(){ paths; local x="${1:?x}" y="${2:?y}" u out edge val after i kind
   u="$(U)"
   idb ui tap --udid "$u" "$x" "$y" || die "clearText: the simulator refused the tap on the field"
   sleep .4
-  out="$(ifield_probe "$x" "$y")" || die "clearText: no element at $x,$y - see the error above"
+  out="$(ifield_probe "$x" "$y")" || lookup_die $? "clearText: no element at $x,$y"
   IFS=$'\x1f' read -r edge kind val <<<"$out"
   [ "$kind" = field ] || die "clearText: the element at $x,$y is a $kind, not a text field"
   [ -n "$val" ] || { ok "clearText: the field was already empty"; return 0; }
   idb ui tap --udid "$u" "$edge" "$y" || die "clearText: the simulator refused the tap at the end of the field"
   sleep .3
   for i in $(seq 1 ${#val}); do idb ui key --udid "$u" 42 >/dev/null 2>&1 || die "clearText: the simulator refused the delete key"; done
-  out="$(ifield_probe "$x" "$y")" || die "clearText: cannot read the screen - see the error above"
+  out="$(ifield_probe "$x" "$y")" || lookup_die $? "clearText: no element at $x,$y any more"
   IFS=$'\x1f' read -r edge kind after <<<"$out"
   [ -z "$after" ] || die "clearText: the field still holds text after ${#val} deletes"
   ok "clearText: field empty at $x,$y"; }
@@ -861,7 +890,27 @@ assert_id(){ local q="${1:-}"; [ -n "$q" ] || die "assertId needs a non-empty id
 # screen could not be read (status 1: the dump failed) and the screen was read but
 # cannot be judged (status 3: it does not report its own bounds, so nothing on it
 # can be called visible). Neither of them means the element is absent.
+# Who says it, once. A lookup that could not read the screen at all has already
+# printed the reason and recorded it for the step result - aui and ui end in
+# `die`, and that `die` only kills the command substitution they run in. The
+# caller adding "see the error above" printed that same line a second time, and
+# on the quiet status 3 - a tree that arrived and cannot be judged, which nobody
+# has spoken for - it pointed at an error that was never printed. So: stop the
+# run without a word when the reason is already out, and supply the words when
+# it is not.
+# The caller's own words belong to status 3 alone: there the screen was read and
+# the caller is the one who knows what it was looking for. Status 2 is a device
+# that answered with something unreadable, which is no more the caller's fault
+# than a failed dump - saying "no element at x,y" for it blames the point the
+# step was aimed at.
+lookup_die(){ local st="${1:-1}" msg="${2:-}"
+  case "$st" in
+    1) exit 1;;
+    3) die "${msg:-$(lookup_err 3)}";;
+    *) die "$(lookup_err "$st")";;
+  esac; }
 lookup_err(){ case "${1:-1}" in
+    2) printf '%s' "the device answered, but not with a tree that can be read";;
     3) printf '%s' "the screen was read but does not report its own bounds, so nothing on it can be called visible";;
     *) printf '%s' "cannot read the screen - see the error above";; esac; }
 # The negative assertions. Absence is the one verdict where an EMPTY answer is the
@@ -945,7 +994,7 @@ scroll(){ local d="${1:-down}" w h
         # of it to catch that later, so it dies here, like every other reader of
         # the screen.
         aim="$(ahscroller)" || ast=$?
-        [ "$ast" -eq 0 ] || die "cannot read the screen - see the error above"
+        [ "$ast" -eq 0 ] || lookup_die "$ast"
         set -- $aim; cy="${1:-}"; x1="${2:-}"; x2="${3:-}"
         if [ -z "$cy" ]; then
           # Nothing on this screen says it scrolls sideways. The swipe still goes
@@ -1093,7 +1142,7 @@ BAND_SIDE_PCT=7
 #                     position is the LAST SIGHTING and is stale. Saying "not on
 #                     screen" of an element that was on it is a false reason, and
 #                     a false reason is worse than a vague one.
-scroll_to(){ local lbl="$1" dir="${2:-down}" clear="${3:-}" i xy c lo hi blo bhi m w h seen="" nudge
+scroll_to(){ local lbl="$1" dir="${2:-down}" clear="${3:-}" i xy c lo hi blo bhi m w h seen="" nudge st
   case "$dir" in
     # The band on y is the measured one, scaled to this screen.
     up|down)    h="$(screen_h)"; blo=$(( h * BAND_TOP / BASIS_H )); bhi=$(( h * BAND_BOTTOM / BASIS_H ));;
@@ -1104,7 +1153,7 @@ scroll_to(){ local lbl="$1" dir="${2:-down}" clear="${3:-}" i xy c lo hi blo bhi
   if [ "$clear" = clear ]; then
     m=$(( (bhi - blo) * CLEAR_PCT / 100 )); lo=$(( blo + m )); hi=$(( bhi - m ))
   fi
-  for i in $(seq 1 $SCROLL_TRIES); do xy="$(find_el "$lbl")" || die "cannot read the screen - see the error above"
+  for i in $(seq 1 $SCROLL_TRIES); do st=0; xy="$(find_el "$lbl")" || st=$?; [ "$st" -eq 0 ] || lookup_die "$st"
     nudge="$dir"
     if [ -n "$xy" ]; then
       # The coordinate that decides is the one the swipe moves.
@@ -1123,7 +1172,7 @@ scroll_to(){ local lbl="$1" dir="${2:-down}" clear="${3:-}" i xy c lo hi blo bhi
   # here as it is inside the loop, because the last swipe of the loop can be the
   # one that placed it: without this test such an element would be reported as
   # "never landed clear" while sitting exactly where it was asked to be.
-  xy="$(find_el "$lbl")" || die "cannot read the screen - see the error above"
+  st=0; xy="$(find_el "$lbl")" || st=$?; [ "$st" -eq 0 ] || lookup_die "$st"
   if [ -n "$xy" ]; then
     printf '%s' "$xy"
     case "$dir" in up|down) c="${xy##* }";; *) c="${xy%% *}";; esac
@@ -1151,7 +1200,7 @@ scroll_to_step(){ local lbl="${1:-}" dir="${2:-down}" clear="${3:-}" xy st=0
     0) ;;
     4) die "scrollToText: '$lbl' came into view but never landed clear of the band edges after $SCROLL_TRIES swipes - it is at $xy";;
     5) die "scrollToText: '$lbl' came into view at $xy and the swipes took it out of view again - after $SCROLL_TRIES swipes it is not on the screen";;
-    *) die "cannot read the screen - see the error above";;
+    *) lookup_die "$st";;
   esac
   [ -n "$xy" ] || die "scrollToText: '$lbl' not on screen after $SCROLL_TRIES swipes $dir"
   printf '%s\n' "$xy"; }
