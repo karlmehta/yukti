@@ -32,3 +32,24 @@ jobs:
           [ "$found" -gt 0 ] || { echo "no JSON files found under flows/ or examples/"; status=1; }
           echo "checked $found JSON file(s)"
           exit $status
+
+      - name: shipped flows build
+        env:
+          # Four of the five files under flows/ need ${TEST_EMAIL} /
+          # ${TEST_PASSWORD}: two examples carry them, the sign-in block carries
+          # them, and the flow that includes that block inherits them. The
+          # builder refuses a variable that is not set rather than let the text
+          # be typed into a field as written. The check needs the names to
+          # resolve, not the values to be real: nothing here signs in anywhere.
+          TEST_EMAIL: checker@example.invalid
+          TEST_PASSWORD: unused-by-the-check
+        run: |
+          set -u
+          status=0
+          found=0
+          while IFS= read -r -d '' f; do
+            found=$((found + 1))
+            ./yukti flow --check "$f" || status=1
+          done < <(find flows -type f -name '*.json' -print0)
+          [ "$found" -gt 0 ] || { echo "no flows found under flows/"; status=1; }
+          exit $status
