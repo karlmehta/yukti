@@ -102,6 +102,7 @@ yukti pull  <variant>   pull an OFFICIAL simulator build from EAS (needs EXPO_TO
 yukti boot              create/boot the simulator
 yukti up    <variant>   build + boot + install + launch
 yukti flow  <file>      run a deterministic flow (Talos engine) → yukti-results/<flow>.xml
+yukti flow --check <file>  build the flow and stop — no device, nothing performed
 yukti shot | ui | find "<label>" | tap <x> <y> | type "<text>" | clear <x> <y>
 ```
 

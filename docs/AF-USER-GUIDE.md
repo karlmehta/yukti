@@ -85,6 +85,23 @@ Type what you want in the QA panel's agent box — e.g. *"Test that logging weig
 updates the Today card total."* The agent writes the flow, runs it, and shows
 you green. Edit/save like any other.
 
+### Check a flow without a device
+
+```bash
+yukti flow --check .yukti/flows/46-share-report.json
+```
+
+This builds the flow and stops: it reads every step, resolves the blocks an
+`include` pulls in and the variables a step uses, and refuses a verb it does not
+have, a key the verb does not read, or a condition it does not know. What it
+reads is how a step is written, not whether the platform you will run it on has
+what the step asks for: `pressKey Back` is written correctly and exists only on
+Android, and only a run says so.
+
+Nothing is tapped and no simulator or emulator is needed, so it also answers for
+the steps that a `when` keeps off most runs - the ones a real run is least likely
+to reach. It writes no result file: nothing ran.
+
 ### The flow format (if you hand-edit)
 A flow is `{ "name": "...", "steps": [ ... ] }`. Common step verbs:
 
