@@ -130,7 +130,31 @@ build_android(){ local V="$1"; app_dir; apaths
 boot_android(){ apaths; local avd; avd="$(cfg android.avd Pixel_7_API_34)"
   if ! adb devices 2>/dev/null | grep -q emulator; then say "starting emulator $avd"; ( "$ANDROID_SDK/emulator/emulator" -avd "$avd" -no-boot-anim >/dev/null 2>&1 & ); fi
   adb wait-for-device; until [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = 1 ]; do sleep 2; done; ok "emulator booted"; }
-install_android(){ apaths; local V="$1"; adb install -r "$(cat "${TMPDIR:-/tmp}/yukti-apk-$V")" && ok "installed"; }
+# Where the APK comes from, in order: the path named on the command line, the
+# variant's "apkPath", and last the file the build step wrote. An artifact an
+# earlier CI job built never had a build step here to write that file, and there
+# was no other way in - the path had to be forged into a temporary file named by
+# an internal convention, so installing fell out of the runner and the job ran
+# `adb install` itself.
+apk_of(){ local V="$1" want="${2:-}" p='' src
+  if [ -n "$want" ]; then p="$want"; src="--apk"
+  else
+    if [ -f "$CONFIG" ]; then p="$(cfg "variants.$V.apkPath")"; fi; src="\"apkPath\" of variant '$V'"
+    # A relative path there is relative to the config that names it. Taken from
+    # the current directory instead, the same config would install a different
+    # file depending on where the command was typed - and CI types it from
+    # somewhere else than a laptop does.
+    case "$p" in ''|/*) ;; *) p="$(cd "$(dirname "$CONFIG")" && pwd)/$p";; esac
+    if [ -z "$p" ]; then
+      p="$(cat "${TMPDIR:-/tmp}/yukti-apk-$V" 2>/dev/null || true)"; src="the build step"
+      [ -n "$p" ] || die "no APK to install for '$V': pass --apk <path>, set variants.$V.apkPath, or run 'yukti build $V' first"
+    fi
+  fi
+  [ -f "$p" ] || die "the APK named by $src is not a file: '$p'"
+  printf '%s' "$p"; }
+
+install_android(){ apaths; local V="$1" apk; apk="$(apk_of "$V" "${2:-}")"
+  adb install -r "$apk" && ok "installed $(basename "$apk")"; }
 launch_android(){ apaths; local pkg; pkg="$(cfg variants.$1.package)"; adb shell monkey -p "$pkg" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1 && ok "launched $pkg"; }
 # A screenshot value is a NAME, not a path. RUNBOOK says the files land in
 # $TMPDIR and that the flows only name them; they landed in whatever directory
@@ -537,8 +561,26 @@ boot(){
   open -a Simulator
   echo "$u" > "$(udid_file)"; ok "booted $dev ($u)"
 }
-install(){ local V="${1:?variant}"; is_android && { install_android "$V"; return; }; paths; local u a; u="$(cat "$(udid_file)")"; a="$(cat "${TMPDIR:-/tmp}/yukti-app-$V")"
-  xcrun simctl install "$u" "$a" && ok "installed $(basename "$a")"; }
+# The flag is read wherever it sits on the line, like `flow --check`: an option
+# silently taken for the variant name is the kind of miss that ends as a run
+# against the wrong build.
+install(){ local V='' apk='' a
+  while [ $# -gt 0 ]; do a="$1"; shift
+    case "$a" in
+      --apk) [ -z "$apk" ] || die "one --apk at a time - usage: yukti install [--apk <path>] <variant>"
+             [ $# -gt 0 ] || die "--apk needs a path - usage: yukti install [--apk <path>] <variant>"
+             apk="$1"; [ -n "$apk" ] || die "--apk needs a path - usage: yukti install [--apk <path>] <variant>"; shift;;
+      --apk=*) [ -z "$apk" ] || die "one --apk at a time - usage: yukti install [--apk <path>] <variant>"
+               apk="${a#--apk=}"; [ -n "$apk" ] || die "--apk needs a path - usage: yukti install [--apk <path>] <variant>";;
+      -*) die "unknown option '$a' - usage: yukti install [--apk <path>] <variant>";;
+      *) [ -z "$V" ] || die "one variant at a time - usage: yukti install [--apk <path>] <variant>"; V="$a";;
+    esac
+  done
+  [ -n "$V" ] || die "usage: yukti install [--apk <path>] <variant>"
+  is_android && { install_android "$V" "$apk"; return; }
+  [ -z "$apk" ] || die "--apk installs an Android APK and this run is iOS - 'install' takes the .app that 'yukti build $V' or 'yukti pull $V' left"
+  paths; local u app; u="$(cat "$(udid_file)")"; app="$(cat "${TMPDIR:-/tmp}/yukti-app-$V")"
+  xcrun simctl install "$u" "$app" && ok "installed $(basename "$app")"; }
 launch(){ local V="${1:?variant}"; is_android && { launch_android "$V"; return; }; paths; local u b; u="$(cat "$(udid_file)")"; b="$(cfg variants.$V.bundleId)"
   xcrun simctl launch "$u" "$b" && ok "launched $b"; }
 # A flow inherits whatever the flow before it left behind - the session, the
@@ -1858,6 +1900,9 @@ ${B}yukti v$YUKTI_VERSION${R} — YUKTI — smart mobile-app QA automation for R
   yukti pull  <variant>     pull an OFFICIAL simulator build from EAS (needs EXPO_TOKEN)
   yukti boot                create/boot the simulator
   yukti up    <variant>     build + boot + install + launch  (one shot)
+  yukti install <variant> [--apk <path>]
+                            install a build; on Android --apk (or the variant's
+                            "apkPath") installs an APK built elsewhere, e.g. by CI
   yukti flow  <file.json>   run a deterministic flow (Talos test-case engine — no AI, CI-ready)
                             leaves \$YUKTI_RESULTS_DIR/<flow>.xml (JUnit) — per-step result
   yukti flow --check <file.json>
@@ -1928,13 +1973,30 @@ trap run_dir_cleanup EXIT
 
 cmd="${1:-}"; shift || true
 
+# `install` is the one command that takes an option, and it may sit before the
+# variant - `yukti install --apk build/app.apk android-qa`. Neither the option
+# nor its value is a variant name, so the platform must not be resolved from
+# one. Every other command still resolves from its first argument: a command
+# that does not parse options must not be handed a variant it will never use,
+# or `yukti up --apk x android-qa` would resolve a platform, build a variant
+# called "--apk" with the default gradle task, boot a device, and only then
+# stop. Refusing an unknown argument at the first step is the cheap failure.
+install_variant(){ local a; while [ $# -gt 0 ]; do a="$1"; shift
+    case "$a" in
+      --apk) shift || true;;
+      -*) ;;
+      *) printf '%s' "$a"; return;;
+    esac
+  done; }
+
 # Which platform this run drives is answered once, here, and only for the
 # commands that drive something. init, doctor, scan and help touch no device,
 # and `flow --check` reads a flow without performing any of it - all of them
 # still run where there is no config at all, which is the case in CI.
 case "$cmd" in
   flow) case " $* " in *" --check "*) ;; *) resolve_platform;; esac;;
-  build|pull|install|launch|up|"stop-app"|stopApp|"clear-state"|clearState) resolve_platform "${1:-}";;
+  install) resolve_platform "$(install_variant "$@")";;
+  build|pull|launch|up|"stop-app"|stopApp|"clear-state"|clearState) resolve_platform "${1:-}";;
   boot|shot|ui|find|tap|"tap-text"|tapText|scroll|"scroll-to"|scrollToText|dismiss|type|clear|assert|\
   "tap-id"|tapId|"assert-id"|assertId|"assert-not"|assertNotText|"assert-not-id"|assertNotId|"wait-for"|waitFor)
     resolve_platform;;

@@ -34,6 +34,39 @@ for f in ~/yukti/flows/*.json; do ~/yukti/yukti flow "$f"; done
 Screenshots land in `$TMPDIR` (the flows name them). Review, or feed them to an
 AI agent for exploratory follow-up.
 
+### An APK that is already built (Android)
+
+`up` builds first, so `install` takes the APK the build step just produced. When
+the artifact came from somewhere else - an earlier CI job, a download, a colleague -
+name it and skip the build:
+
+```bash
+~/yukti/yukti boot
+~/yukti/yukti install android-qa --apk ~/Downloads/app-qa-release.apk
+~/yukti/yukti launch android-qa
+```
+
+A variant that always installs the same artifact can say so in the config
+instead, as `variants.<v>.apkPath`. Three sources, in this order: `--apk`, then
+`apkPath`, then the APK `yukti build` produced. A path that is not a file stops
+the run and says which of the three named it, rather than handing an empty path
+to `adb`.
+
+`apkPath` is a path, not a shell word: `~` in it is a directory called `~`, so
+write the path out or keep it relative to the config. A relative `apkPath` is
+relative to the config file that names it, not to the
+directory the command was typed in - the same config installs the same file from
+a laptop and from a CI job. A relative `--apk` is what you typed, so it is
+relative to where you typed it.
+
+`--apk` belongs to `install` alone. `up` builds and then installs what it built;
+naming an artifact means skipping the build, which is `boot`, `install --apk`
+and `launch` - and `up --apk` stops at once as an unknown variant rather than
+starting a build nobody wanted.
+
+`--apk` is Android only: on iOS `install` takes the `.app` that `yukti build` or
+`yukti pull` left, and the flag stops the run rather than being ignored.
+
 ## Which variant
 
 | Variant | Backend | Firebase project | Test account |

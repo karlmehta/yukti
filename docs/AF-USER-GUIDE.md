@@ -52,6 +52,11 @@ If your CI produces a **simulator** build, `yukti pull <variant>` fetches it and
 `Build & Launch` installs it — no local compile. (Device `.ipa`/`.apk` won't run
 on a simulator; you need a simulator-profile artifact.)
 
+On Android an APK you already have - a CI artifact, a download - is installed by
+naming it: `yukti install android-qa --apk path/to/app.apk`, no build step. A
+variant that always installs the same artifact can carry the path as
+`variants.<v>.apkPath` instead. See RUNBOOK, "An APK that is already built".
+
 > **Version × device matrix:** to run the 45 across several versions/devices at
 > once, boot multiple simulators and open one QA panel per device
 > (`YUKTI_STUDIO_PORT` + the same `YUKTI_FLOWS_DIR`). One device runs one flow at
