@@ -99,6 +99,26 @@ field, so a config it made always answers; a hand-written config that keeps the
 platform only inside its variants needs either a variant on the command line,
 `$YUKTI_VARIANT`, or that field added.
 
+The QA panel answers the same question the same way, and hands its answer to
+every CLI call it makes rather than letting the child reach one of its own. It
+prints the answer and where it came from at startup
+(`platform: android (from variant 'android-qa')`) and serves both at
+`/api/health`, and the variant dropdown shows the platform each variant will
+actually run - a variant that names none shows the top-level one. The
+contradiction above stops the panel as it stops the CLI: it reports the same
+sentence at startup, at `/api/health` and in the panel's log, and claims no
+platform while it stands.
+
+That answer also decides what a tap recorded in the panel is written against. On
+Android the screenshot is in physical pixels and `adb shell input tap` takes the
+same pixels, so the basis is the screenshot itself; on iOS the PNG is a 2x/3x
+raster and carries no point size, so the device's point size stands (an iPhone 16
+Pro is 402x874, and `YUKTI_DEVICE_PT_W` / `YUKTI_DEVICE_PT_H` set it for another
+device - set by hand, they win on both platforms). Recording Android taps
+against a fixed iPhone pair is the reason this is written down: the coordinates
+land somewhere else on the screen, the tap misses, nothing fails, and the run
+breaks several steps later on an assert about something unrelated.
+
 ## Add a test case
 
 Flows are JSON in `flows/`. Steps: `wait`, `waitFor`, `waitForId`, `screenshot`,

@@ -191,7 +191,7 @@
 "use strict";
 let RECORDING=false;
 let STEPS=[];
-let PNG_W=0,PNG_H=0,PT_W=402,PT_H=874;
+let PNG_W=0,PNG_H=0,PT_W=0,PT_H=0;
 let pollTimer=null;
 
 // ── logging ──────────────────────────────────────────────────────────────
@@ -206,13 +206,28 @@ function logLine(text){
   el.appendChild(line); el.scrollTop=el.scrollHeight;
 }
 
+// The basis a recorded tap is written against. It follows the platform, so it
+// is shown rather than assumed: an Android run records the screenshot's own
+// pixels, an iOS run the device's points.
+function setDevPill(){
+  const el=document.getElementById('devpill');
+  el.textContent='device: '+(PT_W&&PT_H?PT_W+'×'+PT_H+' pt':'— pt');
+}
+
 // ── boot ─────────────────────────────────────────────────────────────────
 async function boot(){
   try{
     const h=await (await fetch('/api/health')).json();
     document.getElementById('cfgmeta').textContent='config: '+h.config;
-    PT_W=h.device_pt[0]; PT_H=h.device_pt[1];
-    document.getElementById('devpill').textContent='device: '+PT_W+'×'+PT_H+' pt';
+    // 0×0 is the server saying "no screenshot yet, and this platform's basis is
+    // the screenshot" — the first refreshScreen() fills it in from the headers.
+    if(h.device_pt&&h.device_pt[0]&&h.device_pt[1]){ PT_W=h.device_pt[0]; PT_H=h.device_pt[1]; }
+    setDevPill();
+    // The panel and the CLI resolve the platform the same way, so a
+    // contradiction between $YUKTI_PLATFORM and the variant stops both. Say it
+    // here, where a variant is picked, and not only in the log of the first
+    // call that dies of it.
+    if(h.platform_conflict) logLine('✗ '+h.platform_conflict);
     const ai=document.getElementById('aipill');
     ai.textContent='AI-heal: '+(h.ai_configured?'on':'off');
     ai.className='pill '+(h.ai_configured?'ok':'off');
@@ -227,7 +242,7 @@ async function loadVariants(){
     const sel=document.getElementById('variant'); sel.innerHTML='';
     (d.variants||[]).forEach(v=>{
       const o=document.createElement('option'); o.value=v.name;
-      o.textContent=v.name+' ('+v.platform+')';
+      o.textContent=v.name+(v.platform?' ('+v.platform+')':'');
       if(v.name===d.active) o.selected=true;
       sel.appendChild(o);
     });
@@ -286,8 +301,9 @@ function refreshScreen(){
     const st=r.headers.get('X-Yukti-Screen');
     PNG_W=parseInt(r.headers.get('X-Yukti-Png-W')||'0',10);
     PNG_H=parseInt(r.headers.get('X-Yukti-Png-H')||'0',10);
-    const ptw=r.headers.get('X-Yukti-Pt-W'); if(ptw) PT_W=parseInt(ptw,10);
-    const pth=r.headers.get('X-Yukti-Pt-H'); if(pth) PT_H=parseInt(pth,10);
+    const ptw=r.headers.get('X-Yukti-Pt-W'); if(ptw&&parseInt(ptw,10)) PT_W=parseInt(ptw,10);
+    const pth=r.headers.get('X-Yukti-Pt-H'); if(pth&&parseInt(pth,10)) PT_H=parseInt(pth,10);
+    setDevPill();
     document.getElementById('simbadge').textContent =
       st==='ok' ? ('sim '+PNG_W+'×'+PNG_H+' px') : 'no simulator — run `yukti up`';
     return r.blob();
@@ -451,6 +467,10 @@ function toggleRecord(){
 document.getElementById('sim').addEventListener('click',async e=>{
   if(!RECORDING) return;
   const img=e.target, rect=img.getBoundingClientRect();
+  // No basis, no coordinate. Converting against zero writes (0, 0) into the
+  // flow, and a tap in the corner of the screen fails nothing - it is the same
+  // silence a wrong basis produces, which is what this panel stopped doing.
+  if(!PT_W||!PT_H){ logLine('✗ no point basis yet - take a screenshot first (the platform decides what a tap is recorded against)'); return; }
   // click position within the displayed image
   const dx=e.clientX-rect.left, dy=e.clientY-rect.top;
   // displayed → device points. Prefer PNG px ratio; fall back to display size.
