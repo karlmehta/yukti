@@ -138,6 +138,7 @@ A flow is `{ "name": "...", "steps": [ ... ] }`. Common step verbs:
 | `{"do":"hideKeyboard"}` | close the keyboard and fail if it is still up — a form longer than one field needs this between fields on Android |
 | `{"do":"stopApp","value":"qa"}` | force-stop the app of that variant |
 | `{"do":"clearState","value":"qa"}` | wipe the app's data, Android only (the app stops — `launch` it again) |
+| `{"do":"openUrl","value":"home"}` | open a screen by its key — the address is the variant's `urlBase` plus the key, so no flow carries an environment; delivery only, and the app navigates after the step, so follow it with `waitFor` / `waitForId`, not an assert |
 | `{"do":"include","value":"blocks/sign-in.json"}` | run the steps of another flow file here, as if they were written in this one; `"with":{"TEST_EMAIL":"beth@example.com"}` passes values into it |
 
 Any step, and an `include`, may also carry `"when"` - the conditions under which

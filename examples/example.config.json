@@ -2,8 +2,17 @@
   "projectRoot": ".",
   "platform": "ios",
   "workspace": "ios/YourApp.xcworkspace",
-  "simulator": { "device": "iPhone 16 Pro" },
-  "android": { "avd": "Pixel_7_API_34" },
+  "simulator": {
+    "device": "iPhone 16 Pro"
+  },
+  "android": {
+    "avd": "Pixel_7_API_34"
+  },
+  "urls": {
+    "home": "home",
+    "cart": "cart",
+    "order": "orders/latest"
+  },
   "excludeIosAutolink": [
     "@some/device-only-native-module"
   ],
@@ -16,7 +25,8 @@
       "envFile": ".env.qa",
       "appVariant": "development",
       "nodeEnv": "development",
-      "easProfile": "simulator"
+      "easProfile": "simulator",
+      "urlBase": "myapp://"
     },
     "prod": {
       "scheme": "YourApp",
@@ -25,14 +35,16 @@
       "envFile": ".env.production",
       "appVariant": "production",
       "nodeEnv": "production",
-      "easProfile": "simulator"
+      "easProfile": "simulator",
+      "urlBase": "myappprod://"
     },
     "android-qa": {
       "platform": "android",
       "package": "com.example.yourapp",
       "gradleTask": "assembleDebug",
       "apkPath": "",
-      "envFile": ".env.qa"
+      "envFile": ".env.qa",
+      "urlBase": "myapp://"
     }
   }
 }
