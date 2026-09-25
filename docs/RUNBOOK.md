@@ -450,6 +450,72 @@ currently covers any refusal from `simctl`, a simulator that is not booted
 included, so read a warning there as "not stopped, reason unknown". The iOS half
 of both steps has not been exercised on a Mac.
 
+`openUrl` opens a screen of the app under test by its key - `home`, `cart` -
+instead of walking to it. It is the cheap way back to a known screen:
+measured on one app on one Android 15 emulator, two runs each, an address reaches
+the home screen in 3.7 and 5.2 seconds where `stopApp` + `launch` + `dismiss` +
+`waitForId` takes 34.3 and 33.7 - and the address also resets the scroll position
+of every tab, which tapping a tab does not. Those figures are for an app already
+running; an address handed to a stopped app is a cold launch through the same
+intent, with everything a launch puts on the screen.
+
+What it promises is delivery, not arrival, and both halves of that matter. An
+address the app does not route is still answered `Status: ok` by the device -
+measured - and the app stays where it was. And arrival is later than the step:
+`am start -W` returns once the launch has settled, which for an app already
+running is at once, before the app has navigated. So the step after `openUrl` is
+a `waitFor` or a `waitForId` for something on the screen you expect; an
+`assertText` placed there races the navigation and goes red on a slow device with
+nothing in the report to say why.
+
+A flow says where to go and never in which environment. The address is built
+here, not written in the step: the variant's `"urlBase"` (or one at the top level,
+for a project whose builds share a scheme) plus the key. A project that wants its
+paths in one place adds a `"urls"` table to the config and the key is looked up
+there, so a route the app renames is one line to change instead of one per flow
+that used it. The table is all or nothing: once it exists, a key that is not in it
+stops the step, because falling back to the key as a path would open the address
+nobody asked for and report success. Without a table, the key is the path, which
+is where a project starts - and that path is what the results file records, so a
+project that puts a `${VAR}` in it puts the substituted value there too.
+
+```json
+"urls": { "home": "home", "cart": "cart", "order": "orders/latest" },
+"variants": {
+  "qa":   { "urlBase": "myapp://" },
+  "prod": { "urlBase": "myappprod://" }
+}
+```
+
+The app it hands the address to is the one this run is driving, `$YUKTI_VARIANT`,
+not an app named in the step: the address is the object here, the way the variant
+is the object of `launch`. This has one sharp edge worth knowing. `$YUKTI_PLATFORM`
+alone is enough for the rest of a run, and it is not enough for this step: with
+no variant named, `openUrl` stops rather than guess. Worse, a variant left over
+from an earlier run is not detected by anything - `up` and `launch` record which
+variant they were for nowhere - so a stale `YUKTI_VARIANT=android-qa` on a device
+that also carries the prod build will hand the address to the qa app, bring it to
+the front, and let the rest of the flow assert against the other build in the same
+UI. The console line names the package the address went to; read it when a run
+looks right and measures wrong.
+
+The package is named in the intent on purpose: a device carrying two builds of the
+same app has two apps claiming one scheme, and an unaddressed intent opens a
+chooser the flow would sit in front of until it timed out. On iOS `simctl openurl`
+takes no bundle id, so there the system resolves the scheme and that hazard is
+open; the iOS half has not been exercised on a Mac.
+
+The address is printed whole, on purpose: when a step fails, the address it was
+refused is the first thing a reader needs, and a step that hid half of it would be
+a step that has to be re-run by hand to be understood. What the results file holds
+is the step's own value - the key, when there is a `urls` table, and the path as
+written when there is none, after `${VAR}` has been substituted into it. So the
+rule is on the author, not on the tool: no secrets in an address. A one-time code
+or a reset token belongs in a fixture the test sets up, not in a link a flow file
+carries - and if one ever has to travel that way, it travels through a variable
+whose value the run keeps out of the flow file, and the run log is then as
+sensitive as the token in it.
+
 ### A block several flows share
 
 `clearState` above makes every flow start from a clean app, which means every

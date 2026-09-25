@@ -646,6 +646,110 @@ clear_state(){ local V="${1:-}" plat; [ -n "$V" ] || die "clearState needs a var
     Success*) ok "cleared $pkg - the app is stopped now, launch it before the next step";;
     *) die "clearState: pm clear refused '$pkg': ${out:-no output}";;
   esac; }
+# A flow could reach a screen only by walking to it: open the app, find the tab,
+# find the card. Walking is the test when the test is about navigation, and pure
+# cost in every other flow - and it cannot be walked back, which is why a suite
+# ends up force-stopping the app between flows to get a known screen. Measured on
+# one app on one Android 15 emulator, two runs each: stopApp + launch + dismiss +
+# waitForId takes 34.3 and 33.7 seconds, the same screen through an address 3.7
+# and 5.2 - and the address resets the scroll position of every tab, which is the
+# part a tab tap does not do.
+#
+# What this step promises is delivery, not arrival, and the words it reports say
+# so. `am start` answers "ok" for an address the app does not route - measured:
+# myapp://nope-not-a-route comes back Status: ok and the app stays where it was -
+# so a step that said it opened a screen would be lying for the app. Arrival is
+# also later than the step: -W returns once the launch has settled, and for an
+# address delivered to an app already running it returns at once, before the app
+# has navigated. The step after this one therefore waits for the screen
+# (waitFor / waitForId); an assert placed there races the navigation.
+#
+# The app is the one this run is driving, not one named in the step: the address
+# is the object here, the way the variant is the object of launch and stopApp.
+# Naming the package matters, and is not decoration: a device with the dev and
+# the prod build side by side has two apps claiming the same scheme, and an
+# unaddressed intent then opens a chooser - a flow would sit in front of it
+# until it timed out, with nothing in the report about why.
+#
+# And the flow says WHERE, never in which environment. A scheme written into a
+# step is the environment written into the test: the day the qa build and the
+# prod build stop sharing one, every flow that carries an address has to be
+# edited, and a flow edited for an environment is a flow that can only be run in
+# that one. So the step carries a key, the config carries the base ("urlBase" on
+# the variant, or one at the top level for a project whose builds share it), and
+# a project that wants the paths in one place puts them there too ("urls"), so
+# that a route the app renames is one line to change instead of forty.
+#
+# The table is all or nothing on purpose. Once a "urls" table exists, a key that
+# is not in it is a typo or a route nobody wrote down - falling back to using the
+# key as the path would open the address the author did not ask for and report
+# success. Without a table, the key IS the path, which is the shape a project
+# starts in.
+url_of(){ local V="$1" key="$2" base table path
+  base="$(cfg "variants.$V.urlBase")"; [ -n "$base" ] || base="$(cfg urlBase)"
+  [ -n "$base" ] || die "openUrl: nothing says which address space this run is in - put \"urlBase\" on variant '$V' in $CONFIG, or one at the top level"
+  table="$(cfg urls)"
+  if [ -n "$table" ] && [ "$table" != "{}" ]; then
+    # The key is looked up whole. The config reader walks a dotted path, and a
+    # key with a dot in it would read as missing while sitting in the table in
+    # plain sight - the author would then be told to add what is already there.
+    path="$(printf '%s' "$table" | "$PY" -c 'import json,sys
+d=json.load(sys.stdin); v=d.get(sys.argv[1], "")
+print(v if isinstance(v, str) else "")' "$key")"
+    [ -n "$path" ] || die "openUrl: '$key' is not in the \"urls\" table of $CONFIG - add it there, or remove the table and let the step carry the path"
+  else
+    path="$key"
+  fi
+  printf '%s%s' "$base" "$path"; }
+open_url(){ local K="${1:-}" U plat V pkg out act
+  [ -n "$K" ] || die "openUrl needs a destination - the key of a screen, for instance \"home\""
+  V="${YUKTI_VARIANT:-}"
+  [ -n "$V" ] || die "openUrl: this run does not know which app to hand '$K' to - set \$YUKTI_VARIANT to the variant in $CONFIG"
+  [ -n "$(cfg "variants.$V")" ] || die "openUrl: there is no variant '$V' in $CONFIG"
+  U="$(url_of "$V" "$K")" || exit 1
+  plat="$(step_platform "$V")"
+  if [ "$plat" = android ]; then apaths
+    # The address travels through a shell on the device, where &, ; and a space
+    # are punctuation. Single quotes hold all of those; a single quote inside the
+    # address is the one thing they cannot hold, and guessing at it would hand the
+    # device half an address. iOS takes the address as an argument and never
+    # through a shell, so the refusal belongs on this side of the branch only.
+    case "$U" in *"'"*) die "openUrl: the address contains a single quote, and it cannot be passed to the device shell intact: $U";; esac
+    pkg="$(cfg "variants.$V.package")"
+    [ -n "$pkg" ] || die "openUrl: variant '$V' has no 'package' in $CONFIG"
+    # -W waits for the launch to settle and makes `am` say what happened in
+    # words. The words are the evidence: `am start` exits zero on an intent it
+    # could not resolve, the same as on one it delivered, so the status alone
+    # would pass a typo'd scheme. `|| true` keeps `set -e` from killing the step
+    # before the answer is read.
+    out="$(adb shell am start -W -a android.intent.action.VIEW -d "'$U'" "$pkg" 2>&1 | tr -d '\r')" || true
+    case "$out" in
+      *"Error:"*) die "openUrl: the device refused '$U': $(printf '%s' "$out" | grep -m1 'Error:')";;
+    esac
+    # "Warning: Activity not started, intent has been delivered to currently
+    # running top-most instance" is the ordinary answer for an app already in
+    # front, and it is a delivery, not a refusal. "Status: ok" is what separates
+    # the two, and it is printed in both cases.
+    case "$out" in
+      *"Status: ok"*) ;;
+      *) die "openUrl: '$U' was not delivered - the device said: $(printf '%s' "${out:-nothing}" | tr '\n' ' ')";;
+    esac
+    # The intent named the package, so it cannot have gone elsewhere; this reads
+    # back what actually took it, so that a report says which app answered.
+    act="$(printf '%s' "$out" | sed -n 's/^Activity: //p' | head -1)"
+    case "${act:-$pkg/}" in
+      "$pkg"/*) ;;
+      *) die "openUrl: '$U' was taken by $act, not by $pkg";;
+    esac
+    ok "delivered $U to $pkg"; return; fi
+  paths; local u; u="$(cat "$(udid_file)" 2>/dev/null)" || true
+  [ -n "$u" ] || die "openUrl: no simulator recorded in $(udid_file) - run 'yukti up <variant>' first"
+  # simctl resolves the scheme itself and takes no bundle id, so on iOS the
+  # address goes wherever the system sends it. Two builds claiming one scheme is
+  # the same hazard as on Android and there is nothing here to aim with; the
+  # RUNBOOK names the gap rather than implying it is closed.
+  xcrun simctl openurl "$u" "$U" >/dev/null 2>&1 || die "openUrl: the simulator refused '$U'"
+  ok "delivered $U"; }
 up(){ local V="${1:?usage: yukti up <variant>}"; build "$V"; boot; install "$V"; launch "$V"; ok "up: '$V' running — drive with 'yukti shot' / 'yukti flow'"; }
 
 # ── drive primitives (used by flows AND by AI agents) ────────────────────────
@@ -1377,7 +1481,7 @@ PY
 
 # ── deterministic flow runner: a JSON list of steps ──────────────────────────
 # step keys: include[with]|launch|stopApp|clearState|wait|waitFor[timeout,match]|waitForId[timeout]|screenshot|
-#            tap[x,y]|tapText|optionalTapText|tapId|type|clearText[x,y]|pressKey|hideKeyboard|scroll|
+#            openUrl|tap[x,y]|tapText|optionalTapText|tapId|type|clearText[x,y]|pressKey|hideKeyboard|scroll|
 #            scrollToText[direction,edges]|dismiss|assertText[match]|assertId|assertNotText[match]|assertNotId
 #            any step, and an include, may carry "when": {visible|notVisible|
 #            visibleId|notVisibleId|platform} - all of them have to hold
@@ -1455,7 +1559,7 @@ cond_words(){ local spec="$1" pair kind val out=""
     esac
   done
   printf '%s' "$out"; }
-FLOW_VERBS="launch stopApp clearState wait waitFor waitForId screenshot tap tapText optionalTapText tapId type clearText pressKey hideKeyboard scroll scrollToText dismiss assertText assertId assertNotText assertNotId"
+FLOW_VERBS="launch stopApp clearState openUrl wait waitFor waitForId screenshot tap tapText optionalTapText tapId type clearText pressKey hideKeyboard scroll scrollToText dismiss assertText assertId assertNotText assertNotId"
 # The steps a condition switched off. They keep their numbers - the numbering is
 # end to end, and a skipped step that gave its number away would move every step
 # after it - they say so on the console, and they land in the report as `skipped`
@@ -1837,6 +1941,7 @@ PY
         launch)      launch "$val";;
         stopApp)     stop_app "$val";;
         clearState)  clear_state "$val";;
+        openUrl)     open_url "$val";;
         # A name the dispatcher does not know is a typo in the flow file, and a
         # typo must not pass: `warn` returns zero, so this case has to die on its
         # own - reading the status below would not catch it.
@@ -1923,6 +2028,11 @@ ${B}yukti v$YUKTI_VERSION${R} — YUKTI — smart mobile-app QA automation for R
   yukti stop-app <variant>  force-stop the app of that variant
   yukti clear-state <variant>
                             wipe the app's data (Android only) - the app stops, launch it again
+  yukti open-url "<key>"    open a screen of the app under test by its key ("home", "cart")
+                            the app of \$YUKTI_VARIANT; the address is that variant's "urlBase"
+                            plus the key, or plus its path from the "urls" table when there is
+                            one, so no flow carries an environment. It delivers the address,
+                            and arrival is asynchronous - the step after it is a waitFor
   yukti wait-for "<text>" [s] [exact|contains]
                             poll until the text is on screen, fail on timeout (default 10s)
   yukti tap-id "<id>"       tap the element with this a11y id / resource-id segment
@@ -1931,9 +2041,14 @@ ${B}yukti v$YUKTI_VERSION${R} — YUKTI — smart mobile-app QA automation for R
   yukti assert-not-id "<id>"
                             assert no element with this id is on the current screen
 
-  flow steps: wait · waitFor · waitForId · screenshot · tap · tapText · optionalTapText · tapId · scroll · scrollToText · dismiss · type · clearText · pressKey · hideKeyboard · assertText · assertId · assertNotText · assertNotId · launch · stopApp · clearState · include
+  flow steps: wait · waitFor · waitForId · screenshot · tap · tapText · optionalTapText · tapId · scroll · scrollToText · dismiss · type · clearText · pressKey · hideKeyboard · assertText · assertId · assertNotText · assertNotId · launch · stopApp · clearState · openUrl · include
               (clearText · pressKey · hideKeyboard: measured on Android, iOS not yet run)
               stopApp force-stops the app, clearState wipes its data (Android only); both take the variant name
+              openUrl takes the key of a screen, not an address: the address is the variant's "urlBase" plus the key
+              (or plus its path from a "urls" table), so a flow says where to go and never in which environment.
+              Cheaper than a restart and it resets every tab, but it promises delivery only - an address the app does
+              not route still answers ok, and the app navigates after the step returns, so the step after it is
+              waitFor / waitForId, not an assert
               assertText matches the whole label as written; "match":"contains" asks for a substring
               waitFor polls for an element and fails on timeout ("timeout": seconds, default 10); it never scrolls
               scroll takes up, down, left or right as its "value"; scrollToText takes the same four as "direction"
@@ -1997,7 +2112,7 @@ case "$cmd" in
   flow) case " $* " in *" --check "*) ;; *) resolve_platform;; esac;;
   install) resolve_platform "$(install_variant "$@")";;
   build|pull|launch|up|"stop-app"|stopApp|"clear-state"|clearState) resolve_platform "${1:-}";;
-  boot|shot|ui|find|tap|"tap-text"|tapText|scroll|"scroll-to"|scrollToText|dismiss|type|clear|assert|\
+  boot|shot|ui|find|tap|"tap-text"|tapText|scroll|"scroll-to"|scrollToText|dismiss|type|clear|assert|"open-url"|openUrl|\
   "tap-id"|tapId|"assert-id"|assertId|"assert-not"|assertNotText|"assert-not-id"|assertNotId|"wait-for"|waitFor)
     resolve_platform;;
   # init, doctor, scan and help drive nothing, and a command this tool does not
@@ -2017,6 +2132,7 @@ case "$cmd" in
   launch) launch "$@";;
   "stop-app"|stopApp) stop_app "$@";;
   "clear-state"|clearState) clear_state "$@";;
+  "open-url"|openUrl) open_url "$@";;
   up) up "$@";;
   flow) flow "$@";;
   shot) shot "$@";;
