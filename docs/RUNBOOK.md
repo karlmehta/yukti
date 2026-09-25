@@ -123,8 +123,9 @@ breaks several steps later on an assert about something unrelated.
 
 Flows are JSON in `flows/`. Steps: `wait`, `waitFor`, `waitForId`, `screenshot`,
 `tap {x,y}`, `tapText`, `optionalTapText`, `tapId`, `type`, `clearText {x,y}`,
-`pressKey`, `hideKeyboard`, `scroll`, `scrollToText`, `dismiss`, `assertText`,
-`assertId`, `launch`, `stopApp`, `clearState`, `include`. Coordinates are
+`clearTextId`, `pressKey`, `hideKeyboard`, `scroll`, `scrollToText`,
+`dismiss`, `assertText`, `assertId`, `launch`, `stopApp`, `clearState`,
+`include`. Coordinates are
 **points**
 (iPhone 16 Pro = 402×874). Prefer `tapText` (finds by accessibility label) over
 raw coords so flows survive layout changes. `${VARS}` in `value` expand from env,
@@ -280,6 +281,10 @@ password reaches the log as a count and nothing else. The field it clears is the
 one the tap focused: when the keyboard opens and the layout moves, the field is
 no longer under the coordinates that reached it, and the step says so in a
 warning rather than reading a different node.
+
+`clearTextId` empties the field with that id: the same select-all, the same
+read-back, the field named the way the rest of the flow names things. It taps
+the field itself, so a `type` written after it goes where the clear went.
 
 `pressKey tab` moves focus without a tap, which reaches a field the keyboard is
 covering - the keyboard stays up through it. It is not a way to walk from field

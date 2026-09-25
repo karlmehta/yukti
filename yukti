@@ -413,61 +413,61 @@ sys.stdout.write("%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s" % best)
 # was in the field and about where the caret sat; two calls are neither. The
 # result is then read back, because the only fact that matters here is the state
 # of the field, not that the keys were accepted.
-aclear(){ apaths; local x="$1" y="$2" sdk before after probe
+aclear(){ apaths; local x="$1" y="$2" vb="${3:-clearText}" sdk before after probe
   sdk="$(adb shell getprop ro.build.version.sdk 2>/dev/null | tr -d "\r")"
-  case "$sdk" in ""|*[!0-9]*) die "clearText: the device did not report its Android version";; esac
+  case "$sdk" in ""|*[!0-9]*) die "$vb: the device did not report its Android version";; esac
   # The version is the first line and it does stop the run here. What it cannot
   # cover is the line below it: on API 30 the shell answers an unknown command
   # with its usage text and exit code 0, so `|| die` after the key combination
   # is blind there. The read-back at the end is what holds if this threshold
   # ever turns out to be wrong again. No quiet fallback to deleting character by
   # character: a clear that only looks like one is what this verb exists to end.
-  [ "$sdk" -ge 31 ] || die "clearText needs Android 12 (API 31) or newer - 'input keycombination' does not exist on API $sdk"
+  [ "$sdk" -ge 31 ] || die "$vb needs Android 12 (API 31) or newer - 'input keycombination' does not exist on API $sdk"
   local cls enb fcb res box out res2 box2 txt2
   # What the flow aimed at, read BEFORE the tap: a disabled or read-only field
   # takes no focus and no keys, and its text would sit there unchanged through
   # select-all, delete and the probe below - three readings agreeing on a lie.
-  out="$(afield at "$x" "$y")" || lookup_die $? "clearText: no element at $x,$y"
+  out="$(afield at "$x" "$y")" || lookup_die $? "$vb: no element at $x,$y"
   IFS=$'\x1f' read -r cls enb fcb res box before <<<"$out"
-  case "$cls" in *EditText*) ;; *) die "clearText: the element at $x,$y is a ${cls:-node with no class}, not a text field";; esac
-  [ "$enb" = true ] || die "clearText: the field at $x,$y is disabled - it takes no keys"
-  [ "$fcb" = true ] || die "clearText: the field at $x,$y cannot take focus - the keys would go elsewhere"
-  adb shell input tap "$x" "$y" || die "clearText: the device refused the tap on the field"
+  case "$cls" in *EditText*) ;; *) die "$vb: the element at $x,$y is a ${cls:-node with no class}, not a text field";; esac
+  [ "$enb" = true ] || die "$vb: the field at $x,$y is disabled - it takes no keys"
+  [ "$fcb" = true ] || die "$vb: the field at $x,$y cannot take focus - the keys would go elsewhere"
+  adb shell input tap "$x" "$y" || die "$vb: the device refused the tap on the field"
   # From here on the focused field is the subject: it is the one the keys reach.
   # Which is only safe once it is the SAME field - a tap that opened a picker,
   # or landed on a keyboard the dump does not show, leaves focus where it was,
   # and clearing that field would be reported as clearing this one.
-  out="$(afield focused)" || die "clearText: the tap at $x,$y did not put focus in a text field"
+  out="$(afield focused)" || die "$vb: the tap at $x,$y did not put focus in a text field"
   IFS=$'\x1f' read -r cls enb fcb res2 box2 txt2 <<<"$out"
   # Two ids that differ settle it. Two that MATCH settle nothing: a resource id
   # is not unique - the rows of a list and the repeated rows of a form share
   # one. So the second question is asked every time: the same rectangle, or the
   # same text it had before the tap. A field that is neither is another field.
   if [ -n "$res" ] && [ -n "$res2" ] && [ "$res" != "$res2" ]; then
-    die "clearText: focus is in a different field ($res2), not the one at $x,$y ($res)"
+    die "$vb: focus is in a different field ($res2), not the one at $x,$y ($res)"
   fi
   if [ "$box" != "$box2" ] && [ "$before" != "$txt2" ]; then
-    die "clearText: focus is in a different field than the one at $x,$y"
+    die "$vb: focus is in a different field than the one at $x,$y"
   fi
   if [ "$box" != "$box2" ]; then
-    warn "clearText: the field moved to $box2 when the keyboard opened"
+    warn "$vb: the field moved to $box2 when the keyboard opened"
   fi
-  adb shell input keycombination 113 29 || die "clearText: the device refused select-all (Ctrl+A)"
-  adb shell input keyevent 67 || die "clearText: the device refused the delete key"
-  out="$(afield focused)" || lookup_die $? "clearText: nothing on the screen has focus"
+  adb shell input keycombination 113 29 || die "$vb: the device refused select-all (Ctrl+A)"
+  adb shell input keyevent 67 || die "$vb: the device refused the delete key"
+  out="$(afield focused)" || lookup_die $? "$vb: nothing on the screen has focus"
   IFS=$'\x1f' read -r cls enb fcb res box after <<<"$out"
-  [ -n "$after" ] || { ok "clearText: field empty at $x,$y"; return 0; }
+  [ -n "$after" ] || { ok "$vb: field empty at $x,$y"; return 0; }
   # Any text left is unresolved, whatever it is and whether or not it changed:
   # an EditText with nothing in it reports its HINT in the same attribute that
   # carries its text, and a select-all that did not take leaves the delete to
   # remove ONE character - which also changes the text and would read as
   # success. One more delete separates the two: on an empty field it changes
   # nothing, on a field still holding text it takes another character.
-  adb shell input keyevent 67 || die "clearText: the device refused the delete key"
-  out="$(afield focused)" || lookup_die $? "clearText: nothing on the screen has focus"
+  adb shell input keyevent 67 || die "$vb: the device refused the delete key"
+  out="$(afield focused)" || lookup_die $? "$vb: nothing on the screen has focus"
   IFS=$'\x1f' read -r cls enb fcb res box probe <<<"$out"
-  [ "$probe" = "$after" ] || die "clearText: the field still holds text after select-all and delete"
-  ok "clearText: field empty at $x,$y"; }
+  [ "$probe" = "$after" ] || die "$vb: the field still holds text after select-all and delete"
+  ok "$vb: field empty at $x,$y"; }
 
 # ── doctor: verify/report the toolchain ──────────────────────────────────────
 doctor(){
@@ -972,23 +972,23 @@ sys.stdout.write("%d\x1f%s\x1f%s" % (int(x+w-4), "field" if ("field" in t or "te
 # iOS has no select-all through idb, so the deletes are counted from what the
 # field actually holds - measured in the dump, not a constant that was right for
 # one form. The read-back after them is the same rule as on Android.
-iclear(){ paths; local x="${1:?x}" y="${2:?y}" u out edge val after i kind
+iclear(){ paths; local x="${1:?x}" y="${2:?y}" vb="${3:-clearText}" u out edge val after i kind
   # iOS is written from the idb docs and has not been run - see AF-USER-GUIDE.
   u="$(U)"
-  idb ui tap --udid "$u" "$x" "$y" || die "clearText: the simulator refused the tap on the field"
+  idb ui tap --udid "$u" "$x" "$y" || die "$vb: the simulator refused the tap on the field"
   sleep .4
-  out="$(ifield_probe "$x" "$y")" || lookup_die $? "clearText: no element at $x,$y"
+  out="$(ifield_probe "$x" "$y")" || lookup_die $? "$vb: no element at $x,$y"
   IFS=$'\x1f' read -r edge kind val <<<"$out"
-  [ "$kind" = field ] || die "clearText: the element at $x,$y is a $kind, not a text field"
-  [ -n "$val" ] || { ok "clearText: the field was already empty"; return 0; }
-  idb ui tap --udid "$u" "$edge" "$y" || die "clearText: the simulator refused the tap at the end of the field"
+  [ "$kind" = field ] || die "$vb: the element at $x,$y is a $kind, not a text field"
+  [ -n "$val" ] || { ok "$vb: the field was already empty"; return 0; }
+  idb ui tap --udid "$u" "$edge" "$y" || die "$vb: the simulator refused the tap at the end of the field"
   sleep .3
-  for i in $(seq 1 ${#val}); do idb ui key --udid "$u" 42 >/dev/null 2>&1 || die "clearText: the simulator refused the delete key"; done
-  out="$(ifield_probe "$x" "$y")" || lookup_die $? "clearText: no element at $x,$y any more"
+  for i in $(seq 1 ${#val}); do idb ui key --udid "$u" 42 >/dev/null 2>&1 || die "$vb: the simulator refused the delete key"; done
+  out="$(ifield_probe "$x" "$y")" || lookup_die $? "$vb: no element at $x,$y any more"
   IFS=$'\x1f' read -r edge kind after <<<"$out"
-  [ -z "$after" ] || die "clearText: the field still holds text after ${#val} deletes"
-  ok "clearText: field empty at $x,$y"; }
-clear_field(){ is_android && { aclear "$1" "$2"; return; }; iclear "$1" "$2"; }
+  [ -z "$after" ] || die "$vb: the field still holds text after ${#val} deletes"
+  ok "$vb: field empty at $x,$y"; }
+clear_field(){ is_android && { aclear "$1" "$2" "${3:-}"; return; }; iclear "$1" "$2" "${3:-}"; }
 # One key, by name, on either platform. iOS has no Back key at all - saying so is
 # the whole point: a flow that asks for one on iOS is wrong about the platform,
 # and pressing nothing would let it believe otherwise.
@@ -1065,6 +1065,13 @@ assert_text(){ local q="${1:-}" m="${2:-exact}" xy st=0
 # random point. Neither scrolls — use scrollToText first for a target below the fold.
 tap_id(){ local q="${1:-}"; [ -n "$q" ] || die "tapId needs a non-empty id"; local xy st=0; xy="$(find_el "$q" id)" || st=$?; [ "$st" -eq 0 ] || die "$(lookup_err "$st")"; [ -n "$xy" ] || die "no element with id '$q'"; tap $xy; }
 assert_id(){ local q="${1:-}"; [ -n "$q" ] || die "assertId needs a non-empty id"; local xy st=0; xy="$(find_el "$q" id)" || st=$?; [ "$st" -eq 0 ] || die "assert FAILED: $(lookup_err "$st")"; [ -n "$xy" ] && ok "assert id: '$q' on screen at $xy" || die "assert FAILED: no element with id '$q'"; }
+# The same emptying, addressed by id. Coordinates were the only way to name the
+# field, so a flow that addresses everything else by id had no way to clear one
+# at all - and `type` appends: typed into a field that already holds text it
+# makes a value neither the flow nor the app ever names, and the run fails on a
+# later step, far from the line that caused it. The clearing itself, and every
+# check around it, is the one `clearText` does.
+clear_id(){ local q="${1:-}"; [ -n "$q" ] || die "clearTextId needs a non-empty id"; local xy st=0; xy="$(find_el "$q" id)" || st=$?; [ "$st" -eq 0 ] || die "$(lookup_err "$st")"; [ -n "$xy" ] || die "no element with id '$q'"; clear_field $xy "clearTextId '$q'"; }
 # A lookup answers with coordinates, with "no such element", or with no answer at
 # all - and "no answer" comes in two flavours the caller has to tell apart: the
 # screen could not be read (status 1: the dump failed) and the screen was read but
@@ -1515,8 +1522,8 @@ PY
 
 # ── deterministic flow runner: a JSON list of steps ──────────────────────────
 # step keys: include[with]|launch|stopApp|clearState|wait|waitFor[timeout,match]|waitForId[timeout]|screenshot|
-#            openUrl|tap[x,y]|tapText|optionalTapText|tapId|type|clearText[x,y]|pressKey|hideKeyboard|scroll|
-#            scrollToText[direction,edges]|dismiss|assertText[match]|assertId|assertNotText[match]|assertNotId
+#            openUrl|tap[x,y]|tapText|optionalTapText|tapId|type|clearText[x,y]|clearTextId|pressKey|hideKeyboard|
+#            scroll|scrollToText[direction,edges]|dismiss|assertText[match]|assertId|assertNotText[match]|assertNotId
 #            any step, and an include, may carry "when": {visible|notVisible|
 #            visibleId|notVisibleId|platform} - all of them have to hold
 #
@@ -1593,7 +1600,7 @@ cond_words(){ local spec="$1" pair kind val out=""
     esac
   done
   printf '%s' "$out"; }
-FLOW_VERBS="launch stopApp clearState openUrl wait waitFor waitForId screenshot tap tapText optionalTapText tapId type clearText pressKey hideKeyboard scroll scrollToText dismiss assertText assertId assertNotText assertNotId"
+FLOW_VERBS="launch stopApp clearState openUrl wait waitFor waitForId screenshot tap tapText optionalTapText tapId type clearText clearTextId pressKey hideKeyboard scroll scrollToText dismiss assertText assertId assertNotText assertNotId"
 # The steps a condition switched off. They keep their numbers - the numbering is
 # end to end, and a skipped step that gave its number away would move every step
 # after it - they say so on the console, and they land in the report as `skipped`
@@ -1964,6 +1971,7 @@ PY
         scrollToText) scroll_to_step "$val" "${dir:-down}" "$edg" >/dev/null;;
         dismiss)     dismiss;;
         clearText)   clear_field $(scale_xy "$x" "$y");;
+        clearTextId) say "clear id '$val'"; clear_id "$val";;
         pressKey)    press_key "$val";;
         hideKeyboard) hide_keyboard;;
         type)        say "type ${#val} chars"; type_str "$val";;
@@ -2070,13 +2078,14 @@ ${B}yukti v$YUKTI_VERSION${R} — YUKTI — smart mobile-app QA automation for R
   yukti wait-for "<text>" [s] [exact|contains]
                             poll until the text is on screen, fail on timeout (default 10s)
   yukti tap-id "<id>"       tap the element with this a11y id / resource-id segment
+  yukti clear-id "<id>"     empty the text field with this a11y id / resource-id segment
   yukti assert-id "<id>"    assert an element with this id is on screen
   yukti assert-not "<text>" assert the text is NOT on the current screen (no scroll)
   yukti assert-not-id "<id>"
                             assert no element with this id is on the current screen
 
-  flow steps: wait · waitFor · waitForId · screenshot · tap · tapText · optionalTapText · tapId · scroll · scrollToText · dismiss · type · clearText · pressKey · hideKeyboard · assertText · assertId · assertNotText · assertNotId · launch · stopApp · clearState · openUrl · include
-              (clearText · pressKey · hideKeyboard: measured on Android, iOS not yet run)
+  flow steps: wait · waitFor · waitForId · screenshot · tap · tapText · optionalTapText · tapId · scroll · scrollToText · dismiss · type · clearText · clearTextId · pressKey · hideKeyboard · assertText · assertId · assertNotText · assertNotId · launch · stopApp · clearState · openUrl · include
+              (clearText · clearTextId · pressKey · hideKeyboard: measured on Android, iOS not yet run)
               stopApp force-stops the app, clearState wipes its data (Android only); both take the variant name
               openUrl takes the key of a screen, not an address: the address is the variant's "urlBase" plus the key
               (or plus its path from a "urls" table), so a flow says where to go and never in which environment.
@@ -2147,7 +2156,7 @@ case "$cmd" in
   install) resolve_platform "$(install_variant "$@")";;
   build|pull|launch|up|"stop-app"|stopApp|"clear-state"|clearState) resolve_platform "${1:-}";;
   boot|shot|ui|find|tap|"tap-text"|tapText|scroll|"scroll-to"|scrollToText|dismiss|type|clear|assert|"open-url"|openUrl|\
-  "tap-id"|tapId|"assert-id"|assertId|"assert-not"|assertNotText|"assert-not-id"|assertNotId|"wait-for"|waitFor)
+  "tap-id"|tapId|"clear-id"|clearTextId|"assert-id"|assertId|"assert-not"|assertNotText|"assert-not-id"|assertNotId|"wait-for"|waitFor)
     resolve_platform;;
   # init, doctor, scan and help drive nothing, and a command this tool does not
   # know is answered by the dispatcher below - neither is a reason to ask which
@@ -2181,6 +2190,7 @@ case "$cmd" in
   clear) clear_field "$@";;
   assert) assert_text "$@";;
   "tap-id"|tapId) tap_id "$@";;
+  "clear-id"|clearTextId) clear_id "$@";;
   "assert-id"|assertId) assert_id "$@";;
   "assert-not"|assertNotText) assert_not_text "$@";;
   "assert-not-id"|assertNotId) assert_not_id "$@";;
