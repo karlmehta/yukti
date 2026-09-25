@@ -319,6 +319,17 @@ quoted a string the flow file did not contain.
 that is not on screen is the state those two exist to tolerate. A device that
 refuses the tap is not that state, and it fails the flow like any other step.
 
+`dismiss` reads the screen once per round rather than once per label. It knows
+nine interstitial labels, and it used to ask the device for the screen for each
+of them in turn - nine reads of a screen that nothing had touched, about twenty
+seconds on an Android emulator, whether or not anything was there to dismiss.
+Now the nine are looked for in one tree, the first one found is tapped, and the
+next round reads the screen again, because the tap changed it. A clean screen
+costs one read; two interstitials stacked cost three. After the sixth tap the
+step stops and says so, without reading the screen a seventh time - it does not
+claim to know what is left on it. A screen that answers every tap with another
+interstitial is news, not something to keep tapping at.
+
 `scrollToText` takes the direction to look in - `"direction"`: `up`, `down`
 (the default), `left`, `right` - and `"edges":"clear"` to land the element away
 from the band edges instead of merely inside the band. A plain `scroll` takes the

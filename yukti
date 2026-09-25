@@ -191,7 +191,15 @@ ashot(){ apaths; local o; o="$(shot_path "${1:-}")"; mkdir -p "$(dirname "$o")";
 # with the file some earlier run left on the device: `rm -f` failing silently was
 # the one path back to serving a stale tree, and a per-run name closes it. The
 # file is removed again after reading, in the same round trip.
-aui(){ apaths; local xml i f="/sdcard/yukti-dump-$$.xml"
+# A tree held for the length of one step. A step that looks for several things
+# on the SAME screen - dismiss looks for nine labels - used to read the screen
+# once per thing, and every read after the first was of a screen that nothing
+# had touched. A step fills this, reads as often as it likes, and empties it
+# before anything taps: a held tree outliving a tap would be a step deciding
+# against a screen that is no longer there.
+HELD_TREE=""
+aui(){ [ -n "$HELD_TREE" ] && { printf '%s' "$HELD_TREE"; return 0; }
+  apaths; local xml i f="/sdcard/yukti-dump-$$.xml"
   for i in 1 2 3; do
     xml="$(adb shell "rm -f $f; uiautomator dump $f >/dev/null 2>&1; cat $f 2>/dev/null; rm -f $f" 2>/dev/null)"
     case "$xml" in *"<hierarchy"*"</hierarchy>"*) printf '%s' "$xml"; return 0;; esac
@@ -652,7 +660,7 @@ up(){ local V="${1:?usage: yukti up <variant>}"; build "$V"; boot; install "$V";
 U(){ cat "$(udid_file)" 2>/dev/null || booted; }
 idb_ready(){ paths; idb connect "$(U)" >/dev/null 2>&1 || true; }
 shot(){ is_android && { ashot "$@"; return; }; paths; local o; o="$(shot_path "${1:-}")"; mkdir -p "$(dirname "$o")"; xcrun simctl io "$(U)" screenshot "$o" >/dev/null 2>&1 && echo "$o"; }
-ui(){ is_android && { aui; return; }; idb_ready; local u out i; u="$(U)"; for i in 1 2 3 4; do out="$(idb ui describe-all --udid "$u" 2>/dev/null)"; [ -n "$out" ] && { printf '%s' "$out"; return 0; }; sleep 0.6; done
+ui(){ is_android && { aui; return; }; [ -n "$HELD_TREE" ] && { printf '%s' "$HELD_TREE"; return 0; }; idb_ready; local u out i; u="$(U)"; for i in 1 2 3 4; do out="$(idb ui describe-all --udid "$u" 2>/dev/null)"; [ -n "$out" ] && { printf '%s' "$out"; return 0; }; sleep 0.6; done
   # An empty tree after four tries is idb failing, not a screen with nothing on
   # it: a booted simulator always reports at least its window. Returning the
   # empty string made every caller read it as "the element is not there". The
@@ -792,10 +800,36 @@ tap_text(){ local xy st=0; xy="$(scroll_to "$1")" || st=$?
 # happened - the very class of lie the status check above exists to end.
 tap_text_optional(){ local xy st=0; xy="$(find_el "$1")" || st=$?; [ "$st" -eq 0 ] || lookup_die "$st"; [ -n "$xy" ] && { tap $xy || die "optional tap '$1': the device refused the tap"; ok "optional tap '$1'"; } || warn "optional '$1' not present — skipped"; }
 # Auto-dismiss the interstitials that derail flows (Save Password, notifications, promos…)
-dismiss(){ local L xy st; for L in "Not Now" "Not now" "Maybe Later" "Later" "Skip for now" "Skip" "No thanks" "No Thanks" "Got it"; do
-    st=0; xy="$(find_el "$L")" || st=$?; [ "$st" -eq 0 ] || lookup_die "$st"
-    [ -n "$xy" ] && { tap $xy || die "dismiss: the device refused the tap on '$L'"; sleep 0.6; ok "dismissed '$L'"; }
-  done; }  # only SAFE interstitial labels — never Cancel/Close/OK (those navigate/confirm)
+# only SAFE interstitial labels — never Cancel/Close/OK (those navigate/confirm)
+DISMISS_LABELS=("Not Now" "Not now" "Maybe Later" "Later" "Skip for now" "Skip" "No thanks" "No Thanks" "Got it")
+# One read per round, not one per label: the nine labels are looked for in the
+# same tree, the first one found is tapped, and the next round reads the screen
+# again because the tap changed it. A clean screen costs one read instead of
+# nine; two stacked cost three, and the second is found whichever label it
+# carries - the single pass this replaces could walk past it. The rounds are
+# capped - a screen that keeps answering with another interstitial is news, and
+# the step says so instead of looping. It stops after the sixth tap without
+# reading the screen again, so it never claims to know what is on it.
+dismiss(){ local L xy st hit round=0
+  while :; do
+    HELD_TREE=""
+    # ui() says why itself and leaves non-zero from the substitution; the step
+    # stops here rather than deciding against a screen it could not read.
+    HELD_TREE="$(ui)" || exit 1
+    [ -n "$HELD_TREE" ] || die "dismiss: the screen came back empty"
+    hit=""; xy=""
+    for L in "${DISMISS_LABELS[@]}"; do
+      st=0; xy="$(find_el "$L")" || st=$?
+      [ "$st" -eq 0 ] || { HELD_TREE=""; lookup_die "$st"; }
+      [ -n "$xy" ] && { hit="$L"; break; }
+    done
+    HELD_TREE=""
+    [ -n "$hit" ] || return 0
+    tap $xy || die "dismiss: the device refused the tap on '$hit'"
+    sleep 0.6; ok "dismissed '$hit'"
+    round=$((round + 1))
+    [ "$round" -lt 6 ] || { warn "dismiss: six interstitials tapped in a row - stopping here without reading the screen again, and leaving whatever is on it to the step that follows"; return 0; }
+  done; }
 type_str(){ is_android && { atype "$1"; return; }; paths; local s="${1:?text}" i; for ((i=0;i<${#s};i++)); do idb ui text --udid "$(U)" "${s:$i:1}" >/dev/null 2>&1; sleep 0.12; done; }  # char-by-char = reliable
 # The right edge of the field under a point, and what it holds. Both come out of
 # one dump: on iOS the caret has to be put at the end of THIS field before
