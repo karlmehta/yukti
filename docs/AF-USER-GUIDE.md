@@ -125,6 +125,8 @@ A flow is `{ "name": "...", "steps": [ ... ] }`. Common step verbs:
 | `{"do":"tapId","value":"submit"}` | tap the element with this a11y id / `resource-id` segment, exact match |
 | `{"do":"assertText","value":"Logged"}` | verify the text is on screen (the test's checkpoint — perceivable text only, no scroll). Matches the whole label, case as written; add `"match":"contains"` for a partial match |
 | `{"do":"assertId","value":"weight_card"}` | verify an element with this id is on screen |
+| `{"do":"assertBox","value":"Reconnect","box":{"minX":16,"maxX":"95%"}}` | verify the box of the element with this label: `minWidth`, `minHeight`, `maxWidth`, `maxHeight` for the size, `minX`, `minY`, `maxX`, `maxY` for the edges. Pixels (`48`), dp (`"48dp"`) or a share of the screen (`"5%"`) |
+| `{"do":"assertBoxId","value":"primary-cta","box":{"minWidth":"48dp","minHeight":"48dp"}}` | the same check, matching the id exactly - here the touch-target minimum |
 | `{"do":"assertNotText","value":"Wrong password"}` | verify the text is NOT on the screen as it is now (no scroll). Same matching as `assertText`, `"match":"contains"` included |
 | `{"do":"assertNotId","value":"paywall"}` | verify no element with this id is on the screen as it is now |
 | `{"do":"screenshot","value":"x.png"}` | capture for review |
@@ -144,6 +146,24 @@ A flow is `{ "name": "...", "steps": [ ... ] }`. Common step verbs:
 
 Any step, and an `include`, may also carry `"when"` - the conditions under which
 it runs at all. See "A step that only runs sometimes" below.
+
+`assertBox` and `assertBoxId` measure the box the lookup already reads. A
+constraint is a plain number of pixels (`48`), a number of dp (`"48dp"`), or a
+whole share of the screen (`"5%"`) - of its width for `minWidth`, `maxWidth`,
+`minX` and `maxX`, and of its height for the other four.
+
+Write the rules in dp. A touch target is 48dp on Android and 44pt on iOS, and
+on a 320 dpi screen that is 96 pixels: a flow that writes `48` there asserts
+half the minimum and passes on a control nobody can hit. Android converts with
+the density the device reports, an override density included; on iOS the frame
+is already in points, so a dp is a point and the conversion is the identity.
+The failure says both numbers - `expected width at least 48dp = 96 px (is 48)` -
+because the first names the line to change and the second says what it came to
+on this screen.
+
+A step with no constraint is refused before the run: an assertion that only
+says the element is on the screen is `assertId`, and saying it twice is not a
+stronger test.
 
 `clearText`, `clearTextId`, `pressKey` and `hideKeyboard` were measured on
 Android; their iOS halves are written and have not been run on a simulator, so
