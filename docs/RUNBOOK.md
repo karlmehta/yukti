@@ -124,8 +124,8 @@ breaks several steps later on an assert about something unrelated.
 Flows are JSON in `flows/`. Steps: `wait`, `waitFor`, `waitForId`, `screenshot`,
 `tap {x,y}`, `tapText`, `optionalTapText`, `tapId`, `type`, `clearText {x,y}`,
 `clearTextId`, `pressKey`, `hideKeyboard`, `scroll`, `scrollToText`,
-`dismiss`, `assertText`, `assertId`, `launch`, `stopApp`, `clearState`,
-`include`. Coordinates are
+`dismiss`, `assertText`, `assertId`, `assertBox`, `assertBoxId`, `launch`,
+`stopApp`, `clearState`, `include`. Coordinates are
 **points**
 (iPhone 16 Pro = 402×874). Prefer `tapText` (finds by accessibility label) over
 raw coords so flows survive layout changes. `${VARS}` in `value` expand from env,
@@ -205,6 +205,32 @@ wins - an element with no size is skipped.
 {"do":"tapId","value":"submit"},
 {"do":"assertId","value":"weight_card"}
 ```
+
+`assertBox` and `assertBoxId` check the geometry of the element a locator
+finds - the numbers the lookup reads to decide whether it is on the screen and
+then drops. A touch target that shrank below the tappable minimum, a header
+that slid under the notch, a banner that went edge to edge: all three are one
+step, and the failure carries the measured size and the corners, not the word
+"failed".
+
+```json
+{"do":"assertBoxId","value":"primary-cta","box":{"minWidth":"48dp","minHeight":"48dp"}},
+{"do":"assertBoxId","value":"screen-header","box":{"minY":"5%"}},
+{"do":"assertBox","value":"Reconnect","box":{"minX":16,"maxX":"95%"}}
+```
+
+The constraints are `minWidth`, `minHeight`, `maxWidth`, `maxHeight` for the
+size and `minX`, `minY`, `maxX`, `maxY` for the edges - `minX` and `minY` are
+the left and top edge, `maxX` and `maxY` the right and bottom one. A value is a
+number of pixels (`48`), a number of dp (`"48dp"`), or a whole share of the
+screen (`"5%"`) - of the width for the horizontal four, of the height for the
+vertical four.
+
+Write a design rule in dp, not in pixels: a touch target is 48dp on Android and
+44pt on iOS, and on a 320 dpi screen 48 pixels is 24dp - half the minimum,
+asserted as if it held. Android converts with the density the device reports;
+an iOS frame is already in points, so a dp is a point there. A step without a
+constraint is refused when the flow is built.
 
 Discover labels/coords for a screen:
 ```bash
