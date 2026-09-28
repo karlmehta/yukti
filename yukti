@@ -341,14 +341,72 @@ for m in re.finditer(r"<node\b[^>]*>", xml):
 if best: print(best[2],best[3],best[4])
 '; }
 atap(){ apaths; adb shell input tap "$1" "$2"; }
-atype(){ apaths; local s="$1" q
+asend(){ local s="$1" q
   # Quote for the ON-DEVICE shell so metacharacters can't expand. Unquoted, a *
   # in a password was glob-expanded by /system/bin/sh (an 8-char password
   # arrived as 11 chars). Single-quote the arg (escaping embedded ' as '\''),
   # then map spaces to %s which `input text` turns back into spaces.
   q=$(printf '%s' "$s" | sed "s/'/'\\\\''/g")
   q=${q// /%s}
-  adb shell "input text '$q'"; }
+  adb shell "input text '$q'" || die "type: the device refused the text"; }
+# The focused field as `type` sees it: TPW (masked or not), TN (characters
+# shown), TTX (the text). Globals, because the answer is three values and the
+# caller has to be able to stop the run when there is no answer.
+aread_typed(){ local out
+  out="$(afield typed)" || lookup_die $? "type: no text field has focus, so what arrives cannot be checked"
+  TPW="${out%%$'\x1f'*}"; out="${out#*$'\x1f'}"; TN="${out%%$'\x1f'*}"; TTX="${out#*$'\x1f'}"; }
+# Does the field hold what was sent? Either on its own - the field was empty and
+# showed its hint - or after what it held before. A masked field shows one dot
+# per character, and the dots are compared as dots: a field that received
+# nothing shows its hint, and "Password" is eight characters long.
+atyped_is(){ local start="$1" sent="$2" dot dots="" k
+  [ "$TTX" = "$sent" ] || [ "$TTX" = "$start$sent" ] && return 0
+  [ "$TPW" = true ] || return 1
+  printf -v dot '\xe2\x80\xa2'; for ((k=0;k<${#sent};k++)); do dots+="$dot"; done
+  [ "$TTX" = "$dots" ] || { [ "$TTX" = "$start$dots" ] && [ -z "${start//•/}" ]; }; }
+# `input text` delivers nothing back. Under load the emulator drops characters
+# and the command still exits 0: 22 went in, 15 arrived, and the step reported
+# "type 22 chars" (#66). So the field is read back after every eight characters
+# - a short burst loses less than a long one - and a field that does not hold
+# what was sent is emptied and typed again, three times, before the step fails.
+# The failure names counts and never the value: the value may be a password.
+atype(){ apaths; local s="$1" m before start pre="" v i try sent empty n; m=${#s}
+  aread_typed; before="$TTX"; start="$before"; v="$s"
+  for try in 1 2 3; do
+    i=0; sent=""
+    while [ "$i" -lt "${#v}" ]; do
+      asend "${v:$i:8}"; sent="${v:0:$((i+8))}"; i=$((i+8))
+      aread_typed
+      # A field that renders late is not a field that lost characters.
+      atyped_is "$start" "$sent" || { sleep 0.5; aread_typed; }
+      atyped_is "$start" "$sent" || [ "$try" = 3 ] || break
+    done
+    atyped_is "$start" "$v" && { [ "$try" = 1 ] || ok "type: $m characters arrived on attempt $try"; return 0; }
+    [ "$try" = 3 ] && break
+    warn "type: attempt $try lost characters - clearing the field and typing again"
+    aerase_typed "$TN"; empty="$TTX"
+    # What the field showed before the first key: its hint, or text of its own.
+    # Emptied, it shows the hint again, and anything else was the field's own
+    # text - typed again in front of the value, unless the field masks it.
+    if [ "$try" = 1 ] && [ "$before" != "$empty" ]; then
+      [ "$TPW" != true ] || die "type: the masked field held text before typing, and it cannot be typed again - clear the field first"
+      pre="$before"
+    fi
+    start="$empty"; v="$pre$s"
+  done
+  n=0; [ "$TTX" = "$start" ] || n=$(( TN - ${#pre} )); [ "$n" -ge 0 ] || n=0
+  die "type: arrived $n of $m characters after 3 attempts"; }
+# Empty the focused field: to the end of the text, one delete per character it
+# shows and one more, then one delete as a probe. An empty field does not change
+# under it; a field that still holds text does, and typing again on top of that
+# would be the same wrong field under a second attempt.
+aerase_typed(){ local n="$1" keys probe
+  keys="$(printf ' 67%.0s' $(seq 1 $((n+1))))"
+  adb shell input keyevent 123 $keys || die "type: the device refused the delete key"
+  aread_typed; probe="$TTX"
+  adb shell input keyevent 67 || die "type: the device refused the delete key"
+  aread_typed
+  [ "$TTX" = "$probe" ] || die "type: the field still holds text after deleting it - it cannot be typed again"; }
 # Keys are named in the flow file, never numbered: a step that says `66` reads as
 # noise and stops being true the moment the platform changes. These six names are
 # the whole vocabulary - anything else stops the run instead of pressing nothing.
@@ -376,9 +434,12 @@ akb_shown(){ apaths; local s
 # holds focus now, and that is the field the keys will reach: after the keyboard
 # opens the layout can move the field out from under the coordinates that opened
 # it, and a check that kept hit-testing the old point would be reading a
-# different node than the one being cleared.
+# different node than the one being cleared. "typed" is "focused" as `type` needs
+# it: whether the field masks its text, how many characters it shows, and the
+# text itself unescaped, because the field is compared with what was typed and
+# the dump writes a typed & as &amp;.
 afield(){ apaths; aui | "$PY" -c '
-import re,sys
+import re,sys,html
 mode=sys.argv[1]
 x0,y0=(int(sys.argv[2]),int(sys.argv[3])) if mode=="at" else (0,0)
 best=None; best_area=0; best_edit=False
@@ -401,8 +462,9 @@ for m in re.finditer(r"<node[^>]*?>", xml):
     fcb=re.search(r"focusable=\"([^\"]*)\"", tag)
     res=re.search(r"resource-id=\"([^\"]*)\"", tag)
     foc=re.search(r"focused=\"([^\"]*)\"", tag)
+    pwd=re.search(r"password=\"([^\"]*)\"", tag)
     cls=cls.group(1) if cls else ""; edit="EditText" in cls
-    if mode=="focused":
+    if mode in ("focused","typed"):
         if not (edit and foc and foc.group(1)=="true"): continue
     else:
         if not (x1<=x0<x2 and y1<=y0<y2): continue
@@ -411,9 +473,13 @@ for m in re.finditer(r"<node[^>]*?>", xml):
     if best is None or (edit and not best_edit) or (edit==best_edit and area<best_area):
         best=(cls, (enb.group(1) if enb else ""), (fcb.group(1) if fcb else ""),
               (res.group(1) if res else ""), "%d %d %d %d"%(x1,y1,x2,y2),
-              txt.group(1) if txt else "")
+              txt.group(1) if txt else "", (pwd.group(1) if pwd else ""))
         best_area=area; best_edit=edit
 if best is None: sys.exit(3)
+if mode=="typed":
+    t=html.unescape(best[5])
+    sys.stdout.write("%s\x1f%d\x1f%s" % (best[6], len(t), t)); sys.exit(0)
+best=best[:6]
 sys.stdout.write("%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s" % best)
 ' "$@"; }
 # Select all, then one delete. Forty blind deletes were a guess about how much

@@ -411,6 +411,16 @@ key.
 times, and a last look that finds nothing is the failure, named with the label.
 It used to pass on that miss. An empty value fails with its own message.
 
+`type` on Android reads the field back. The value goes in eight characters at a
+time, and after each piece the focused text field has to hold what was sent - the
+text itself, or one dot per character in a password field. A field that does not
+is emptied and typed again, up to three times, and then the step fails with
+`arrived N of M characters`. The message carries counts, never the value. This is
+what an emulator under load needs: `input text` drops characters there and still
+reports success. It also means `type` needs a text field with focus - tap one
+first - and a password field that already holds text cannot be typed again, so
+clear it before typing.
+
 One verb stays outside the guarantee. `type` on iOS sends the characters one by
 one and never reads a status, so it cannot fail. It does not belong in a flow as
 its checkpoint - put an `assertText` or an `assertId` after it.
