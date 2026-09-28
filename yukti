@@ -358,20 +358,37 @@ aread_typed(){ local out
 # Does the field hold what was sent? Either on its own - the field was empty and
 # showed its hint - or after what it held before. A masked field shows one dot
 # per character, and the dots are compared as dots: a field that received
-# nothing shows its hint, and "Password" is eight characters long.
-atyped_is(){ local start="$1" sent="$2" dot dots="" k
+# nothing shows its hint, and "Password" is eight characters long. Android also
+# leaves the LAST character of a password in the clear for a moment after it is
+# typed (the "show passwords" setting, on by default), so dots with that
+# character at the end are the same field.
+DOT=$'\xe2\x80\xa2'
+atyped_is(){ local start="$1" sent="$2" dots="" k
   [ "$TTX" = "$sent" ] || [ "$TTX" = "$start$sent" ] && return 0
   [ "$TPW" = true ] || return 1
-  printf -v dot '\xe2\x80\xa2'; for ((k=0;k<${#sent};k++)); do dots+="$dot"; done
-  [ "$TTX" = "$dots" ] || { [ "$TTX" = "$start$dots" ] && [ -z "${start//•/}" ]; }; }
+  for ((k=1;k<${#sent};k++)); do dots+="$DOT"; done
+  case "$TTX" in "$dots$DOT"|"$dots${sent: -1}") return 0;; esac
+  [ -n "$start" ] && [ -z "${start//$DOT/}" ] || return 1
+  case "$TTX" in "$start$dots$DOT"|"$start$dots${sent: -1}") return 0;; esac
+  return 1; }
 # `input text` delivers nothing back. Under load the emulator drops characters
 # and the command still exits 0: 22 went in, 15 arrived, and the step reported
 # "type 22 chars" (#66). So the field is read back after every eight characters
 # - a short burst loses less than a long one - and a field that does not hold
 # what was sent is emptied and typed again, three times, before the step fails.
 # The failure names counts and never the value: the value may be a password.
-atype(){ apaths; local s="$1" m before start pre="" v i try sent empty n; m=${#s}
+atype(){ apaths; local s="$1" m before start pre="" v i try sent empty n rest; m=${#s}
+  # `input text` has key events for ASCII only; anything else never arrives, and
+  # three attempts at it would end in counts that are not even characters.
+  if printf '%s' "$s" | LC_ALL=C grep -q '[^ -~]'; then die "type: only ASCII text can be typed on Android"; fi
   aread_typed; before="$TTX"; start="$before"; v="$s"
+  # Text a masked field already holds is dots, and dots cannot be typed again if
+  # the value has to be retyped. Said before the first key, not after a loss:
+  # the same flow must not pass on a fast device and fail on a slow one.
+  rest="${before//$DOT/}"
+  if [ "$TPW" = true ] && [ "$rest" != "$before" ] && [ "${#rest}" -le 1 ]; then
+    die "type: the masked field already holds text, and it cannot be typed again - clear the field first"
+  fi
   for try in 1 2 3; do
     i=0; sent=""
     while [ "$i" -lt "${#v}" ]; do
@@ -1017,7 +1034,7 @@ dismiss(){ local L xy st hit round=0
     round=$((round + 1))
     [ "$round" -lt 6 ] || { warn "dismiss: six interstitials tapped in a row - stopping here without reading the screen again, and leaving whatever is on it to the step that follows"; return 0; }
   done; }
-type_str(){ is_android && { atype "$1"; return; }; paths; local s="${1:?text}" i; for ((i=0;i<${#s};i++)); do idb ui text --udid "$(U)" "${s:$i:1}" >/dev/null 2>&1; sleep 0.12; done; }  # char-by-char = reliable
+type_str(){ : "${1:?text}"; is_android && { atype "$1"; return; }; paths; local s="$1" i; for ((i=0;i<${#s};i++)); do idb ui text --udid "$(U)" "${s:$i:1}" >/dev/null 2>&1; sleep 0.12; done; }  # char-by-char = reliable
 # The right edge of the field under a point, and what it holds. Both come out of
 # one dump: on iOS the caret has to be put at the end of THIS field before
 # deleting, and the old code tapped a fixed x=360 - right for one screen width

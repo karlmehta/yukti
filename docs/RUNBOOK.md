@@ -418,8 +418,11 @@ is emptied and typed again, up to three times, and then the step fails with
 `arrived N of M characters`. The message carries counts, never the value. This is
 what an emulator under load needs: `input text` drops characters there and still
 reports success. It also means `type` needs a text field with focus - tap one
-first - and a password field that already holds text cannot be typed again, so
-clear it before typing.
+first. A password field that already holds text is refused before the first key,
+because its dots cannot be typed again: clear it before typing. Only ASCII can be
+typed on Android; anything else is refused rather than typed in part. Each piece
+costs one read of the screen, about a second on an emulator: four for a
+22-character value.
 
 One verb stays outside the guarantee. `type` on iOS sends the characters one by
 one and never reads a status, so it cannot fail. It does not belong in a flow as
