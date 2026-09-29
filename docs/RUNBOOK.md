@@ -366,6 +366,19 @@ interstitial is news, not something to keep tapping at.
 from the band edges instead of merely inside the band. A plain `scroll` takes the
 same four directions as its `"value"`.
 
+On Android an up or down swipe goes down the middle of the screen, from 70% of
+its height to 30% of it (the other way for `up`). It used to be a fixed 400 pixels
+near the top, a sixth of a 1080x2400 screen, and eight of those did not reach the
+bottom of a long list. On any screen the run can measure, every vertical `scroll`
+and every swipe of `scrollToText` now goes further than it did before, at the
+same speed: a flow that counted on a short swipe to stop near something should
+use `scrollToText` with `"edges":"clear"`.
+
+On iOS an up or down swipe follows the same proportions in points. It used to be
+320 to 720 points, 400 of the 874 on the recording basis. The new one is 349 there,
+383 on a 956-point phone and 325 on an 812-point one: shorter on every iPhone, and
+longer only on a screen taller than 1000 points. Written, not measured - no Mac.
+
 On Android a sideways swipe goes across the widest element on screen that says it
 scrolls and is wider than it is tall: a carousel, a tab strip. When the screen
 has none, it goes across the middle and the run says so - and that line is a warning, not
