@@ -1384,11 +1384,18 @@ wait_for(){ local q="${1:-}" t="${2:-10}" m="${3:-exact}" mode="${4:-assert}" xy
 # test - so `{"do":"scroll","value":"sideways"}` swiped down and said nothing.
 # The list is checked first now, and a typo stops the flow.
 #
-# The vertical swipes keep the coordinates they were measured with. They are
-# device pixels and they are not proportional to anything, which is worth its own
-# issue, but changing them here would change the scroll distance of every flow
-# that exists - and this change is about direction. The horizontal pair has no
-# measured numbers to keep, so it is computed from the screen: across the widest
+# On Android the vertical swipes used to be fixed device pixels, 700 to 300 at
+# x=200. On a 1080x2400 screen that is a sixth of the height, all of it in the
+# upper third, and eight of them - all scrollToText gives itself - covered about a
+# screen and a third: an element further down the list failed as "not on screen
+# after 8 swipes" while it was there. They are taken from the screen now, down
+# the middle of its width from 70% of its height to 30% - the proportions that
+# made those flows pass on a 1080x2400 emulator with nothing else changed. Every
+# vertical scroll goes further than it did; a flow that counted on a short swipe
+# to stop near something wants scrollToText with "edges":"clear".
+# When the screen size cannot be read, screen_wh answers with the recording basis
+# and says so once, and the swipe is proportional to that.
+# The horizontal pair is computed from the screen as well: across the widest
 # element that says it scrolls, from a fifth of its width to four fifths of it -
 # or, when the screen has no such element, across the middle of the screen, with
 # a line in the run to say that is what happened.
@@ -1396,8 +1403,10 @@ scroll(){ local d="${1:-down}" w h
   case "$d" in up|down|left|right) ;; *) die "scroll: '$d' is not a direction - use up, down, left or right";; esac
   if is_android; then apaths
     case "$d" in
-      up)    adb shell input swipe 200 300 200 700 300;;
-      down)  adb shell input swipe 200 700 200 300 300;;
+      up|down)
+        set -- $(screen_wh); w="${1:-$BASIS_W}"; h="${2:-$BASIS_H}"
+        if [ "$d" = down ]; then adb shell input swipe $(( w / 2 )) $(( h * 70 / 100 )) $(( w / 2 )) $(( h * 30 / 100 )) 300
+        else adb shell input swipe $(( w / 2 )) $(( h * 30 / 100 )) $(( w / 2 )) $(( h * 70 / 100 )) 300; fi;;
       left|right)
         local cy x1 x2 span aim ast=0
         # A dump that failed is not the same answer as a screen with nothing to
