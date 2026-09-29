@@ -2356,7 +2356,7 @@ PY
       # non-zero when a label is simply absent, which is the state they exist
       # to tolerate.
       case "$do_" in dismiss|optionalTapText) st=0;; esac
-      [ "$st" -eq 0 ] || die "step $FLOW_IDX '$do_' failed (exit $st)"
+      [ "$st" -eq 0 ] || die "step $FLOW_IDX '$do_'${ttl:+ \"$ttl\"} failed (exit $st)"
       # The eighth field is the block the step was written in, empty for the flow
       # file itself; the seventh stays empty, because this step ran. The ninth is
       # the step's title, empty when it has none.
