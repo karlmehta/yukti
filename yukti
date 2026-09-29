@@ -1694,11 +1694,14 @@ for line in read(rec).split("\n"):
     i, verb, value, s0, s1, art = parts[:6]
     # The seventh field is the condition that switched the step off, empty for a
     # step that ran. The eighth is the block the step was written in, empty for
-    # the flow file itself. Older records have six or seven fields.
+    # the flow file itself. The ninth is the step's title. Older records have
+    # six, seven or eight fields.
     skip = parts[6] if len(parts) > 6 else ""
     src = parts[7] if len(parts) > 7 else ""
+    title = parts[8] if len(parts) > 8 else ""
     steps.append({"i": int(num(i)), "verb": verb, "value": value,
-                  "t": max(0.0, num(s1) - num(s0)), "art": art, "skip": skip, "src": src})
+                  "t": max(0.0, num(s1) - num(s0)), "art": art, "skip": skip, "src": src,
+                  "title": title})
 
 failing = None
 if int(num(st)) != 0:
@@ -1706,7 +1709,8 @@ if int(num(st)) != 0:
     if len(parts) >= 4 and parts[0] and not any(x["i"] == int(num(parts[0])) for x in steps):
         failing = {"i": int(num(parts[0])), "verb": parts[1], "value": parts[2],
                    "t": max(0.0, num(t1) - num(parts[3])), "art": "", "skip": "",
-                   "src": parts[4] if len(parts) > 4 else ""}
+                   "src": parts[4] if len(parts) > 4 else "",
+                   "title": parts[5] if len(parts) > 5 else ""}
 
 msg = read(errf).strip() or "the run stopped with exit code %d" % int(num(st))
 
@@ -1719,6 +1723,12 @@ def shown(step):
     if verb in ("type", "clearText"):
         value = "%d chars" % len(value) if value else ""
     if len(value) > 60: value = value[:57] + "..."
+    # A step with a title is named by it: the reader of a failed run needs what
+    # the step was for, not the id it tapped. The value stays after it, shown as
+    # it is without a title: a block included by two flows with different
+    # values would otherwise name its steps the same in both. The block leads.
+    if step["title"]:
+        verb = step["title"] + (":" if value and not step["title"].endswith(":") else "")
     # A step from a block says which block, the way the console does: two flows
     # that include the same block would otherwise show its steps as their own.
     # A step of the flow file itself is named as it always was.
@@ -1871,14 +1881,14 @@ FLOW_VERBS="launch stopApp clearState openUrl wait waitFor waitForId screenshot 
 # after it - they say so on the console, and they land in the report as `skipped`
 # with the condition that switched them off. A nested guard inside the group is
 # not a step and takes no number: it is skipped together with its group.
-flow_skip(){ local n="${1:-1}" why="$2" i=0 d v xx yy mm tt dd ee ss si wc ws bx t
+flow_skip(){ local n="${1:-1}" why="$2" i=0 d v xx yy mm tt dd ee ss si wc ws bx tl t
   why="${why//[$'\n\r']/ }"
-  while [ "$i" -lt "$n" ] && IFS=$'\x1f' read -r -d '' d v xx yy mm tt dd ee ss si wc ws bx <&3; do
+  while [ "$i" -lt "$n" ] && IFS=$'\x1f' read -r -d '' d v xx yy mm tt dd ee ss si wc ws bx tl <&3; do
     i=$((i+1))
     if [ "$d" = "__when" ]; then continue; fi
     FLOW_IDX=$((FLOW_IDX+1)); t="$(now)"
-    skipped "step $FLOW_IDX '$d' skipped: $why"
-    printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' "$FLOW_IDX" "$d" "${v//[$'\n\r']/ }" "$t" "$t" "" "$why" "${ss//[$'\n\r']/ }" >> "$FLOW_REC"
+    skipped "step $FLOW_IDX '$d'${tl:+ \"$tl\"} skipped: $why"
+    printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' "$FLOW_IDX" "$d" "${v//[$'\n\r']/ }" "$t" "$t" "" "$why" "${ss//[$'\n\r']/ }" "$tl" >> "$FLOW_REC"
   done; }
 flow(){
   # --check builds the flow and stops there: every step is read, resolved and
@@ -1947,7 +1957,9 @@ WHEN_KINDS = ("notVisible", "notVisibleId", "platform", "visible", "visibleId")
 # travel in one field rather than eight.
 BOX_KINDS = ("maxHeight", "maxWidth", "maxX", "maxY",
              "minHeight", "minWidth", "minX", "minY")
-STEP_KEYS = set(KEYS) | {"when", "box"}
+# A title says what a step is for, in the author's words. It is for the reader
+# of a run and nothing else: the step runs the same with it or without it.
+STEP_KEYS = set(KEYS) | {"when", "box", "title"}
 INCLUDE_KEYS = {"do", "value", "with", "when"}
 # One condition is a kind and a value; several in one `when` all have to hold.
 # These two characters separate them inside the single field that carries them.
@@ -2005,6 +2017,26 @@ def when_spec(step, at, scope, src):
             fail("%s: '%s' is not a platform - use android or ios" % (at, v))
         pairs.append(key + KV + v)
     return CSEP.join(pairs)
+
+def title_of(step, at):
+    if "title" not in step: return ""
+    t = step["title"]
+    if t is None:
+        fail('%s: "title" is null - remove the key or give it a value' % at)
+    if not isinstance(t, str):
+        fail('%s: "title" is text that says what the step is for, for instance '
+             '"open the account screen"' % at)
+    # Taken as written: no ${VARIABLE} is expanded in it. A title is words for
+    # the reader, and a report that spelled out ${TEST_PASSWORD} because a title
+    # mentioned it would be the leak the typed-text rule exists to prevent.
+    if SEP in t or END in t:
+        fail('%s: "title" contains a character the runner separates fields '
+             "with" % at)
+    # One line: the report and the console both print it on one.
+    t = " ".join(t.split())
+    if not t:
+        fail('%s: "title" is empty - say what the step is for or drop the key' % at)
+    return t
 
 def box_spec(step, at, scope, src):
     verb = step.get("do", "")
@@ -2066,7 +2098,7 @@ def guard(cond, span, src, idx):
     # the screen cannot change halfway through it, which is exactly what
     # happens if the condition is re-asked at every step of the block: the
     # first step dismisses the dialog, and the rest of the block is skipped.
-    return SEP.join(["__when"] + [""] * (len(KEYS) - 1) + [src, str(idx), cond, str(span), ""])
+    return SEP.join(["__when"] + [""] * (len(KEYS) - 1) + [src, str(idx), cond, str(span), "", ""])
 
 def fill(v, scope, at, inside):
     missing = []
@@ -2148,6 +2180,7 @@ def build(path, shown, src, scope, chain, depth, pre=""):
         fields.append("")
         fields.append("")
         fields.append(box_spec(step, at, scope, src))
+        fields.append(title_of(step, at))
         if cond: recs.append(guard(cond, 1, src, idx))
         recs.append(SEP.join(fields))
 
@@ -2214,7 +2247,7 @@ PY
   # still reported PASS). Reading `<&3` also keeps the loop in THIS shell (not a
   # pipe subshell), so a step's `die` (exit 1) aborts the whole flow with a
   # non-zero status instead of being lost.
-  while IFS=$'\x1f' read -r -d '' do_ val x y mtch tmo dir edg src sidx wcond wspan bspec <&3; do
+  while IFS=$'\x1f' read -r -d '' do_ val x y mtch tmo dir edg src sidx wcond wspan bspec ttl <&3; do
       # A guard is not a step: it takes no number of its own, and when it holds
       # the run says nothing about it - the steps that follow simply run. When it
       # does not hold, its whole group is read off the stream and every step in it
@@ -2244,7 +2277,7 @@ PY
       elif [ "$sidx" != "$FLOW_IDX" ]; then export YUKTI_STEP_SRC="step $sidx of this flow file"
       else export YUKTI_STEP_SRC=""; fi
       if [ "$chk" = 0 ]; then
-        printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\n' "$FLOW_IDX" "$do_" "${val//[$'\n\r']/ }" "$FLOW_S0" "${src//[$'\n\r']/ }" > "$FLOW_CUR"
+        printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' "$FLOW_IDX" "$do_" "${val//[$'\n\r']/ }" "$FLOW_S0" "${src//[$'\n\r']/ }" "$ttl" > "$FLOW_CUR"
         : > "$FLOW_ERR"
       fi
       # The name first, the keys after it, because the order decides what a typo
@@ -2270,6 +2303,9 @@ PY
       # Everything above this line is answerable without a device. Everything
       # below it touches one.
       if [ "$chk" = 1 ]; then continue; fi
+      # A step with a title says so before it runs: the lines the step prints
+      # itself name what it touched, the title names what it was for.
+      [ -z "$ttl" ] || say "step $FLOW_IDX '$do_' \"$ttl\""
       set +e   # a step must not abort the loop by itself: the status is read
                # right after the dispatcher, so the failure is attributed to
                # THIS step and the flow stops with a message.
@@ -2322,10 +2358,11 @@ PY
       # non-zero when a label is simply absent, which is the state they exist
       # to tolerate.
       case "$do_" in dismiss|optionalTapText) st=0;; esac
-      [ "$st" -eq 0 ] || die "step $FLOW_IDX '$do_' failed (exit $st)"
+      [ "$st" -eq 0 ] || die "step $FLOW_IDX '$do_'${ttl:+ \"$ttl\"} failed (exit $st)"
       # The eighth field is the block the step was written in, empty for the flow
-      # file itself; the seventh stays empty, because this step ran.
-      printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f\x1f%s\n' "$FLOW_IDX" "$do_" "${val//[$'\n\r']/ }" "$FLOW_S0" "$(now)" "$FLOW_ART" "${src//[$'\n\r']/ }" >> "$FLOW_REC"
+      # file itself; the seventh stays empty, because this step ran. The ninth is
+      # the step's title, empty when it has none.
+      printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f\x1f%s\x1f%s\n' "$FLOW_IDX" "$do_" "${val//[$'\n\r']/ }" "$FLOW_S0" "$(now)" "$FLOW_ART" "${src//[$'\n\r']/ }" "$ttl" >> "$FLOW_REC"
   done
   exec 3<&-
   export YUKTI_STEP_SRC=""

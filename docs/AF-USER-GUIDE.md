@@ -147,6 +147,16 @@ A flow is `{ "name": "...", "steps": [ ... ] }`. Common step verbs:
 Any step, and an `include`, may also carry `"when"` - the conditions under which
 it runs at all. See "A step that only runs sometimes" below.
 
+A step may carry a `"title"` - what it is for, in your words:
+`{"do":"tapId","value":"nav-account","title":"open the account screen"}`. The
+JUnit file then names the step `03 open the account screen: nav-account`
+instead of `03 tapId nav-account` (a step from a block keeps the block in
+front), and the console prints `step 3 'tapId' "open the account screen"`
+before the step runs. The value stays after the title, shown the way it is
+without one, so a block that two flows include with different `"with"` values
+names its steps differently in each. The step runs exactly as it would without
+a title, and a `${VARIABLE}` in a title is printed as written, never expanded.
+
 `assertBox` and `assertBoxId` measure the box the lookup already reads. A
 constraint is a plain number of pixels (`48`), a number of dp (`"48dp"`), or a
 whole share of the screen (`"5%"`) - of its width for `minWidth`, `maxWidth`,
