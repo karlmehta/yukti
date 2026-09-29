@@ -620,11 +620,14 @@ where the step was written - `cannot read the screen - see the error above (bloc
 block says `(step 2 of this flow file)`. Both the console line and the JUnit
 failure carry it, whichever way the step failed.
 
-A step with a `"title"` is named by its title instead of its verb and value:
-`03 [blocks/sign-in.json] enter the password` rather than `03 [blocks/sign-in.json]
-type 22 chars`, and a failed or skipped step the same way. The title changes
-nothing about how the step runs, and it is printed as written: a `${VARIABLE}`
-in it is not expanded, so a title cannot carry a secret into the report.
+A step with a `"title"` is named by its title instead of its verb, and the
+value follows it the way it is shown without a title:
+`03 [blocks/sign-in.json] enter the password: 22 chars` rather than
+`03 [blocks/sign-in.json] type 22 chars`, and a failed or skipped step the same
+way. A block included twice with different `"with"` values shows each value
+in its own testcase. The title changes nothing about how the step runs, and it
+is printed as written: a `${VARIABLE}` in it is not expanded, so a title cannot
+carry a secret into the report.
 
 A `${VARIABLE}` in the path expands like one in any other value: `${BLOCKS}/sign-in.json`
 works, and an unset name stops the flow before its first step like any other.

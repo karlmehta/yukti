@@ -1724,9 +1724,11 @@ def shown(step):
         value = "%d chars" % len(value) if value else ""
     if len(value) > 60: value = value[:57] + "..."
     # A step with a title is named by it: the reader of a failed run needs what
-    # the step was for, not the id it tapped. The block still leads.
+    # the step was for, not the id it tapped. The value stays after it, shown as
+    # it is without a title: a block included by two flows with different
+    # values would otherwise name its steps the same in both. The block leads.
     if step["title"]:
-        verb, value = step["title"], ""
+        verb = step["title"] + (":" if value and not step["title"].endswith(":") else "")
     # A step from a block says which block, the way the console does: two flows
     # that include the same block would otherwise show its steps as their own.
     # A step of the flow file itself is named as it always was.
