@@ -270,6 +270,8 @@ Sixteen more ways a flow stops, the first four of them typos that used to pass:
 - a `"when"` that is not an object of conditions, is empty, names a condition the
   tool does not know, carries a value that is not text, or names a platform that
   is neither `ios` nor `android` - all of them before the first step runs;
+- a `"title"` that is not text, is empty, or contains a character the runner
+  separates fields with; an `include` takes no title;
 - a key the tool does not know on a step or on an `include`, `wehn` for `when`
   first among them: a key nobody reads is a line of the file that does not do
   what it says, and a mistyped condition means a step that runs every time;
@@ -617,6 +619,12 @@ where the step was written - `cannot read the screen - see the error above (bloc
 'blocks/sign-in.json', step 4)` - and a step of the flow itself that sits after a
 block says `(step 2 of this flow file)`. Both the console line and the JUnit
 failure carry it, whichever way the step failed.
+
+A step with a `"title"` is named by its title instead of its verb and value:
+`03 [blocks/sign-in.json] enter the password` rather than `03 [blocks/sign-in.json]
+type 22 chars`, and a failed or skipped step the same way. The title changes
+nothing about how the step runs, and it is printed as written: a `${VARIABLE}`
+in it is not expanded, so a title cannot carry a secret into the report.
 
 A `${VARIABLE}` in the path expands like one in any other value: `${BLOCKS}/sign-in.json`
 works, and an unset name stops the flow before its first step like any other.
