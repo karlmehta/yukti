@@ -203,7 +203,8 @@ does not pass falls through to the environment; a name neither of them has stops
 the flow before its first step, naming it.
 
 The block's steps enter the run as ordinary steps — numbered in sequence with the
-rest, one testcase each in the JUnit file. The run numbers them end to end, so a
+rest, one testcase each in the JUnit file, named with the block it came from:
+`03 [blocks/sign-in.json] type 22 chars`. The run numbers them end to end, so a
 failure adds where the step is written: `cannot read the screen - see the error
 above (block 'blocks/sign-in.json', step 4)`, and for a step of the flow itself
 that sits after a block, `(step 2 of this flow file)`. A flow may include a block

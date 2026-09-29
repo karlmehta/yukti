@@ -596,6 +596,9 @@ step and says where to pass it.
 
 Its steps are ordinary steps. They are numbered in sequence with the flow's own,
 the console prints them the same way, and each is one testcase in the JUnit file.
+The testcase of a block step names the block: `03 [blocks/sign-in.json] type 22
+chars`. A step of the flow file itself keeps its name, `05 assertText Today`, so
+two flows that include the same block no longer show its steps as their own.
 That end-to-end number is not the number to look for in a file, so a failure adds
 where the step was written - `cannot read the screen - see the error above (block
 'blocks/sign-in.json', step 4)` - and a step of the flow itself that sits after a

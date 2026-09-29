@@ -1661,18 +1661,21 @@ for line in read(rec).split("\n"):
     parts = line.split(SEP)
     if len(parts) < 6: continue
     i, verb, value, s0, s1, art = parts[:6]
-    # The seventh field is the condition that switched the step off, and it is
-    # only there for a step that was skipped. Older records have six fields.
+    # The seventh field is the condition that switched the step off, empty for a
+    # step that ran. The eighth is the block the step was written in, empty for
+    # the flow file itself. Older records have six or seven fields.
     skip = parts[6] if len(parts) > 6 else ""
+    src = parts[7] if len(parts) > 7 else ""
     steps.append({"i": int(num(i)), "verb": verb, "value": value,
-                  "t": max(0.0, num(s1) - num(s0)), "art": art, "skip": skip})
+                  "t": max(0.0, num(s1) - num(s0)), "art": art, "skip": skip, "src": src})
 
 failing = None
 if int(num(st)) != 0:
     parts = read(cur).strip("\n").split(SEP)
     if len(parts) >= 4 and parts[0] and not any(x["i"] == int(num(parts[0])) for x in steps):
         failing = {"i": int(num(parts[0])), "verb": parts[1], "value": parts[2],
-                   "t": max(0.0, num(t1) - num(parts[3])), "art": "", "skip": ""}
+                   "t": max(0.0, num(t1) - num(parts[3])), "art": "", "skip": "",
+                   "src": parts[4] if len(parts) > 4 else ""}
 
 msg = read(errf).strip() or "the run stopped with exit code %d" % int(num(st))
 
@@ -1685,6 +1688,11 @@ def shown(step):
     if verb in ("type", "clearText"):
         value = "%d chars" % len(value) if value else ""
     if len(value) > 60: value = value[:57] + "..."
+    # A step from a block says which block, the way the console does: two flows
+    # that include the same block would otherwise show its steps as their own.
+    # A step of the flow file itself is named as it always was.
+    if step["src"]:
+        return ("%02d [%s] %s %s" % (step["i"], step["src"], verb, value)).strip()
     return ("%02d %s %s" % (step["i"], verb, value)).strip()
 
 stem = os.path.splitext(os.path.basename(flow))[0] or "flow"
@@ -1839,7 +1847,7 @@ flow_skip(){ local n="${1:-1}" why="$2" i=0 d v xx yy mm tt dd ee ss si wc ws bx
     if [ "$d" = "__when" ]; then continue; fi
     FLOW_IDX=$((FLOW_IDX+1)); t="$(now)"
     skipped "step $FLOW_IDX '$d' skipped: $why"
-    printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' "$FLOW_IDX" "$d" "${v//[$'\n\r']/ }" "$t" "$t" "" "$why" >> "$FLOW_REC"
+    printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' "$FLOW_IDX" "$d" "${v//[$'\n\r']/ }" "$t" "$t" "" "$why" "${ss//[$'\n\r']/ }" >> "$FLOW_REC"
   done; }
 flow(){
   # --check builds the flow and stops there: every step is read, resolved and
@@ -2205,7 +2213,7 @@ PY
       elif [ "$sidx" != "$FLOW_IDX" ]; then export YUKTI_STEP_SRC="step $sidx of this flow file"
       else export YUKTI_STEP_SRC=""; fi
       if [ "$chk" = 0 ]; then
-        printf '%s\x1f%s\x1f%s\x1f%s\n' "$FLOW_IDX" "$do_" "${val//[$'\n\r']/ }" "$FLOW_S0" > "$FLOW_CUR"
+        printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\n' "$FLOW_IDX" "$do_" "${val//[$'\n\r']/ }" "$FLOW_S0" "${src//[$'\n\r']/ }" > "$FLOW_CUR"
         : > "$FLOW_ERR"
       fi
       # The name first, the keys after it, because the order decides what a typo
@@ -2284,7 +2292,9 @@ PY
       # to tolerate.
       case "$do_" in dismiss|optionalTapText) st=0;; esac
       [ "$st" -eq 0 ] || die "step $FLOW_IDX '$do_' failed (exit $st)"
-      printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' "$FLOW_IDX" "$do_" "${val//[$'\n\r']/ }" "$FLOW_S0" "$(now)" "$FLOW_ART" >> "$FLOW_REC"
+      # The eighth field is the block the step was written in, empty for the flow
+      # file itself; the seventh stays empty, because this step ran.
+      printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f\x1f%s\n' "$FLOW_IDX" "$do_" "${val//[$'\n\r']/ }" "$FLOW_S0" "$(now)" "$FLOW_ART" "${src//[$'\n\r']/ }" >> "$FLOW_REC"
   done
   exec 3<&-
   export YUKTI_STEP_SRC=""
