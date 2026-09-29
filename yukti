@@ -1390,11 +1390,20 @@ wait_for(){ local q="${1:-}" t="${2:-10}" m="${3:-exact}" mode="${4:-assert}" xy
 # screen and a third: an element further down the list failed as "not on screen
 # after 8 swipes" while it was there. They are taken from the screen now, down
 # the middle of its width from 70% of its height to 30% - the proportions that
-# made those flows pass on a 1080x2400 emulator with nothing else changed. Every
-# vertical scroll goes further than it did; a flow that counted on a short swipe
-# to stop near something wants scrollToText with "edges":"clear".
+# made those flows pass on a 1080x2400 emulator. Every vertical scroll goes
+# further than it did; a flow that counted on a short swipe to stop near
+# something wants scrollToText with "edges":"clear".
+# The duration grows with the distance, 3 ms for every 4 px, which is the speed
+# of the old swipe: 400 px in 300 ms. `input swipe` lets go at the speed it moved,
+# so the same 300 ms over a longer distance would be a harder fling, and the list
+# would keep moving after the finger is up - past rows that scrollToText reads
+# only once the swipe is over. Only the distance changes, not the speed.
 # When the screen size cannot be read, screen_wh answers with the recording basis
-# and says so once, and the swipe is proportional to that.
+# and says so once, and the swipe is proportional to that: 349 px, a little
+# shorter than the 400 it used to be.
+# The iOS pair is still the measured points, 320 to 720 at x=200 on the 402x874
+# basis: #68 was about Android, and the iOS pair was not measured against
+# anything else.
 # The horizontal pair is computed from the screen as well: across the widest
 # element that says it scrolls, from a fifth of its width to four fifths of it -
 # or, when the screen has no such element, across the middle of the screen, with
@@ -1404,9 +1413,11 @@ scroll(){ local d="${1:-down}" w h
   if is_android; then apaths
     case "$d" in
       up|down)
+        local lo hi dur
         set -- $(screen_wh); w="${1:-$BASIS_W}"; h="${2:-$BASIS_H}"
-        if [ "$d" = down ]; then adb shell input swipe $(( w / 2 )) $(( h * 70 / 100 )) $(( w / 2 )) $(( h * 30 / 100 )) 300
-        else adb shell input swipe $(( w / 2 )) $(( h * 30 / 100 )) $(( w / 2 )) $(( h * 70 / 100 )) 300; fi;;
+        lo=$(( h * 30 / 100 )); hi=$(( h * 70 / 100 )); dur=$(( (hi - lo) * 3 / 4 ))
+        if [ "$d" = down ]; then adb shell input swipe $(( w / 2 )) "$hi" $(( w / 2 )) "$lo" "$dur"
+        else adb shell input swipe $(( w / 2 )) "$lo" $(( w / 2 )) "$hi" "$dur"; fi;;
       left|right)
         local cy x1 x2 span aim ast=0
         # A dump that failed is not the same answer as a screen with nothing to
@@ -1472,7 +1483,9 @@ run_dir(){ printf '%s' "${YUKTI_RUN_DIR:-}"; }
 # variable: every caller reads this through $( ), and an export from a command
 # substitution never reaches the caller, so a variable would re-ask the device on
 # every step. Asking must never be fatal and must never silently change geometry:
-# on any failure the answer is the basis, which is exactly the old behaviour.
+# on any failure the answer is the basis, which is exactly the old behaviour of
+# the band. The vertical swipe reads it too, and on the basis it is 349 px, a
+# little shorter than the 400 it used to be - the warning below says so.
 #
 # The cache belongs to the RUN, not to the device: RUN_DIR is made once per
 # invocation and removed when it ends. A device-named key cannot do this job -

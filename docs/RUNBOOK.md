@@ -369,9 +369,10 @@ same four directions as its `"value"`.
 On Android an up or down swipe goes down the middle of the screen, from 70% of
 its height to 30% of it (the other way for `up`). It used to be a fixed 400 pixels
 near the top, a sixth of a 1080x2400 screen, and eight of those did not reach the
-bottom of a long list. Every vertical `scroll` and every swipe of `scrollToText`
-now goes further than it did before: a flow that counted on a short swipe to stop
-near something should use `scrollToText` with `"edges":"clear"`.
+bottom of a long list. On any screen the run can measure, every vertical `scroll`
+and every swipe of `scrollToText` now goes further than it did before, at the
+same speed: a flow that counted on a short swipe to stop near something should
+use `scrollToText` with `"edges":"clear"`.
 
 On Android a sideways swipe goes across the widest element on screen that says it
 scrolls and is wider than it is tall: a carousel, a tab strip. When the screen
