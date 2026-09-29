@@ -1401,10 +1401,12 @@ wait_for(){ local q="${1:-}" t="${2:-10}" m="${3:-exact}" mode="${4:-assert}" xy
 # When the screen size cannot be read, screen_wh answers with the recording basis
 # and says so once, and the swipe is proportional to that: 349 px, a little
 # shorter than the 400 it used to be.
-# The iOS pair is still the measured points, 320 to 720 at x=200 on the 402x874
-# basis: #68 was about Android, and the iOS pair was not measured against
-# anything else.
-# The horizontal pair is computed from the screen as well: across the widest
+# iOS follows the same rule in points, so a flow scrolls the same share of the
+# screen on both platforms. The old iOS pair was 320 to 720 at x=200: 400 points,
+# 46% of the 874-point basis. The new one is 349 points on that screen, a little
+# shorter, and taller phones get more. The duration is left to idb as it was.
+# Written, not measured - no Mac.
+# On Android the horizontal pair is computed from the screen as well: across the widest
 # element that says it scrolls, from a fifth of its width to four fifths of it -
 # or, when the screen has no such element, across the middle of the screen, with
 # a line in the run to say that is what happened.
@@ -1449,8 +1451,12 @@ scroll(){ local d="${1:-down}" w h
   fi
   paths
   case "$d" in
-    up)    idb ui swipe --udid "$(U)" 200 320 200 720;;
-    down)  idb ui swipe --udid "$(U)" 200 720 200 320;;
+    up|down)
+      local lo hi
+      set -- $(screen_wh); w="${1:-$BASIS_W}"; h="${2:-$BASIS_H}"
+      lo=$(( h * 30 / 100 )); hi=$(( h * 70 / 100 ))
+      if [ "$d" = down ]; then idb ui swipe --udid "$(U)" $(( w / 2 )) "$hi" $(( w / 2 )) "$lo"
+      else idb ui swipe --udid "$(U)" $(( w / 2 )) "$lo" $(( w / 2 )) "$hi"; fi;;
     left|right)
       set -- $(screen_wh); w="${1:-$BASIS_W}"; h="${2:-$BASIS_H}"
       if [ "$d" = left ]; then idb ui swipe --udid "$(U)" $(( w / 5 )) $(( h / 2 )) $(( w * 4 / 5 )) $(( h / 2 ))

@@ -374,6 +374,10 @@ and every swipe of `scrollToText` now goes further than it did before, at the
 same speed: a flow that counted on a short swipe to stop near something should
 use `scrollToText` with `"edges":"clear"`.
 
+On iOS an up or down swipe follows the same proportions in points. It used to be
+320 to 720 points, 400 of the 874 on the recording basis; the new one is 349 there,
+a little shorter, and more on a taller phone. Written, not measured - no Mac.
+
 On Android a sideways swipe goes across the widest element on screen that says it
 scrolls and is wider than it is tall: a carousel, a tab strip. When the screen
 has none, it goes across the middle and the run says so - and that line is a warning, not
