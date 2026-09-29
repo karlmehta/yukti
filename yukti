@@ -1403,10 +1403,11 @@ wait_for(){ local q="${1:-}" t="${2:-10}" m="${3:-exact}" mode="${4:-assert}" xy
 # shorter than the 400 it used to be.
 # iOS follows the same rule in points, so a flow scrolls the same share of the
 # screen on both platforms. The old iOS pair was 320 to 720 at x=200: 400 points,
-# 46% of the 874-point basis. The new one is 349 points on that screen and 383 on
-# a 956-point phone: shorter than it was on every iPhone, by 4 to 13%, and longer
-# only on a screen taller than 1000 points, an iPad. This is the one place where
-# the change goes against the title of #68. The duration is left to idb as it was.
+# 46% of the 874-point basis. The new one is 349 points on that screen, 383 on a
+# 956-point phone and 325 on an 812-point one: shorter than it was on every
+# iPhone, and longer only on a screen taller than 1000 points, an iPad. This is
+# the one place where the change goes against the title of #68. The duration is
+# left to idb as it was.
 # Written, not measured - no Mac.
 # On Android the horizontal pair is computed from the screen as well: across the widest
 # element that says it scrolls, from a fifth of its width to four fifths of it -
