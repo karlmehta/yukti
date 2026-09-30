@@ -302,7 +302,9 @@ Two consequences worth knowing before writing flows:
 
 - the field loses focus when the keyboard closes (measured on API 35), so tap the
   field again before typing into it - `type` goes to whatever holds focus, and
-  with none it goes nowhere;
+  with none it goes nowhere. A `scroll`, a `scrollToText` or a `tapText` that has
+  to search closes the keyboard by itself before its first swipe, so the same
+  holds after one of those;
 - `pressKey` is the general form and `hideKeyboard` is built on it. Use
   `pressKey enter` to submit a form from the keyboard, and `hideKeyboard` when
   what you need is the keyboard gone. `pressKey back` is not a way to close a
@@ -432,8 +434,15 @@ are the fallback. The swipe travels up to 40% of the visible part of the list.
 It starts between 15% and 90% of that part, which is already clipped clear of
 the status bar and the gesture bar, and keeps at least a twentieth of it before
 the end it travels towards.
-The keyboard is not part of the list: close it before the step, or a swipe that
-lands on it can read as the end of the list.
+The keyboard is not part of the list, and a swipe that starts on its keys is
+typed, not scrolled: Gboard reads a drag across the keys as glide typing and puts
+a word into the focused field. So before its first swipe the step asks whether a
+keyboard is up. When one is, the step closes it the way `hideKeyboard` does, says
+so in the run, and reads the screen again before it swipes - what it looks for
+may have been under the keys. A keyboard that does not close, or a device that
+does not say whether one is up, fails the step. A label that is already in view
+needs no swipe, and the keyboard is left as it is. `scroll` and the search inside
+`tapText` ask the same question.
 
 The search stops at the end of the list. After each swipe it compares the first
 and the last row of the list on the screen, by label and position; nothing

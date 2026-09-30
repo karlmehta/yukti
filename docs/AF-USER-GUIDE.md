@@ -348,9 +348,12 @@ calls it the end when a second, shorter
 swipe from another point moves nothing either. The status bar clock does not
 count as movement: only the list is compared.
 
-Close the keyboard before the step. The keyboard is not part of the list, and a
-swipe that starts on it moves nothing - the step can then report the end of a
-list that is still there.
+A raised keyboard is closed before the first swipe, and the run says so. A swipe
+that starts on the keys is taken as glide typing and puts a word into the field,
+so the step asks first; if the keyboard does not close, the step fails and names
+the keyboard. The field loses its focus with the keyboard: a flow that types
+after the search taps the field again first. A label already in view needs no
+swipe, and then the keyboard is left as it is.
 
 The misses to tell apart:
 
