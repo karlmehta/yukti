@@ -254,6 +254,10 @@ if _m: SX1,SY1,SX2,SY2=map(int,_m.groups())
 # cannot be judged has to say so in a way the caller can read.
 if mode in ("assert","id") and not (SX2>SX1 and SY2>SY1): sys.exit(3)
 best=None; best_box=None; best_score=0
+# Corners (x1,y1,x2,y2): a lies entirely inside b and is not b itself. The iOS
+# path defines the same function; keep the two identical. A tap match scores at
+# least 2 and best_score starts below that, so a tie never meets an empty winner.
+def inside(a,b): return b[0]<=a[0] and b[1]<=a[1] and a[2]<=b[2] and a[3]<=b[3] and a!=b
 for m in re.finditer(r"<node\b[^>]*>", xml):
     tag=m.group(0)
     def a(n):
@@ -298,23 +302,21 @@ for m in re.finditer(r"<node\b[^>]*>", xml):
         if editable: score+=3
         if clickable: score+=1
         if focusable: score+=1
-    # A tie goes to the first node in the tree, except when the later one lies
-    # inside the current winner. A dialog whose whole window carries the label of
-    # the button at its bottom ranks both the same, and the window, coming first,
-    # took every tap: the centre of the screen was pressed, the button was not,
-    # and the step reported success. Someone naming a label means the control,
-    # not the frame around it. Equal matches that are not nested - the same
-    # button in every row of a list - still go to the first one.
-    inner=mode not in ("assert","id") and best_box is not None and score==best_score
-    if score<best_score or (score==best_score and not inner): continue
+    if score<best_score: continue
     b=re.search(r"bounds=\"\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]\"",tag)
     if not b: continue
     x1,y1,x2,y2=map(int,b.groups())
     if not (x2>x1 and y2>y1): continue   # zero-area node: in the tree, not on the screen
     cx,cy=(x1+x2)//2,(y1+y2)//2
     if SX2>SX1 and SY2>SY1 and not (SX1<=cx<SX2 and SY1<=cy<SY2): continue  # off-screen
-    if inner and not (best_box[0]<=x1 and best_box[1]<=y1 and x2<=best_box[2] and y2<=best_box[3]
-                      and (x1,y1,x2,y2)!=best_box): continue
+    # A tie goes to the candidate that lies inside the current winner. A dialog
+    # whose whole window carries the label of the button at its bottom ranks both
+    # the same, and the window, coming first, took every tap: the centre of the
+    # screen was pressed, the button was not, and the step reported success.
+    # Someone naming a label means the control, not the frame around it. Equal
+    # matches that are not nested - the same button in every row of a list - still
+    # go to the first one. The iOS path runs the same test on the same corners.
+    if score==best_score and not (mode not in ("assert","id") and inside((x1,y1,x2,y2),best_box)): continue
     best=(cx,cy); best_box=(x1,y1,x2,y2); best_score=score
 if best:
     if out=="box": print(best_box[0],best_box[1],best_box[2],best_box[3],SX1,SY1,SX2,SY2)
@@ -944,6 +946,11 @@ def emit(e,xy):
         x,y,w,h=frame(e); print(int(x),int(y),int(x+w),int(y+h),int(SX),int(SY),int(SX+SW),int(SY+SH))
     else: print(xy[0],xy[1])
 best=None; best_el=None; best_score=-1
+# Corners (x1,y1,x2,y2): a lies entirely inside b and is not b itself. The
+# Android path defines the same function; keep the two identical. A tap match
+# scores at least 2 and best_score starts below that, so a tie never meets an
+# empty winner.
+def inside(a,b): return b[0]<=a[0] and b[1]<=a[1] and a[2]<=b[2] and a[3]<=b[3] and a!=b
 for e in els:
     label_raw=norm(str(e.get("AXLabel") or "")); label=label_raw.lower()
     value_raw=norm(str(e.get("AXValue") or "")); value=value_raw.lower()
@@ -993,7 +1000,7 @@ for e in els:
     if score<best_score: continue
     if score==best_score:
         bx,by,bw,bh=frame(best_el)
-        if not (bx<=x and by<=y and x+w<=bx+bw and y+h<=by+bh and (x,y,w,h)!=(bx,by,bw,bh)): continue
+        if not inside((x,y,x+w,y+h),(bx,by,bx+bw,by+bh)): continue
     best=(int(x+w/2),int(y+h/2)); best_el=e; best_score=score
 if best: emit(best_el,best)
 ' "$1" "${2:-text}" "${3:-exact}" "${4:-centre}"; }
