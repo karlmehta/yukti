@@ -1562,7 +1562,7 @@ scale_xy(){ local x="${1:?x}" y="${2:?y}" w h nx ny
 # is reached only by a list that is still moving. Eight used to be the boundary, and
 # eight swipes covered a few screens: a row further down failed as "not on
 # screen" while it was there. Thirty swipes of two fifths of the list travel
-# twelve times its height, and still bound a step that will never find its element.
+# at least twelve times its height, and still bound a step that will never find its element.
 # Read twice: by the loop, and by the message that reports the miss.
 SCROLL_TRIES=30
 # A screen whose dump shows no list keeps the old boundary. There is no end to
@@ -1611,9 +1611,10 @@ BAND_SIDE_PCT=7
 # no Mac.
 #
 # Where the swipe starts matters more than where it goes: the element under the
-# first touch is the one offered the gesture. So it starts inside the list, never
-# on something inside it that scrolls or slides by itself, and never within the
-# quarter of the list nearest an end - which keeps it off the gesture bar at the
+# first touch is the one offered the gesture. So it starts inside the list, on a
+# line of text where there is one (see anchor below), never on something inside
+# it that scrolls, slides or draws a chart by itself, and no nearer to an
+# end of the list than a quarter of it - which keeps it off the gesture bar at the
 # bottom of the screen and the status bar at the top.
 list_probe(){ ui | "$PY" -c '
 import sys,re,json,hashlib
@@ -1648,8 +1649,13 @@ if android:
             kb=box(k)
             if not kb or not (kb[2]>kb[0] and kb[3]>kb[1]): continue
             lab=k.get("text") or k.get("content-desc") or k.get("resource-id") or ""
-            grab=k.get("scrollable")=="true" or "SeekBar" in (k.get("class") or "")
-            rows.append((kb," ".join(lab.split()),grab))
+            kc=k.get("class") or ""
+            # A chart drawn with react-native-svg takes the drag as its own and
+            # says nothing about it: measured on the Progress screen of the app
+            # under test, a swipe that started on one moved nothing, twice.
+            grab=k.get("scrollable")=="true" or "SeekBar" in kc or "svg" in kc.lower()
+            text=kc.endswith("TextView") and bool(k.get("text")) and not grab
+            rows.append((kb," ".join(lab.split()),grab,text))
         lists.append((b,side,rows))
 else:
     try: els=json.loads(raw)
@@ -1681,7 +1687,8 @@ else:
             if (kb[2]-kb[0])*(kb[3]-kb[1])>=(b[2]-b[0])*(b[3]-b[1]): continue
             lab=str(k.get("AXLabel") or k.get("AXValue") or k.get("AXUniqueId") or "")
             t=kind(k)
-            rows.append((kb," ".join(lab.split()),is_list(t) or "slider" in t or "adjustable" in t))
+            g=is_list(t) or "slider" in t or "adjustable" in t
+            rows.append((kb," ".join(lab.split()),g,("statictext" in t or "static text" in t) and bool(lab) and not g))
         lists.append((b,b[2]-b[0]>b[3]-b[1],rows))
 lists=[l for l in lists if l[1]!=vert]
 if not lists: sys.exit(0)
@@ -1717,6 +1724,26 @@ def line(start,travel,cross):
     s=a1+(a2-a1)*start//100; e=s-(a2-a1)*travel//100 if fwd else s+(a2-a1)*travel//100
     c=c1+(c2-c1)*cross//100
     return (c,s,c,e) if vert else (s,c,e,c)
+# First choice: start on a line of text in the list. Text does not hold on to a
+# drag - the list takes it - while a grid point can land on anything, and a
+# chart as wide as its card covers every point of the grid. The text is picked
+# between lo and hi percent of the way along the list, nearest to aim, far
+# enough from the end it travels towards, and clear of what takes the gesture.
+def anchor(lo,hi,aim,travel,away=None):
+    best=None
+    for r in rows:
+        if not r[3] or not shown(r): continue
+        cx,cy=(r[0][0]+r[0][2])//2,(r[0][1]+r[0][3])//2
+        if not free(cx,cy): continue
+        g=(pos(r)-a1)*100//(a2-a1)
+        if not fwd: g=100-g
+        if not (lo<=g<=hi) or g-travel<5: continue
+        if away is not None and abs(pos(r)-away)<(a2-a1)//10: continue
+        if best is None or abs(g-aim)<best[0]: best=(abs(g-aim),cx,cy)
+    if best is None: return None
+    cx,cy=best[1],best[2]; s=cy if vert else cx; dl=(a2-a1)*travel//100
+    e=s-dl if fwd else s+dl
+    return (cx,s,cx,e) if vert else (s,cy,e,cy)
 def pick(starts,travel,crosses,skip=None):
     for cr in crosses:
         if cr==skip: continue
@@ -1725,9 +1752,11 @@ def pick(starts,travel,crosses,skip=None):
             if free(p[0],p[1]): return p,cr
     return None,None
 crosses=[50,30,70,20,80]
-main,mc=pick([70,60,75],40,crosses)
+main=anchor(50,75,70,40); mc=None
+if main is None: main,mc=pick([70,60,75],40,crosses)
 if main is None: main,mc=line(70 if fwd else 30,40,50),50
-ctl,_=pick([62,72],25,crosses,skip=mc)
+ctl=anchor(35,75,60,25,away=main[1] if vert else main[0])
+if ctl is None: ctl,_=pick([62,72],25,crosses,skip=mc)
 if ctl is None: ctl=line(62 if fwd else 38,25,30 if mc!=30 else 70)
 dist=abs(main[3]-main[1]) if vert else abs(main[2]-main[0])
 dur=max(200,dist*3//4) if vert else 300
@@ -1849,8 +1878,12 @@ scroll_to(){ local lbl="$1" dir="${2:-down}" clear="${3:-}" i xy c lo hi blo bhi
   return 7; }
 # Two reads of one list show the same rows: the first and the last row on the
 # screen carry the same labels, and neither moved more than a few pixels - the
-# rounding of a dump, not a swipe.
+# rounding of a dump, not a swipe. A list with no row on the screen - one child
+# larger than the list, a chart canvas, a picture - gives nothing to compare, and
+# two such reads are not the same rows: they count as moved, and such a list runs
+# to the safety net instead of reporting an end it never saw.
 same_rows(){ local a b; set -- $1 $2
+  [ "$1" != none ] || return 1
   [ "$1" = "$4" ] || return 1
   a=$(( $2 - $5 )); b=$(( $3 - $6 ))
   [ "${a#-}" -le 8 ] && [ "${b#-}" -le 8 ]; }

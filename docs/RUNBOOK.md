@@ -415,10 +415,14 @@ a HorizontalScrollView scrolls sideways, any other ScrollView or ListView up and
 down, and only the rest is judged by shape. On iOS it is a scroll view, table or
 collection.
 
-The swipe starts inside that list, away from anything inside it that says it
-scrolls and away from a slider. The element under the first touch is the one
-that takes the gesture, so a carousel under the middle of the screen would take
-every swipe of a search. The swipe travels 40% of the visible part of the list
+The swipe starts inside that list, on a line of text where there is one, away
+from anything inside it that says it scrolls, from a slider and from a chart
+drawn with react-native-svg. The element under the first touch is the one that
+takes the gesture. Measured on the app under test: on the Progress screen both
+the swipe and the control swipe started on a chart, the list did not move, and
+the search reported the end of a list it had barely begun. Text does not hold on
+to a drag, so a line of text is the first choice, and fixed points in the list
+are the fallback. The swipe travels 40% of the visible part of the list
 and never starts within a quarter of its ends, so it stays off the gesture bar.
 The keyboard is not part of the list: close it before the step, or a swipe that
 lands on it can read as the end of the list.

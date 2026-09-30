@@ -342,8 +342,9 @@ prevent. Without the key, inside the viewport is enough, exactly as before.
 
 The search stops where the list ends, not after a count. Up to 30 swipes is a
 safety net; a list that stops moving earlier ends the search earlier. The step
-swipes inside the list itself, away from anything inside it that says it
-scrolls, and away from a slider. It only calls it the end when a second, shorter
+swipes inside the list itself, starting on a line of text where it can, away
+from anything inside it that says it scrolls, a slider and a chart. It only
+calls it the end when a second, shorter
 swipe from another point moves nothing either. The status bar clock does not
 count as movement: only the list is compared.
 
