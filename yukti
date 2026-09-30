@@ -1726,10 +1726,13 @@ def line(start,travel,cross):
     return (c,s,c,e) if vert else (s,c,e,c)
 # First choice: start on a line of text in the list. Text does not hold on to a
 # drag - the list takes it - while a grid point can land on anything, and a
-# chart as wide as its card covers every point of the grid. The text is picked
-# between lo and hi percent of the way along the list, nearest to aim, far
-# enough from the end it travels towards, and clear of what takes the gesture.
-def anchor(lo,hi,aim,travel,away=None):
+# chart as wide as its card covers every point of the grid. Any line of text on
+# the list will do, clear of what takes the gesture: the one nearest to aim
+# percent of the way along it. The travel shrinks to fit the room left before
+# the end it goes towards, and a line with less room than least is passed over -
+# a list whose free text sits all in its first half still moves by a real swipe,
+# rather than by the control swipe alone.
+def anchor(aim,travel,least,away=None):
     best=None
     for r in rows:
         if not r[3] or not shown(r): continue
@@ -1737,11 +1740,14 @@ def anchor(lo,hi,aim,travel,away=None):
         if not free(cx,cy): continue
         g=(pos(r)-a1)*100//(a2-a1)
         if not fwd: g=100-g
-        if not (lo<=g<=hi) or g-travel<5: continue
-        if away is not None and abs(pos(r)-away)<(a2-a1)//10: continue
-        if best is None or abs(g-aim)<best[0]: best=(abs(g-aim),cx,cy)
+        if not (15<=g<=90): continue
+        t=min(travel,g-5)
+        if t<least: continue
+        # Another line than the first swipe took, not merely the next one down.
+        if away is not None and abs(pos(r)-away)<=max(8,(a2-a1)*3//100): continue
+        if best is None or abs(g-aim)<best[0]: best=(abs(g-aim),cx,cy,t)
     if best is None: return None
-    cx,cy=best[1],best[2]; s=cy if vert else cx; dl=(a2-a1)*travel//100
+    cx,cy=best[1],best[2]; s=cy if vert else cx; dl=(a2-a1)*best[3]//100
     e=s-dl if fwd else s+dl
     return (cx,s,cx,e) if vert else (s,cy,e,cy)
 def pick(starts,travel,crosses,skip=None):
@@ -1751,11 +1757,13 @@ def pick(starts,travel,crosses,skip=None):
             p=line(st if fwd else 100-st,travel,cr)
             if free(p[0],p[1]): return p,cr
     return None,None
-crosses=[50,30,70,20,80]
-main=anchor(50,75,70,40); mc=None
+# The edges of the list are in the grid too: a chart or a card rarely reaches
+# the side of the screen, and a finger there is on the list itself.
+crosses=[50,30,70,20,80,10,90]
+main=anchor(70,40,20); mc=None
 if main is None: main,mc=pick([70,60,75],40,crosses)
 if main is None: main,mc=line(70 if fwd else 30,40,50),50
-ctl=anchor(35,75,60,25,away=main[1] if vert else main[0])
+ctl=anchor(60,25,15,away=main[1] if vert else main[0])
 if ctl is None: ctl,_=pick([62,72],25,crosses,skip=mc)
 if ctl is None: ctl=line(62 if fwd else 38,25,30 if mc!=30 else 70)
 dist=abs(main[3]-main[1]) if vert else abs(main[2]-main[0])
