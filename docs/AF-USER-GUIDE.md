@@ -353,7 +353,7 @@ that starts on the keys is taken as glide typing and puts a word into the field,
 so the step asks first; if the keyboard does not close, the step fails and names
 the keyboard. The field loses its focus with the keyboard: a flow that types
 after the search taps the field again first. A label already in view needs no
-swipe, and then the keyboard is left up.
+swipe, and then the keyboard is left as it is.
 
 The misses to tell apart:
 

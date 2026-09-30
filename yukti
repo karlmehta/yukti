@@ -1165,17 +1165,21 @@ kb_close(){ local who="$1" st=0
 # A swipe that starts on a soft keyboard is taken by the keyboard: Gboard reads a
 # drag across its keys as glide typing and types a word into the focused field,
 # and the list behind it does not move. So the first swipe of a step asks first.
-# Up: closed, the way hideKeyboard closes it, and said in the run (status 3, so a
-# search reads the screen again - what it looks for may have been under the keys).
+# Up: closed, the way hideKeyboard closes it, and said in the run. Status 10 then,
+# a number no lookup returns, so a search that shares its status variable reads
+# the screen again - what it looks for may have been under the keys.
 # Not closing, or no answer from the device, stops the step: an unanswered
 # question is not "no keyboard". Closing drops focus from the field - a flow that
 # types after a scroll taps the field first.
-kb_before_swipe(){ local who="$1, before the first swipe" st=0
+kb_before_swipe(){ local who="$1, before swiping" st=0
   kb_shown || st=$?
   if [ "$st" -eq 1 ]; then return 0; fi
   if [ "$st" -eq 2 ]; then die "$who: the device did not report its input method state"; fi
+  # A tree held from before the escape still shows the keyboard, and kb_close
+  # asks again after it.
+  HELD_TREE=""
   kb_close "$who"
-  return 3; }
+  return 10; }
 # An assert must prove the element is ON SCREEN, not that the string appears
 # somewhere in the dump. `ui | grep` matched invisible nodes, off-screen rows and
 # attribute values, so an assertText passed on a screen that never opened. Reuse
@@ -1451,6 +1455,8 @@ wait_for(){ local q="${1:-}" t="${2:-10}" m="${3:-exact}" mode="${4:-assert}" xy
 # The scroll STEP. `scroll` itself is also the blind swipe inside a search, which
 # asks about the keyboard on its own, so the question lives here and not in it.
 scroll_step(){
+  # scroll checks the direction too; it is checked here first so that a typo
+  # fails the step before a keyboard is closed for it.
   case "${1:-down}" in up|down|left|right) ;; *) die "scroll: '${1:-down}' is not a direction - use up, down, left or right";; esac
   kb_before_swipe scroll || :
   scroll "${1:-down}"; }
@@ -1886,9 +1892,11 @@ scroll_to(){ local lbl="$1" dir="${2:-down}" clear="${3:-}" verb="${4:-scrollToT
     # the first read: a label already in view needs no swipe, and closing the
     # keyboard for it would drop the field's focus for nothing. After a close the
     # screen is read again without a swipe, and the read is not counted as one.
-    if [ -z "$kb" ]; then kb=1; st=0; HELD_TREE=""
+    # The tree of this read is still held: on iOS the question is asked of it, and
+    # list_probe below reads it as well.
+    if [ -z "$kb" ]; then kb=1; st=0
       kb_before_swipe "$verb" >&2 || st=$?
-      [ "$st" -eq 3 ] && { i=$(( i - 1 )); continue; }
+      [ "$st" -eq 10 ] && { i=$(( i - 1 )); continue; }
     fi
     st=0; probe="$(list_probe "$nudge" "$xy" "$w" "$h")" || st=$?; HELD_TREE=""
     [ "$st" -eq 0 ] || lookup_die "$st"
