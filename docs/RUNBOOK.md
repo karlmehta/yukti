@@ -171,7 +171,7 @@ subscriber must not see, the row that was deleted. They match exactly as their
 positive halves do, `"match":"contains"` included, and they fail when the element
 IS found.
 
-They are about the screen as it is now and they never scroll. Eight swipes cannot
+They are about the screen as it is now and they never scroll. A count of swipes cannot
 prove that something is absent, and they change the state the next step is about
 to check; "not anywhere in this list" is a `scroll` of your own followed by the
 assertion. The case they are built around is the other one: a screen that could
@@ -372,9 +372,9 @@ On Android an up or down swipe goes down the middle of the screen, from 70% of
 its height to 30% of it (the other way for `up`). It used to be a fixed 400 pixels
 near the top, a sixth of a 1080x2400 screen, and eight of those did not reach the
 bottom of a long list. On any screen the run can measure, every vertical `scroll`
-and every swipe of `scrollToText` now goes further than it did before, at the
-same speed: a flow that counted on a short swipe to stop near something should
-use `scrollToText` with `"edges":"clear"`.
+now goes further than it did before, at the same speed: a flow that counted on a
+short swipe to stop near something should use `scrollToText` with
+`"edges":"clear"`. `scrollToText` itself aims inside the list, see below.
 
 On iOS an up or down swipe follows the same proportions in points. It used to be
 320 to 720 points, 400 of the 874 on the recording basis. The new one is 349 there,
@@ -408,22 +408,58 @@ the top edge travels down the screen; nudging it the way the search walked would
 push it out of view and report it missing. `"direction"` finds the element, the
 step places it.
 
-A miss reads as one of two things. Never seen: `not on screen after 8 swipes
-down`, with the direction, because the direction is what looked. Seen and swiped
-away: `came into view at 540 1879 and the swipes took it out of view again` -
-"not on screen" would be a false reason for an element the run had on the screen,
-which is the class the assertions themselves were fixed for.
+`scrollToText` and `tapText` do not swipe down the middle of the screen when the
+screen has a list. They pick the element that says it scrolls on the axis of the
+search. On Android that is `scrollable="true"`, and the class decides the axis:
+a HorizontalScrollView scrolls sideways, any other ScrollView or ListView up and
+down, and only the rest is judged by shape. On iOS it is a scroll view, table or
+collection.
+
+The swipe starts inside that list, on a line of text where there is one, away
+from anything inside it that says it scrolls, from a slider and from a chart
+drawn with react-native-svg. The element under the first touch is the one that
+takes the gesture. Measured on the app under test: on the Progress screen both
+the swipe and the control swipe started on a chart, the list did not move, and
+the search reported the end of a list it had barely begun. Text does not hold on
+to a drag, so a line of text is the first choice, and fixed points in the list
+are the fallback. The swipe travels up to 40% of the visible part of the list.
+It starts between 15% and 90% of that part, which is already clipped clear of
+the status bar and the gesture bar, and keeps at least a twentieth of it before
+the end it travels towards.
+The keyboard is not part of the list: close it before the step, or a swipe that
+lands on it can read as the end of the list.
+
+The search stops at the end of the list. After each swipe it compares the first
+and the last row of the list on the screen, by label and position; nothing
+outside the list is compared, so the status bar clock is not movement. A swipe
+that moved nothing is followed by a control swipe from another point, shorter
+and, on Android, slower. Only when that one moves nothing either is it the end.
+30 swipes is the safety net for a list that is still moving. A screen with no
+list in its dump keeps the old eight swipes down the middle. On iOS all of this
+is written, not measured - no Mac.
+
+A miss reads as one of these. Never seen, the list ended: `reached the end of the
+list going down, '<label>' is not in it` - in that direction, from where the
+search started. Never seen, still moving: `still moving after 30 swipes down,
+'<label>' not found`. Never seen, no list in the dump: `no scrollable list on
+screen - searched 8 swipes down, '<label>' not found`, after a warning that the
+swipes go down the middle. Seen and swiped away: `came into view at 540 1879 and
+the swipes took it out of view again` - "not on screen" would be a false reason
+for an element the run had on the screen, which is the class the assertions
+themselves were fixed for. With `"edges":"clear"`, seen but stuck at the end:
+`is at the end of the list and cannot be moved clear of the band edge`, which is
+usually content under a fixed bar.
 
 One limit, on x. The clear band is a little over half the width, and a sideways
-swipe travels three fifths of the scroller it crosses, so on a narrow screen -
+swipe travels two fifths of the visible list, so on a narrow screen -
 or against a list that moves content by the whole swipe - an element at one edge
 can fly past the other and be nudged back, until the swipes run out. The step
 then fails with the position it could not place, which is the honest answer; if
 it happens to you, place the element with a `scroll` of your own and drop the
 key.
 
-`scrollToText` fails the flow when the label never arrives: it swipes eight
-times, and a last look that finds nothing is the failure, named with the label.
+`scrollToText` fails the flow when the label never arrives: it swipes until the
+list ends or the safety net runs out, and a miss is the failure, named with the label.
 It used to pass on that miss. An empty value fails with its own message.
 
 `type` on Android reads the field back. The value goes in eight characters at a

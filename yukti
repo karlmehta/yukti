@@ -991,7 +991,7 @@ tap(){ is_android && { atap "$1" "$2"; return; }; paths; idb ui tap --udid "$(U)
 # verb must not tap it: an element that left the screen is an element that is not
 # there, which is the answer it has always given.
 tap_text(){ local xy st=0; xy="$(scroll_to "$1")" || st=$?
-  case "$st" in 0) ;; 5) die "no element matching '$1'";; *) lookup_die "$st";; esac
+  case "$st" in 0) ;; 5) die "no element matching '$1'";; 6|7|8) die "no element matching '$1' - $(scroll_miss "$st" "$1" down)";; *) lookup_die "$st";; esac
   [ -n "$xy" ] || die "no element matching '$1'"; tap $xy; }  # auto-scrolls off-screen elements into view
 # The exception these two verbs enjoy is about an ABSENT label, and nothing else.
 # A device that refuses the tap is not an absent label: the status of `tap` is
@@ -1317,7 +1317,7 @@ lookup_err(){ case "${1:-1}" in
 # an unreadable screen has no element on it either. Both statuses are checked
 # before the verdict.
 #
-# Neither verb scrolls, by contract: eight swipes cannot prove that something is
+# Neither verb scrolls, by contract: a count of swipes cannot prove that something is
 # absent, and they change the state the next step is about to check. What these
 # two state is "not on the screen as it is now", and the guide says so in those
 # words - a flow that means "not anywhere in this list" scrolls for itself.
@@ -1557,9 +1557,17 @@ scale_xy(){ local x="${1:?x}" y="${2:?y}" w h nx ny
   nx=$(( x * w / BASIS_W )); ny=$(( y * h / BASIS_H ))
   say "scaled $x,$y -> $nx,$ny (recorded ${BASIS_W}x${BASIS_H}, screen ${w}x${h})" >&2
   printf '%s %s' "$nx" "$ny"; }
-# How many times a miss is worth swiping for. Read twice: by the loop, and by the
-# message that reports the miss.
-SCROLL_TRIES=8
+# The most swipes a search makes. A safety net, not the boundary of the search:
+# a search on a list stops where the list ends (see scroll_to), and this number
+# is reached only by a list that is still moving. Eight used to be the boundary, and
+# eight swipes covered a few screens: a row further down failed as "not on
+# screen" while it was there. Thirty swipes of two fifths of the list travel
+# at least twelve times its height, and still bound a step that will never find its element.
+# Read twice: by the loop, and by the message that reports the miss.
+SCROLL_TRIES=30
+# A screen whose dump shows no list keeps the old boundary. There is no end to
+# find there, and swipes past the eighth learn nothing a flow is waiting for.
+SCROLL_TRIES_BLIND=8
 # How much of the band counts as "the edge" when a step asks to be clear of it.
 # A fifth from each side: enough to clear a sticky header or a bottom bar, which
 # is what the request is for, and not so much that a short list can never satisfy
@@ -1577,39 +1585,290 @@ BAND_SIDE_PCT=7
 # out of view instead and then report it missing - a row under a sticky header is
 # exactly the case `"edges":"clear"` exists for.
 #
-# Three answers, and the last two are new:
+# The list a search runs along, read from the held tree. Prints one line:
+#   rows f l   sx sy ex ey dur   cx cy cex cey cdur
+# `rows` names the first and last row of the list that are on the screen, and f
+# and l are where they stand on the axis of the search - what two reads compare.
+# Then the swipe for that direction, and the control swipe: shorter, slower, from
+# another point. Prints nothing when the screen has no list on that axis.
+#
+# Which element is the list: one that scrolls along the axis. On Android that is
+# `scrollable="true"`, and the class names the axis where it can: a
+# HorizontalScrollView scrolls sideways, any other ScrollView or ListView up and
+# down, whatever its shape - a vertical list between a header and a bar, or any
+# list in landscape, is wider than it is tall. Only the rest (RecyclerView, a
+# pager, a custom view) is read by shape, the way ahscroller reads it: wider than
+# tall scrolls sideways. On iOS the tree does not say what
+# scrolls, only what kind of element it is: scroll views, tables and collections
+# are the lists. When the element was already seen, the list is the smallest one
+# holding it - the one that moves it; otherwise the largest on the screen.
+#
+# The rows of the list are its descendants. On Android they are read from the
+# tree itself, so a bar drawn over the list is not one of them: it is a sibling
+# of the list, and it does not move when the list does. The iOS tree is flat, so
+# there a row is anything whose centre lies inside the list - a bar drawn over it
+# is counted, and a row still moves where a bar does not. Written, not measured -
+# no Mac.
+#
+# Where the swipe starts matters more than where it goes: the element under the
+# first touch is the one offered the gesture. So it starts inside the list, on a
+# line of text where there is one (see anchor below), never on something inside
+# it that scrolls, slides or draws a chart by itself. It starts between 15% and
+# 90% of the visible part of the list, which is already clipped clear of the
+# status bar and the gesture bar, and keeps at least a twentieth of it before
+# the end it travels towards.
+list_probe(){ ui | "$PY" -c '
+import sys,re,json,hashlib
+import xml.etree.ElementTree as ET
+d=sys.argv[1]; near=sys.argv[2].split(); W=int(sys.argv[3]); H=int(sys.argv[4])
+top=H*int(sys.argv[5])//int(sys.argv[7]); bot=H*int(sys.argv[6])//int(sys.argv[7])
+android=sys.argv[8]=="android"
+vert=d in ("up","down")
+raw=sys.stdin.read().strip()
+if not raw: sys.exit(1)   # the tree never arrived; the reader has said why
+lists=[]   # (box, sideways, rows) with rows = [(box, label, takes_gesture)]
+def ok_size(b):
+    w,h=b[2]-b[0],b[3]-b[1]
+    return max(w,h)>=80 and min(w,h)>=20
+if android:
+    try: root=ET.fromstring(raw)
+    except ET.ParseError: sys.exit(2)   # answered, not a tree
+    def box(n):
+        m=re.match(r"\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]", n.get("bounds") or "")
+        return tuple(map(int,m.groups())) if m else None
+    for n in root.iter("node"):
+        if n.get("scrollable")!="true": continue
+        b=box(n)
+        if not b or not ok_size(b): continue
+        cls=n.get("class") or ""
+        if "HorizontalScrollView" in cls: side=True
+        elif "ScrollView" in cls or "ListView" in cls: side=False
+        else: side=b[2]-b[0]>b[3]-b[1]
+        rows=[]
+        for k in n.iter("node"):
+            if k is n: continue
+            kb=box(k)
+            if not kb or not (kb[2]>kb[0] and kb[3]>kb[1]): continue
+            lab=k.get("text") or k.get("content-desc") or k.get("resource-id") or ""
+            kc=k.get("class") or ""
+            # A chart drawn with react-native-svg takes the drag as its own and
+            # says nothing about it: measured on the Progress screen of the app
+            # under test, a swipe that started on one moved nothing, twice.
+            grab=k.get("scrollable")=="true" or "SeekBar" in kc or "svg" in kc.lower()
+            text=kc.endswith("TextView") and bool(k.get("text")) and not grab
+            rows.append((kb," ".join(lab.split()),grab,text))
+        lists.append((b,side,rows))
+else:
+    try: els=json.loads(raw)
+    except ValueError: sys.exit(2)
+    def fr(e):
+        f=e.get("frame") or {}
+        def n(*ks):
+            for k in ks:
+                v=f.get(k)
+                if v is None: continue
+                try: return float(v)
+                except (TypeError,ValueError): return 0.0
+            return 0.0
+        x,y,w,h=n("X","x"),n("Y","y"),n("Width","width"),n("Height","height")
+        return (int(x),int(y),int(x+w),int(y+h))
+    def kind(e): return (str(e.get("type") or "")+" "+str(e.get("role_description") or "")).lower()
+    def is_list(t): return any(k in t for k in ("scrollview","scroll view","scroll area","table","collection")) and not any(k in t for k in ("cell","row","bar"))
+    for e in els:
+        if not is_list(kind(e)): continue
+        b=fr(e)
+        if not ok_size(b): continue
+        rows=[]
+        for k in els:
+            if k is e: continue
+            kb=fr(k)
+            if not (kb[2]>kb[0] and kb[3]>kb[1]): continue
+            cx,cy=(kb[0]+kb[2])//2,(kb[1]+kb[3])//2
+            if not (b[0]<=cx<b[2] and b[1]<=cy<b[3]): continue
+            if (kb[2]-kb[0])*(kb[3]-kb[1])>=(b[2]-b[0])*(b[3]-b[1]): continue
+            lab=str(k.get("AXLabel") or k.get("AXValue") or k.get("AXUniqueId") or "")
+            t=kind(k)
+            g=is_list(t) or "slider" in t or "adjustable" in t
+            rows.append((kb," ".join(lab.split()),g,("statictext" in t or "static text" in t) and bool(lab) and not g))
+        lists.append((b,b[2]-b[0]>b[3]-b[1],rows))
+lists=[l for l in lists if l[1]!=vert]
+if not lists: sys.exit(0)
+area=lambda b:(b[2]-b[0])*(b[3]-b[1])
+hold=[]
+if len(near)==2:
+    nx,ny=int(near[0]),int(near[1])
+    hold=[l for l in lists if l[0][0]<=nx<l[0][2] and l[0][1]<=ny<l[0][3]]
+b,side,rows=min(hold,key=lambda l:area(l[0])) if hold else max(lists,key=lambda l:area(l[0]))
+# The part of the list that is on the screen, between the bars.
+x1,y1,x2,y2=max(b[0],0),max(b[1],top),min(b[2],W),min(b[3],bot)
+if not (x2>x1 and y2>y1): sys.exit(0)
+a1,a2,c1,c2=(y1,y2,x1,x2) if vert else (x1,x2,y1,y2)
+pos=lambda r:((r[0][1]+r[0][3])//2 if vert else (r[0][0]+r[0][2])//2)
+def shown(r):
+    cx,cy=(r[0][0]+r[0][2])//2,(r[0][1]+r[0][3])//2
+    return x1<=cx<x2 and y1<=cy<y2
+seen=[r for r in rows if shown(r)]
+# Rows without a label are compared by position alone. A list of identical
+# unlabelled tiles moved by exactly a whole number of tiles would read as still;
+# known, and left: a real swipe does not travel an exact multiple of a row.
+named=[r for r in seen if r[1]] or seen
+if named:
+    named.sort(key=pos); f,l=named[0],named[-1]
+    rid=hashlib.md5((f[1]+"\x00"+l[1]).encode()).hexdigest()[:12]; fp,lp=pos(f),pos(l)
+else: rid,fp,lp="none",0,0
+grabs=[r[0] for r in rows if r[2]]
+def free(x,y): return not any(g[0]<=x<g[2] and g[1]<=y<g[3] for g in grabs)
+# down and right reveal what lies further on: the finger travels towards the
+# start of the axis. up and left, the other way.
+fwd=d in ("down","right")
+def line(start,travel,cross):
+    s=a1+(a2-a1)*start//100; e=s-(a2-a1)*travel//100 if fwd else s+(a2-a1)*travel//100
+    c=c1+(c2-c1)*cross//100
+    return (c,s,c,e) if vert else (s,c,e,c)
+# First choice: start on a line of text in the list. Text does not hold on to a
+# drag - the list takes it - while a grid point can land on anything, and a
+# chart as wide as its card covers every point of the grid. Any line of text on
+# the list will do, clear of what takes the gesture: the one nearest to aim
+# percent of the way along it. The travel shrinks to fit the room left before
+# the end it goes towards, and a line with less room than least is passed over -
+# a list whose free text sits all in its first half still moves by a real swipe,
+# rather than by the control swipe alone.
+def anchor(aim,travel,least,away=None):
+    best=None
+    for r in rows:
+        if not r[3] or not shown(r): continue
+        cx,cy=(r[0][0]+r[0][2])//2,(r[0][1]+r[0][3])//2
+        if not free(cx,cy): continue
+        g=(pos(r)-a1)*100//(a2-a1)
+        if not fwd: g=100-g
+        if not (15<=g<=90): continue
+        t=min(travel,g-5)
+        if t<least: continue
+        # Another line than the first swipe took, not merely the next one down.
+        if away is not None and abs(pos(r)-away)<=max(8,(a2-a1)*3//100): continue
+        if best is None or abs(g-aim)<best[0]: best=(abs(g-aim),cx,cy,t)
+    if best is None: return None
+    cx,cy=best[1],best[2]; s=cy if vert else cx; dl=(a2-a1)*best[3]//100
+    e=s-dl if fwd else s+dl
+    return (cx,s,cx,e) if vert else (s,cy,e,cy)
+def pick(starts,travel,crosses,skip=None):
+    for cr in crosses:
+        if cr==skip: continue
+        for st in starts:
+            p=line(st if fwd else 100-st,travel,cr)
+            if free(p[0],p[1]): return p,cr
+    return None,None
+# The edges of the list are in the grid too: a chart or a card rarely reaches
+# the side of the screen, and a finger there is on the list itself.
+crosses=[50,30,70,20,80,10,90]
+main=anchor(70,40,20); mc=None
+if main is None: main,mc=pick([70,60,75],40,crosses)
+if main is None: main,mc=line(70 if fwd else 30,40,50),50
+ctl=anchor(60,25,15,away=main[1] if vert else main[0])
+if ctl is None: ctl,_=pick([62,72],25,crosses,skip=mc)
+if ctl is None: ctl=line(62 if fwd else 38,25,30 if mc!=30 else 70)
+dist=abs(main[3]-main[1]) if vert else abs(main[2]-main[0])
+dur=max(200,dist*3//4) if vert else 300
+print(rid,fp,lp,*main,dur,*ctl,dur*2)
+' "$1" "${2:-}" "$3" "$4" "$BAND_TOP" "$BAND_BOTTOM" "$BASIS_H" "$YUKTI_PLATFORM"; }
+# The answers:
 #   0 + coordinates - it is there, and where it has to be
-#   0 + nothing     - it was never on the screen
-#   4 + coordinates - in the band, never clear of its edges; the position is live
+#   4 + coordinates - in the band, never clear of its edges while the list still
+#                     moved; the position is live
 #   5 + coordinates - it came into view and the swipes took it out again; the
 #                     position is the LAST SIGHTING and is stale. Saying "not on
 #                     screen" of an element that was on it is a false reason, and
 #                     a false reason is worse than a vague one.
-scroll_to(){ local lbl="$1" dir="${2:-down}" clear="${3:-}" i xy c lo hi blo bhi m w h seen="" nudge st
+#   6               - the list ended in that direction and the element is not in it
+#   7               - the swipes ran out and the list was still moving
+#   8               - the swipes ran out on a screen whose dump shows no list, so
+#                     where the list ends could not be seen
+#   9 + coordinates - it is on the screen, the list ended, and it is still not
+#                     clear of the edge; the position is live
+#
+# The end of a list is read from the list, not from the screen. Two reads of the
+# whole screen that come out the same do not say the list ended: a swipe that
+# starts on a carousel, a slider or a map is taken by that element, the list
+# stays where it was, and the screen looks exactly like the end. And two reads
+# that differ do not say it moved: on Android the dump carries the status bar,
+# and its clock ticks. So each read picks the list the search runs along - the
+# element that says it scrolls on that axis (list_probe) - and remembers the
+# first and the last row of it that are on the screen, by label and position.
+# Nothing outside that list is compared, the clock included.
+#
+# One swipe that moved nothing is not yet the end: it may have landed on
+# something inside the list that took the gesture. The swipes start away from
+# every element inside the list that scrolls on its own, and when one still moves
+# nothing, a second, shorter and slower one goes out from a different point. Only
+# when that one moves nothing either is it the end. A false end then needs two
+# misses in a row, from two points, both inside the list and both clear of what
+# scrolls inside it.
+#
+# A list cannot be counted, which is why the rows at its ends are compared
+# instead: a long list is virtualised, and the dump holds only the rows on the
+# screen. The last row on the screen and where it stands are always there.
+#
+# A screen whose dump shows no list gets the old search: down the middle, eight
+# swipes (SCROLL_TRIES_BLIND). It says so once, and its miss says the swipes ran
+# out on a screen with no list - not that the list ended.
+scroll_to(){ local lbl="$1" dir="${2:-down}" clear="${3:-}" i xy c lo hi blo bhi m w h seen="" nudge st probe prev="" ctl=0 ended="" flat=""
+  case "$dir" in up|down|left|right) ;; *) die "scrollToText: '$dir' is not a direction - use up, down, left or right";; esac
+  set -- $(screen_wh); w="${1:-$BASIS_W}"; h="${2:-$BASIS_H}"
   case "$dir" in
     # The band on y is the measured one, scaled to this screen.
-    up|down)    h="$(screen_h)"; blo=$(( h * BAND_TOP / BASIS_H )); bhi=$(( h * BAND_BOTTOM / BASIS_H ));;
-    left|right) w="$(screen_w)"; blo=$(( w * BAND_SIDE_PCT / 100 )); bhi=$(( w - blo ));;
-    *) die "scrollToText: '$dir' is not a direction - use up, down, left or right";;
+    up|down)    blo=$(( h * BAND_TOP / BASIS_H )); bhi=$(( h * BAND_BOTTOM / BASIS_H ));;
+    left|right) blo=$(( w * BAND_SIDE_PCT / 100 )); bhi=$(( w - blo ));;
   esac
   lo="$blo"; hi="$bhi"
   if [ "$clear" = clear ]; then
     m=$(( (bhi - blo) * CLEAR_PCT / 100 )); lo=$(( blo + m )); hi=$(( bhi - m ))
   fi
-  for i in $(seq 1 $SCROLL_TRIES); do st=0; xy="$(find_el "$lbl")" || st=$?; [ "$st" -eq 0 ] || lookup_die "$st"
+  for i in $(seq 1 $SCROLL_TRIES); do
+    # One read per swipe. The lookup and the list both come from it: two reads
+    # would cost a second dump, and could disagree about a screen that did not
+    # change in between. Emptied before the swipe, as in dismiss.
+    HELD_TREE=""; HELD_TREE="$(ui)" || exit 1
+    st=0; xy="$(find_el "$lbl")" || st=$?; [ "$st" -eq 0 ] || { HELD_TREE=""; lookup_die "$st"; }
     nudge="$dir"
     if [ -n "$xy" ]; then
       # The coordinate that decides is the one the swipe moves.
       case "$dir" in up|down) c="${xy##* }";; *) c="${xy%% *}";; esac
       seen="$xy"
-      if [ "$c" -lt "$hi" ] && [ "$c" -gt "$lo" ]; then printf '%s' "$xy"; return 0; fi
+      if [ "$c" -lt "$hi" ] && [ "$c" -gt "$lo" ]; then HELD_TREE=""; printf '%s' "$xy"; return 0; fi
       # Too near one end: reveal what lies on that side, which moves the element
       # towards the other. `up` and `left` reveal what is above and to the left,
       # so the element travels down and right.
       if [ "$c" -le "$lo" ]; then case "$dir" in up|down) nudge=up;; *) nudge=left;; esac
       else case "$dir" in up|down) nudge=down;; *) nudge=right;; esac; fi
     fi
-    scroll "$nudge"; sleep 0.6; done
+    st=0; probe="$(list_probe "$nudge" "$xy" "$w" "$h")" || st=$?; HELD_TREE=""
+    [ "$st" -eq 0 ] || lookup_die "$st"
+    if [ -z "$probe" ]; then
+      # To stderr: scroll_to runs inside a command substitution, and a line on
+      # stdout would arrive inside the coordinates it returns. A sideways search
+      # has its own line for this, printed by scroll.
+      case "$dir" in up|down) [ -n "$flat" ] || warn "no vertically scrollable list in the dump - swiping down the middle of the screen, where the end of the list cannot be told from the end of the swipes" >&2;; esac
+      flat=$(( ${flat:-0} + 1 )); prev=""; ctl=0
+      scroll "$nudge"; sleep 0.6
+      [ "$flat" -ge "$SCROLL_TRIES_BLIND" ] && break
+      continue
+    fi
+    flat=""
+    set -- $probe
+    if [ -n "$prev" ] && same_rows "$prev" "$1 $2 $3"; then
+      [ "$ctl" = 1 ] && { ended=1; break; }
+      ctl=1; swipe_pts "$9" "${10}" "${11}" "${12}" "${13}"
+    else
+      ctl=0; prev="$1 $2 $3"; swipe_pts "$4" "$5" "$6" "$7" "$8"
+    fi
+    sleep 0.6; done
+  if [ -n "$ended" ]; then
+    # The read that saw the end is also the last lookup: the element in it is
+    # where it is going to stay.
+    if [ -n "$xy" ]; then printf '%s' "$xy"; [ "$clear" = clear ] && return 9; return 0; fi
+    if [ -n "$seen" ]; then printf '%s' "$seen"; return 5; fi
+    return 6
+  fi
   # Out of swipes. As a locator this still answers with wherever the element is,
   # which is what tapText has always done with it - and the position is judged
   # here as it is inside the loop, because the last swipe of the loop can be the
@@ -1624,28 +1883,55 @@ scroll_to(){ local lbl="$1" dir="${2:-down}" clear="${3:-}" i xy c lo hi blo bhi
     return 0
   fi
   if [ -n "$seen" ]; then printf '%s' "$seen"; return 5; fi
-  return 0; }
+  [ -n "$flat" ] && return 8
+  return 7; }
+# Two reads of one list show the same rows: the first and the last row on the
+# screen carry the same labels, and neither moved more than a few pixels - the
+# rounding of a dump, not a swipe. A list with no row on the screen - one child
+# larger than the list, a chart canvas, a picture - gives nothing to compare, and
+# two such reads are not the same rows: they count as moved, and such a list runs
+# to the safety net instead of reporting an end it never saw.
+same_rows(){ local a b; set -- $1 $2
+  [ "$1" != none ] || return 1
+  [ "$1" = "$4" ] || return 1
+  a=$(( $2 - $5 )); b=$(( $3 - $6 ))
+  [ "${a#-}" -le 8 ] && [ "${b#-}" -le 8 ]; }
+# A swipe between two points the dump has chosen. `scroll` aims by itself and
+# stays as it is: a bare scroll step has no list to aim into.
+swipe_pts(){ if is_android; then apaths; adb shell input swipe "$1" "$2" "$3" "$4" "$5"
+  # The duration is left to idb, as in scroll. Written, not measured - no Mac.
+  else paths; idb ui swipe --udid "$(U)" "$1" "$2" "$3" "$4"; fi; }
+# The words for a miss that never saw the element, for the two verbs that search.
+scroll_miss(){ case "$1" in
+    6) printf "reached the end of the list going %s, '%s' is not in it" "$3" "$2";;
+    7) printf "still moving after %s swipes %s, '%s' not found" "$SCROLL_TRIES" "$3" "$2";;
+    8) printf "no scrollable list on screen - searched %s swipes %s, '%s' not found" "$SCROLL_TRIES_BLIND" "$3" "$2";;
+  esac; }
 # scroll_to is a locator and stays one: it is also the first half of tapText,
 # which has its own words for a miss. As a STEP, though, scrollToText is a
 # statement that the label is there - the flow swipes until it finds it - and a
 # statement that turns out false has to fail. It did not: the swipes ended, the
 # last lookup came back empty, and the step passed. The runbook recommends this
 # step in front of an assertion, so the documented way to reach something below
-# the fold was also the way to miss it in silence, at eight swipes a time.
+# the fold was also the way to miss it in silence.
 scroll_to_step(){ local lbl="${1:-}" dir="${2:-down}" clear="${3:-}" xy st=0
   [ -n "$lbl" ] || die "scrollToText needs a non-empty value"
   case "$dir" in up|down|left|right) ;; *) die "scrollToText: '$dir' is not a direction - use up, down, left or right";; esac
   case "$clear" in ''|clear) ;; *) die "scrollToText: '$clear' is not a value for \"edges\" - the only one is clear";; esac
   xy="$(scroll_to "$lbl" "$dir" "$clear")" || st=$?
-  # Neither of these two says the direction: once the element is on the screen
-  # the swipes follow its position, not the direction the search came from.
+  # Neither 4, 5 nor 9 says the direction: once the element is on the screen the
+  # swipes follow its position, not the direction the search came from.
   case "$st" in
     0) ;;
     4) die "scrollToText: '$lbl' came into view but never landed clear of the band edges after $SCROLL_TRIES swipes - it is at $xy";;
-    5) die "scrollToText: '$lbl' came into view at $xy and the swipes took it out of view again - after $SCROLL_TRIES swipes it is not on the screen";;
+    5) die "scrollToText: '$lbl' came into view at $xy and the swipes took it out of view again - it is not on the screen now";;
+    6|7|8) die "scrollToText: $(scroll_miss "$st" "$lbl" "$dir")";;
+    9) die "scrollToText: '$lbl' is at the end of the list and cannot be moved clear of the band edge - it is at $xy; content may be hidden under a fixed bar";;
     *) lookup_die "$st";;
   esac
-  [ -n "$xy" ] || die "scrollToText: '$lbl' not on screen after $SCROLL_TRIES swipes $dir"
+  # Not reached today - every miss above has its own status - and kept so that a
+  # new path through scroll_to cannot pass this step with nothing to show.
+  [ -n "$xy" ] || die "scrollToText: '$lbl' not on screen"
   printf '%s\n' "$xy"; }
 
 # ── per-flow results ─────────────────────────────────────────────────────────
