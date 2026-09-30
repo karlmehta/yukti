@@ -422,8 +422,10 @@ takes the gesture. Measured on the app under test: on the Progress screen both
 the swipe and the control swipe started on a chart, the list did not move, and
 the search reported the end of a list it had barely begun. Text does not hold on
 to a drag, so a line of text is the first choice, and fixed points in the list
-are the fallback. The swipe travels 40% of the visible part of the list
-and never starts within a quarter of its ends, so it stays off the gesture bar.
+are the fallback. The swipe travels up to 40% of the visible part of the list.
+It starts between 15% and 90% of that part, which is already clipped clear of
+the status bar and the gesture bar, and keeps at least a twentieth of it before
+the end it travels towards.
 The keyboard is not part of the list: close it before the step, or a swipe that
 lands on it can read as the end of the list.
 
