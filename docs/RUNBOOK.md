@@ -165,6 +165,12 @@ fold case, and they rank the candidates. What `scrollToText` does on a miss is
 new, and it is below. Naming a button is not a statement about its
 capitalisation; asserting one is.
 
+When two candidates rank the same and one lies inside the other, the innermost one
+wins. A dialog can carry the label of its own button on the whole window, and
+the window used to take the tap: the middle of the screen was pressed, the
+button was not, and the step passed. Equal candidates that are not nested - the
+same button in every row of a list - go to the first one, as before.
+
 The other direction is `assertNotText` and `assertNotId`: the checkpoint for
 what must be gone - the error message after a valid retry, the paywall a
 subscriber must not see, the row that was deleted. They match exactly as their
