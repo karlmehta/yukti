@@ -372,9 +372,9 @@ On Android an up or down swipe goes down the middle of the screen, from 70% of
 its height to 30% of it (the other way for `up`). It used to be a fixed 400 pixels
 near the top, a sixth of a 1080x2400 screen, and eight of those did not reach the
 bottom of a long list. On any screen the run can measure, every vertical `scroll`
-and every swipe of `scrollToText` now goes further than it did before, at the
-same speed: a flow that counted on a short swipe to stop near something should
-use `scrollToText` with `"edges":"clear"`.
+now goes further than it did before, at the same speed: a flow that counted on a
+short swipe to stop near something should use `scrollToText` with
+`"edges":"clear"`. `scrollToText` itself aims inside the list, see below.
 
 On iOS an up or down swipe follows the same proportions in points. It used to be
 320 to 720 points, 400 of the 874 on the recording basis. The new one is 349 there,
@@ -408,11 +408,34 @@ the top edge travels down the screen; nudging it the way the search walked would
 push it out of view and report it missing. `"direction"` finds the element, the
 step places it.
 
-A miss reads as one of two things. Never seen: `not on screen after 8 swipes
-down`, with the direction, because the direction is what looked. Seen and swiped
-away: `came into view at 540 1879 and the swipes took it out of view again` -
-"not on screen" would be a false reason for an element the run had on the screen,
-which is the class the assertions themselves were fixed for.
+`scrollToText` and `tapText` do not swipe down the middle of the screen when the
+screen has a list. They pick the element that says it scrolls on the axis of the
+search - on Android `scrollable="true"`, on iOS a scroll view, table or
+collection - and swipe inside it, starting away from anything inside it that
+scrolls or slides by itself: the element under the first touch is the one that
+takes the gesture, and a carousel under the middle of the screen used to take
+every swipe of a search. The swipe travels 40% of the visible part of the list,
+never starting within a fifth of its ends, so it stays off the gesture bar.
+
+The search stops at the end of the list. After each swipe it compares the first
+and the last row of the list on the screen, by label and position; nothing
+outside the list is compared, so the status bar clock is not movement. A swipe
+that moved nothing is followed by a control swipe, shorter and slower, from
+another point, and only when that one moves nothing either is it the end. 30
+swipes is the safety net for a list that is still moving. On iOS all of this is
+written, not measured - no Mac.
+
+A miss reads as one of these. Never seen, the list ended: `reached the end of the
+list going down, '<label>' is not in it` - in that direction, from where the
+search started. Never seen, still moving: `still moving after 30 swipes down,
+'<label>' not found`. Never seen, no list in the dump: `no scrollable list on
+screen - searched 30 swipes down, '<label>' not found`, after a warning that the
+swipes go down the middle. Seen and swiped away: `came into view at 540 1879 and
+the swipes took it out of view again` - "not on screen" would be a false reason
+for an element the run had on the screen, which is the class the assertions
+themselves were fixed for. With `"edges":"clear"`, seen but stuck at the end:
+`is at the end of the list and cannot be moved clear of the band edge`, which is
+usually content under a fixed bar.
 
 One limit, on x. The clear band is a little over half the width, and a sideways
 swipe travels three fifths of the scroller it crosses, so on a narrow screen -

@@ -340,11 +340,32 @@ If the element never lands clear, the step fails and says where it is: a bottom
 bar cannot be moved, and a tap into it is the thing the request exists to
 prevent. Without the key, inside the viewport is enough, exactly as before.
 
-Two misses to tell apart. An element that was never on the screen fails with
-`not on screen after 8 swipes <direction>`. One that appeared and was swiped away
-again says that instead - `came into view at 540 1879 and the swipes took it out
-of view again` - because "not on screen" is a false reason for something the run
-had already seen.
+The search stops where the list ends, not after a count. Up to 30 swipes is a
+safety net; a list that stops moving earlier ends the search earlier. The step
+swipes inside the list itself, away from anything inside it that scrolls on its
+own - a carousel, a slider - and only calls it the end when a second, shorter
+swipe from another point moves nothing either. The status bar clock does not
+count as movement: only the list is compared.
+
+The misses to tell apart:
+
+- `reached the end of the list going down, 'Sleep score' is not in it` - the
+  list was searched to its end in that direction, from where the search started.
+  A search that starts halfway down a list and goes down has not looked above.
+- `still moving after 30 swipes down, 'Sleep score' not found` - the list is
+  longer than the safety net.
+- `no scrollable list on screen - searched 30 swipes down, 'Sleep score' not
+  found` - the screen has no element that says it scrolls that way, so the step
+  swiped down the middle, as it used to, and cannot say where the list ends. The
+  run prints a warning when this starts.
+- `came into view at 540 1879 and the swipes took it out of view again` - the run
+  had seen it, and "not on screen" would be a false reason.
+- with `"edges":"clear"`, `is at the end of the list and cannot be moved clear of
+  the band edge` - the element is there, the list cannot move it any further, and
+  it is still under the edge. Usually that is content hidden under a fixed bar.
+
+`tapText` searches the same way and carries the same reasons after
+`no element matching '<label>'`.
 
 Sideways, the request has a limit worth knowing: the clear band is a little over
 half the width and a swipe travels three fifths of the scroller, so on a narrow
