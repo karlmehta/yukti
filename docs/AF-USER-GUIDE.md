@@ -342,10 +342,14 @@ prevent. Without the key, inside the viewport is enough, exactly as before.
 
 The search stops where the list ends, not after a count. Up to 30 swipes is a
 safety net; a list that stops moving earlier ends the search earlier. The step
-swipes inside the list itself, away from anything inside it that scrolls on its
-own - a carousel, a slider - and only calls it the end when a second, shorter
+swipes inside the list itself, away from anything inside it that says it
+scrolls, and away from a slider. It only calls it the end when a second, shorter
 swipe from another point moves nothing either. The status bar clock does not
 count as movement: only the list is compared.
+
+Close the keyboard before the step. The keyboard is not part of the list, and a
+swipe that starts on it moves nothing - the step can then report the end of a
+list that is still there.
 
 The misses to tell apart:
 
@@ -354,10 +358,10 @@ The misses to tell apart:
   A search that starts halfway down a list and goes down has not looked above.
 - `still moving after 30 swipes down, 'Sleep score' not found` - the list is
   longer than the safety net.
-- `no scrollable list on screen - searched 30 swipes down, 'Sleep score' not
+- `no scrollable list on screen - searched 8 swipes down, 'Sleep score' not
   found` - the screen has no element that says it scrolls that way, so the step
-  swiped down the middle, as it used to, and cannot say where the list ends. The
-  run prints a warning when this starts.
+  swiped down the middle eight times, as it used to, and cannot say where the
+  list ends. The run prints a warning when this starts.
 - `came into view at 540 1879 and the swipes took it out of view again` - the run
   had seen it, and "not on screen" would be a false reason.
 - with `"edges":"clear"`, `is at the end of the list and cannot be moved clear of
@@ -368,7 +372,7 @@ The misses to tell apart:
 `no element matching '<label>'`.
 
 Sideways, the request has a limit worth knowing: the clear band is a little over
-half the width and a swipe travels three fifths of the scroller, so on a narrow
+half the width and a swipe travels two fifths of the visible list, so on a narrow
 screen an element at one edge can fly past the other and be nudged back until the
 swipes run out. The step fails with the position it could not place; place it
 with a `scroll` of your own instead.

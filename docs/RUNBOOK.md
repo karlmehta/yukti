@@ -171,7 +171,7 @@ subscriber must not see, the row that was deleted. They match exactly as their
 positive halves do, `"match":"contains"` included, and they fail when the element
 IS found.
 
-They are about the screen as it is now and they never scroll. Eight swipes cannot
+They are about the screen as it is now and they never scroll. A count of swipes cannot
 prove that something is absent, and they change the state the next step is about
 to check; "not anywhere in this list" is a `scroll` of your own followed by the
 assertion. The case they are built around is the other one: a screen that could
@@ -410,26 +410,33 @@ step places it.
 
 `scrollToText` and `tapText` do not swipe down the middle of the screen when the
 screen has a list. They pick the element that says it scrolls on the axis of the
-search - on Android `scrollable="true"`, on iOS a scroll view, table or
-collection - and swipe inside it, starting away from anything inside it that
-scrolls or slides by itself: the element under the first touch is the one that
-takes the gesture, and a carousel under the middle of the screen used to take
-every swipe of a search. The swipe travels 40% of the visible part of the list,
-never starting within a fifth of its ends, so it stays off the gesture bar.
+search. On Android that is `scrollable="true"`, and the class decides the axis:
+a HorizontalScrollView scrolls sideways, any other ScrollView or ListView up and
+down, and only the rest is judged by shape. On iOS it is a scroll view, table or
+collection.
+
+The swipe starts inside that list, away from anything inside it that says it
+scrolls and away from a slider. The element under the first touch is the one
+that takes the gesture, so a carousel under the middle of the screen would take
+every swipe of a search. The swipe travels 40% of the visible part of the list
+and never starts within a quarter of its ends, so it stays off the gesture bar.
+The keyboard is not part of the list: close it before the step, or a swipe that
+lands on it can read as the end of the list.
 
 The search stops at the end of the list. After each swipe it compares the first
 and the last row of the list on the screen, by label and position; nothing
 outside the list is compared, so the status bar clock is not movement. A swipe
-that moved nothing is followed by a control swipe, shorter and slower, from
-another point, and only when that one moves nothing either is it the end. 30
-swipes is the safety net for a list that is still moving. On iOS all of this is
-written, not measured - no Mac.
+that moved nothing is followed by a control swipe from another point, shorter
+and, on Android, slower. Only when that one moves nothing either is it the end.
+30 swipes is the safety net for a list that is still moving. A screen with no
+list in its dump keeps the old eight swipes down the middle. On iOS all of this
+is written, not measured - no Mac.
 
 A miss reads as one of these. Never seen, the list ended: `reached the end of the
 list going down, '<label>' is not in it` - in that direction, from where the
 search started. Never seen, still moving: `still moving after 30 swipes down,
 '<label>' not found`. Never seen, no list in the dump: `no scrollable list on
-screen - searched 30 swipes down, '<label>' not found`, after a warning that the
+screen - searched 8 swipes down, '<label>' not found`, after a warning that the
 swipes go down the middle. Seen and swiped away: `came into view at 540 1879 and
 the swipes took it out of view again` - "not on screen" would be a false reason
 for an element the run had on the screen, which is the class the assertions
@@ -438,15 +445,15 @@ themselves were fixed for. With `"edges":"clear"`, seen but stuck at the end:
 usually content under a fixed bar.
 
 One limit, on x. The clear band is a little over half the width, and a sideways
-swipe travels three fifths of the scroller it crosses, so on a narrow screen -
+swipe travels two fifths of the visible list, so on a narrow screen -
 or against a list that moves content by the whole swipe - an element at one edge
 can fly past the other and be nudged back, until the swipes run out. The step
 then fails with the position it could not place, which is the honest answer; if
 it happens to you, place the element with a `scroll` of your own and drop the
 key.
 
-`scrollToText` fails the flow when the label never arrives: it swipes eight
-times, and a last look that finds nothing is the failure, named with the label.
+`scrollToText` fails the flow when the label never arrives: it swipes until the
+list ends or the safety net runs out, and a miss is the failure, named with the label.
 It used to pass on that miss. An empty value fails with its own message.
 
 `type` on Android reads the field back. The value goes in eight characters at a
