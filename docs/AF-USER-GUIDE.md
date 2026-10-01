@@ -121,7 +121,7 @@ A flow is `{ "name": "...", "steps": [ ... ] }`. Common step verbs:
 | `{"do":"tapText","value":"Sign In"}` | tap an element by its visible label (preferred — resilient) |
 | `{"do":"optionalTapText","value":"Skip"}` | tap if present, don't fail if absent |
 | `{"do":"type","value":"165"}` | type into the focused field (`${TEST_EMAIL}` / `${TEST_PASSWORD}` inject creds) |
-| `{"do":"scrollToText","value":"Weight History"}` | scroll until visible, and fail the flow if it never becomes visible. `"direction"` is `up`, `down` (the default), `left` or `right`; `"edges":"clear"` asks for it to land away from the edges |
+| `{"do":"scrollToText","value":"Weight History"}` | scroll until visible, and fail the flow if it never becomes visible. `"direction"` is `up`, `down` (the default), `left` or `right`; `"edges":"clear"` asks for it to land away from the edges; `"timeout"` (seconds, default 5) is how long it waits at the end of the list for the list to grow |
 | `{"do":"tapId","value":"submit"}` | tap the element with this a11y id / `resource-id` segment, exact match |
 | `{"do":"assertText","value":"Logged"}` | verify the text is on screen (the test's checkpoint — perceivable text only, no scroll). Matches the whole label, case as written; add `"match":"contains"` for a partial match |
 | `{"do":"assertId","value":"weight_card"}` | verify an element with this id is on screen |
@@ -357,8 +357,10 @@ swipe, and then the keyboard is left as it is.
 
 The misses to tell apart:
 
-- `reached the end of the list going down, 'Sleep score' is not in it` - the
-  list was searched to its end in that direction, from where the search started.
+- `reached the end of the list going down and it did not grow for 5s, 'Sleep
+  score' is not in it` - the list was searched to its end in that direction,
+  from where the search started, and then the step waited that long for a lower
+  part laid out late. A screen that needs longer gets `"timeout"` on the step.
   A search that starts halfway down a list and goes down has not looked above.
 - `still moving after 30 swipes down, 'Sleep score' not found` - the list is
   longer than the safety net.
@@ -372,7 +374,8 @@ The misses to tell apart:
   the band edge` - the element is there, the list cannot move it any further, and
   it is still under the edge. Usually that is content hidden under a fixed bar.
 
-`tapText` searches the same way and carries the same reasons after
+`tapText` searches the same way, waits at the end of the list the same way
+(`"timeout"` on the step sets it), and carries the same reasons after
 `no element matching '<label>'`.
 
 Sideways, the request has a limit worth knowing: the clear band is a little over

@@ -373,7 +373,9 @@ interstitial is news, not something to keep tapping at.
 
 `scrollToText` takes the direction to look in - `"direction"`: `up`, `down`
 (the default), `left`, `right` - and `"edges":"clear"` to land the element away
-from the band edges instead of merely inside the band. A plain `scroll` takes the
+from the band edges instead of merely inside the band, and `"timeout"` - how
+long to wait at the end of the list for it to grow (seconds, default 5; see
+below). A plain `scroll` takes the
 same four directions as its `"value"`.
 
 On Android an up or down swipe goes down the middle of the screen, from 70% of
@@ -448,14 +450,22 @@ The search stops at the end of the list. After each swipe it compares the first
 and the last row of the list on the screen, by label and position; nothing
 outside the list is compared, so the status bar clock is not movement. A swipe
 that moved nothing is followed by a control swipe from another point, shorter
-and, on Android, slower. Only when that one moves nothing either is it the end.
+and, on Android, slower. When that one moves nothing either, the list stopped
+moving - but a screen often lays out its lower part after the first paint, so
+that is not yet the end. Without the element on the screen, the search keeps
+reading the screen and sending the control swipe, with a second's pause, for the
+step's `"timeout"` (seconds, default 5). The element appearing, or a swipe that
+moves the list again, ends the wait and the search goes on. Nothing within the
+wait is the end. A real end costs the wait once per step; an element already on
+the screen at the end, or one the swipes already took out of view, is not
+waited for. `tapText` searches the same way and takes the same `"timeout"`.
 30 swipes is the safety net for a list that is still moving. A screen with no
 list in its dump keeps the old eight swipes down the middle. On iOS all of this
 is written, not measured - no Mac.
 
 A miss reads as one of these. Never seen, the list ended: `reached the end of the
-list going down, '<label>' is not in it` - in that direction, from where the
-search started. Never seen, still moving: `still moving after 30 swipes down,
+list going down and it did not grow for 5s, '<label>' is not in it` - in that
+direction, from where the search started, after the wait for a late lower part. Never seen, still moving: `still moving after 30 swipes down,
 '<label>' not found`. Never seen, no list in the dump: `no scrollable list on
 screen - searched 8 swipes down, '<label>' not found`, after a warning that the
 swipes go down the middle. Seen and swiped away: `came into view at 540 1879 and
