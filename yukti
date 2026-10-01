@@ -1007,8 +1007,12 @@ tap(){ is_android && { atap "$1" "$2"; return; }; paths; idb ui tap --udid "$(U)
 # Status 5 hands back the last sighting, which is stale by definition, so this
 # verb must not tap it: an element that left the screen is an element that is not
 # there, which is the answer it has always given.
-tap_text(){ local xy st=0; xy="$(scroll_to "$1" down "" tapText)" || st=$?
-  case "$st" in 0) ;; 5) die "no element matching '$1'";; 6|7|8) die "no element matching '$1' - $(scroll_miss "$st" "$1" down)";; *) lookup_die "$st";; esac
+# The search is scrollToText's, wait at the end of the list included, so the
+# step's "timeout" sets that wait here as well.
+tap_text(){ local xy st=0 grow="${2:-$SCROLL_GROW_WAIT}"
+  case "$grow" in ''|*[!0-9]*|0) die "tapText: timeout must be a whole number of seconds greater than zero, got '$grow'";; esac
+  xy="$(scroll_to "$1" down "" tapText "$grow")" || st=$?
+  case "$st" in 0) ;; 5) die "no element matching '$1'";; 6|7|8) die "no element matching '$1' - $(scroll_miss "$st" "$1" down "$grow")";; *) lookup_die "$st";; esac
   [ -n "$xy" ] || die "no element matching '$1'"; tap $xy; }  # auto-scrolls off-screen elements into view
 # The exception these two verbs enjoy is about an ABSENT label, and nothing else.
 # A device that refuses the tap is not an absent label: the status of `tap` is
@@ -1868,7 +1872,7 @@ print(rid,fp,lp,*main,dur,*ctl,dur*2)
 # A list that stopped moving is not yet a list that ended: its lower part may not
 # be laid out yet. So the end is declared only when the list stopped GROWING.
 # Having reached what looks like the end, the search keeps reading the screen
-# and sending the second, shorter swipe, a second apart, for up to `grow`
+# and sending the second, shorter swipe, with a second's pause, for `grow`
 # seconds. The element appearing ends the wait, and so do new rows - a swipe that
 # moves the list again - and the search goes on from them. Nothing within the
 # budget is the end, as before. Rows added below the screen do not show in a
@@ -1931,11 +1935,13 @@ scroll_to(){ local lbl="$1" dir="${2:-down}" clear="${3:-}" verb="${4:-scrollToT
       if [ "$ctl" = 1 ]; then
         # Two misses in a row: the list stopped moving. With the element on the
         # screen that is the answer, as before - a row at the very end is not
-        # waited for. Without it, wait for the list to grow. The reads of the
+        # waited for - and so is an element the swipes already took out of
+        # view: it was in the list, growth would not bring it back. Otherwise wait for the list to grow. The reads of the
         # wait are not swipes of the search and do not use up its tries.
-        [ -n "$xy" ] && { ended=1; break; }
+        [ -n "$xy$seen" ] && { ended=1; break; }
         [ -n "$end0" ] || end0=$SECONDS
-        [ $(( SECONDS - end0 )) -ge "$grow" ] && { ended=1; break; }
+        # SECONDS counts whole seconds, so -gt: the wait is at least `grow`.
+        [ $(( SECONDS - end0 )) -gt "$grow" ] && { ended=1; break; }
         i=$(( i - 1 )); sleep 1
       fi
       ctl=1; swipe_pts "$9" "${10}" "${11}" "${12}" "${13}"
@@ -2165,7 +2171,7 @@ PY
 
 # ── deterministic flow runner: a JSON list of steps ──────────────────────────
 # step keys: include[with]|launch|stopApp|clearState|wait|waitFor[timeout,match]|waitForId[timeout]|screenshot|
-#            openUrl|tap[x,y]|tapText|optionalTapText|tapId|type|clearText[x,y]|clearTextId|pressKey|hideKeyboard|
+#            openUrl|tap[x,y]|tapText[timeout]|optionalTapText|tapId|type|clearText[x,y]|clearTextId|pressKey|hideKeyboard|
 #            scroll|scrollToText[direction,edges,timeout]|dismiss|assertText[match]|assertId|assertNotText[match]|assertNotId|
 #            assertBox[box]|assertBoxId[box]
 #            any step, and an include, may carry "when": {visible|notVisible|
@@ -2690,7 +2696,7 @@ PY
                      [ -n "$FLOW_ART" ] || die "screenshot produced no file"
                      ok "shot → $FLOW_ART";;
         tap)         tap $(scale_xy "$x" "$y");;
-        tapText)     say "tap '$val'"; tap_text "$val";;
+        tapText)     say "tap '$val'"; tap_text "$val" "$tmo";;
         optionalTapText) tap_text_optional "$val";;
         scroll)      scroll_step "${val:-down}";;
         scrollToText) scroll_to_step "$val" "${dir:-down}" "$edg" "$tmo" >/dev/null;;

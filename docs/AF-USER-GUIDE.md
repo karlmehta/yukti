@@ -374,7 +374,8 @@ The misses to tell apart:
   the band edge` - the element is there, the list cannot move it any further, and
   it is still under the edge. Usually that is content hidden under a fixed bar.
 
-`tapText` searches the same way and carries the same reasons after
+`tapText` searches the same way, waits at the end of the list the same way
+(`"timeout"` on the step sets it), and carries the same reasons after
 `no element matching '<label>'`.
 
 Sideways, the request has a limit worth knowing: the clear band is a little over

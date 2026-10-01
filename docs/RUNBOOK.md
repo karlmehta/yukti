@@ -453,11 +453,13 @@ that moved nothing is followed by a control swipe from another point, shorter
 and, on Android, slower. When that one moves nothing either, the list stopped
 moving - but a screen often lays out its lower part after the first paint, so
 that is not yet the end. Without the element on the screen, the search keeps
-reading the screen and sending the control swipe, a second apart, for up to the
+reading the screen and sending the control swipe, with a second's pause, for the
 step's `"timeout"` (seconds, default 5). The element appearing, or a swipe that
 moves the list again, ends the wait and the search goes on. Nothing within the
 wait is the end. A real end costs the wait once per step; an element already on
-the screen at the end is not waited for. 30 swipes is the safety net for a list that is still moving. A screen with no
+the screen at the end, or one the swipes already took out of view, is not
+waited for. `tapText` searches the same way and takes the same `"timeout"`.
+30 swipes is the safety net for a list that is still moving. A screen with no
 list in its dump keeps the old eight swipes down the middle. On iOS all of this
 is written, not measured - no Mac.
 
