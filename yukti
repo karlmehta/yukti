@@ -1615,6 +1615,12 @@ SCROLL_TRIES=30
 # A screen whose dump shows no list keeps the old boundary. There is no end to
 # find there, and swipes past the eighth learn nothing a flow is waiting for.
 SCROLL_TRIES_BLIND=8
+# How long a search waits at the end of a list for the list to grow, in seconds.
+# A screen often lays out its lower part after the first paint - after the
+# transition, after a server response, after a deferred mount - and a search that
+# gets there first sees a list that stopped moving and is not finished. The step's
+# "timeout" sets it; this is the default. A real end costs it once per step.
+SCROLL_GROW_WAIT=5
 # How much of the band counts as "the edge" when a step asks to be clear of it.
 # A fifth from each side: enough to clear a sticky header or a bottom bar, which
 # is what the request is for, and not so much that a short list can never satisfy
@@ -1858,7 +1864,16 @@ print(rid,fp,lp,*main,dur,*ctl,dur*2)
 # A screen whose dump shows no list gets the old search: down the middle, eight
 # swipes (SCROLL_TRIES_BLIND). It says so once, and its miss says the swipes ran
 # out on a screen with no list - not that the list ended.
-scroll_to(){ local lbl="$1" dir="${2:-down}" clear="${3:-}" verb="${4:-scrollToText}" i=0 xy c lo hi blo bhi m w h seen="" nudge st probe prev="" ctl=0 ended="" flat="" kb=""
+#
+# A list that stopped moving is not yet a list that ended: its lower part may not
+# be laid out yet. So the end is declared only when the list stopped GROWING.
+# Having reached what looks like the end, the search keeps reading the screen
+# and sending the second, shorter swipe, a second apart, for up to `grow`
+# seconds. The element appearing ends the wait, and so do new rows - a swipe that
+# moves the list again - and the search goes on from them. Nothing within the
+# budget is the end, as before. Rows added below the screen do not show in a
+# read, which is why the wait swipes as well: only a swipe that moves can tell.
+scroll_to(){ local lbl="$1" dir="${2:-down}" clear="${3:-}" verb="${4:-scrollToText}" grow="${5:-$SCROLL_GROW_WAIT}" i=0 xy c lo hi blo bhi m w h seen="" nudge st probe prev="" ctl=0 ended="" flat="" kb="" end0=""
   case "$dir" in up|down|left|right) ;; *) die "scrollToText: '$dir' is not a direction - use up, down, left or right";; esac
   set -- $(screen_wh); w="${1:-$BASIS_W}"; h="${2:-$BASIS_H}"
   case "$dir" in
@@ -1913,10 +1928,19 @@ scroll_to(){ local lbl="$1" dir="${2:-down}" clear="${3:-}" verb="${4:-scrollToT
     flat=""
     set -- $probe
     if [ -n "$prev" ] && same_rows "$prev" "$1 $2 $3"; then
-      [ "$ctl" = 1 ] && { ended=1; break; }
+      if [ "$ctl" = 1 ]; then
+        # Two misses in a row: the list stopped moving. With the element on the
+        # screen that is the answer, as before - a row at the very end is not
+        # waited for. Without it, wait for the list to grow. The reads of the
+        # wait are not swipes of the search and do not use up its tries.
+        [ -n "$xy" ] && { ended=1; break; }
+        [ -n "$end0" ] || end0=$SECONDS
+        [ $(( SECONDS - end0 )) -ge "$grow" ] && { ended=1; break; }
+        i=$(( i - 1 )); sleep 1
+      fi
       ctl=1; swipe_pts "$9" "${10}" "${11}" "${12}" "${13}"
     else
-      ctl=0; prev="$1 $2 $3"; swipe_pts "$4" "$5" "$6" "$7" "$8"
+      ctl=0; end0=""; prev="$1 $2 $3"; swipe_pts "$4" "$5" "$6" "$7" "$8"
     fi
     sleep 0.6; done
   if [ -n "$ended" ]; then
@@ -1960,7 +1984,7 @@ swipe_pts(){ if is_android; then apaths; adb shell input swipe "$1" "$2" "$3" "$
   else paths; idb ui swipe --udid "$(U)" "$1" "$2" "$3" "$4"; fi; }
 # The words for a miss that never saw the element, for the two verbs that search.
 scroll_miss(){ case "$1" in
-    6) printf "reached the end of the list going %s, '%s' is not in it" "$3" "$2";;
+    6) printf "reached the end of the list going %s and it did not grow for %ss, '%s' is not in it" "$3" "${4:-$SCROLL_GROW_WAIT}" "$2";;
     7) printf "still moving after %s swipes %s, '%s' not found" "$SCROLL_TRIES" "$3" "$2";;
     8) printf "no scrollable list on screen - searched %s swipes %s, '%s' not found" "$SCROLL_TRIES_BLIND" "$3" "$2";;
   esac; }
@@ -1971,18 +1995,20 @@ scroll_miss(){ case "$1" in
 # last lookup came back empty, and the step passed. The runbook recommends this
 # step in front of an assertion, so the documented way to reach something below
 # the fold was also the way to miss it in silence.
-scroll_to_step(){ local lbl="${1:-}" dir="${2:-down}" clear="${3:-}" xy st=0
+scroll_to_step(){ local lbl="${1:-}" dir="${2:-down}" clear="${3:-}" grow="${4:-$SCROLL_GROW_WAIT}" xy st=0
   [ -n "$lbl" ] || die "scrollToText needs a non-empty value"
   case "$dir" in up|down|left|right) ;; *) die "scrollToText: '$dir' is not a direction - use up, down, left or right";; esac
   case "$clear" in ''|clear) ;; *) die "scrollToText: '$clear' is not a value for \"edges\" - the only one is clear";; esac
-  xy="$(scroll_to "$lbl" "$dir" "$clear")" || st=$?
+  # The same knob as waitFor: how long to wait, here at the end of the list.
+  case "$grow" in ''|*[!0-9]*|0) die "scrollToText: timeout must be a whole number of seconds greater than zero, got '$grow'";; esac
+  xy="$(scroll_to "$lbl" "$dir" "$clear" scrollToText "$grow")" || st=$?
   # Neither 4, 5 nor 9 says the direction: once the element is on the screen the
   # swipes follow its position, not the direction the search came from.
   case "$st" in
     0) ;;
     4) die "scrollToText: '$lbl' came into view but never landed clear of the band edges after $SCROLL_TRIES swipes - it is at $xy";;
     5) die "scrollToText: '$lbl' came into view at $xy and the swipes took it out of view again - it is not on the screen now";;
-    6|7|8) die "scrollToText: $(scroll_miss "$st" "$lbl" "$dir")";;
+    6|7|8) die "scrollToText: $(scroll_miss "$st" "$lbl" "$dir" "$grow")";;
     9) die "scrollToText: '$lbl' is at the end of the list and cannot be moved clear of the band edge - it is at $xy; content may be hidden under a fixed bar";;
     *) lookup_die "$st";;
   esac
@@ -2140,7 +2166,7 @@ PY
 # ── deterministic flow runner: a JSON list of steps ──────────────────────────
 # step keys: include[with]|launch|stopApp|clearState|wait|waitFor[timeout,match]|waitForId[timeout]|screenshot|
 #            openUrl|tap[x,y]|tapText|optionalTapText|tapId|type|clearText[x,y]|clearTextId|pressKey|hideKeyboard|
-#            scroll|scrollToText[direction,edges]|dismiss|assertText[match]|assertId|assertNotText[match]|assertNotId|
+#            scroll|scrollToText[direction,edges,timeout]|dismiss|assertText[match]|assertId|assertNotText[match]|assertNotId|
 #            assertBox[box]|assertBoxId[box]
 #            any step, and an include, may carry "when": {visible|notVisible|
 #            visibleId|notVisibleId|platform} - all of them have to hold
@@ -2667,7 +2693,7 @@ PY
         tapText)     say "tap '$val'"; tap_text "$val";;
         optionalTapText) tap_text_optional "$val";;
         scroll)      scroll_step "${val:-down}";;
-        scrollToText) scroll_to_step "$val" "${dir:-down}" "$edg" >/dev/null;;
+        scrollToText) scroll_to_step "$val" "${dir:-down}" "$edg" "$tmo" >/dev/null;;
         dismiss)     dismiss;;
         clearText)   clear_field $(scale_xy "$x" "$y");;
         clearTextId) say "clear id '$val'"; clear_id "$val";;
@@ -2768,7 +2794,7 @@ ${B}yukti v$YUKTI_VERSION${R} — YUKTI — smart mobile-app QA automation for R
   yukti type "<text>"       type (char-by-char = reliable; idb bulk-type drops chars)
   yukti clear <x> <y>       clear a text field
   yukti scroll <up|down|left|right>
-                            scroll the screen · yukti scroll-to "<label>" [dir] [clear] scroll a label into view, fail on a miss
+                            scroll the screen · yukti scroll-to "<label>" [dir] [clear] [timeout] scroll a label into view, fail on a miss
   yukti dismiss             auto-dismiss common modals (Not Now / Skip / OK / Close…)
   yukti assert "<text>"     assert the text is on screen (perceivable text only, no scroll)
   yukti stop-app <variant>  force-stop the app of that variant
@@ -2803,7 +2829,8 @@ ${B}yukti v$YUKTI_VERSION${R} — YUKTI — smart mobile-app QA automation for R
               assertText matches the whole label as written; "match":"contains" asks for a substring
               waitFor polls for an element and fails on timeout ("timeout": seconds, default 10); it never scrolls
               scroll takes up, down, left or right as its "value"; scrollToText takes the same four as "direction"
-              (default down) and "edges":"clear" to land the element away from the band edges, failing if it cannot
+              (default down) and "edges":"clear" to land the element away from the band edges, failing if it cannot;
+              at the end of the list it waits for the list to grow ("timeout": seconds, default 5) before it fails
               assertNotText / assertNotId state that something is NOT on the screen as it is now; they never scroll
               any step, and an include, may carry "when": {"visible"|"notVisible"|"visibleId"|"notVisibleId"|"platform"} -
               all the conditions in one "when" have to hold; the step is skipped when they do not, and the run stops when
