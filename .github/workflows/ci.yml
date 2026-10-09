@@ -53,3 +53,8 @@ jobs:
           done < <(find flows -type f -name '*.json' -print0)
           [ "$found" -gt 0 ] || { echo "no flows found under flows/"; status=1; }
           exit $status
+
+      - name: engine checks without a device
+        # tests/run.sh builds its own flow files and asserts what the engine
+        # says about them - the status and the text, not the status alone.
+        run: tests/run.sh

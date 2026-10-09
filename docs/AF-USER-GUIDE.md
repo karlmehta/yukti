@@ -217,9 +217,9 @@ rest, one testcase each in the JUnit file, named with the block it came from:
 `03 [blocks/sign-in.json] type 22 chars`. The run numbers them end to end, so a
 failure adds where the step is written: `cannot read the screen - see the error
 above (block 'blocks/sign-in.json', step 4)`, and for a step of the flow itself
-that sits after a block, `(step 2 of this flow file)`. A flow may include a block
-and that block one more; deeper than that, a file that includes itself, and a
-circle of files each stop the run with the chain printed.
+that sits after a block, `(step 2 of this flow file)`. Blocks may include blocks
+down to eight levels; a ninth, a file that includes itself, and a circle of
+files each stop the run with the chain printed.
 
 A `${VARIABLE}` in the path is expanded like one in any other value, so a suite
 can keep its blocks behind `${BLOCKS}/sign-in.json`.
