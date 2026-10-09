@@ -14,6 +14,7 @@ YUKTI is a single, dependency-light Bash CLI (`yukti`) plus JSON flow files. Kee
 
 ## Testing a change
 ```bash
+tests/run.sh   # engine checks that need no device - CI runs them on every PR
 ./yukti doctor
 YUKTI_CONFIG=examples/example.config.json ./yukti up qa
 YUKTI_CONFIG=examples/example.config.json ./yukti flow flows/example-login.json
