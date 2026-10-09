@@ -1,0 +1,64 @@
+#!/usr/bin/env python3
+# A stand-in for adb, so tests/run.sh can drive the engine through a failing
+# step on a machine with no device. tests/run.sh puts it first in PATH by
+# pointing ANDROID_HOME at tests/fake-sdk. It answers only what a flow of
+# waitForId, assertId, tap, type and screenshot asks, from files in
+# $FAKE_ADB_DIR:
+#
+#   log            every call, one per line - a case checks it is not empty, or
+#                  a case that passed on a real adb would look the same
+#   dump-<n>.xml   the screen for the n-th dump; past the last one, the last.
+#                  ="@TYPED@" in it becomes the text typed so far, quoted the
+#                  way uiautomator quotes it: in ' when the text holds a "
+#   lossy          present: every burst of typed text loses its last character
+#   tap-fails      present: `input tap` exits 1
+#   screencap      "fail": exit 1; "hang": never answer; absent: a small PNG
+import os, sys, time
+from xml.sax.saxutils import quoteattr
+
+d = os.environ["FAKE_ADB_DIR"]
+args = sys.argv[1:]
+line = " ".join(args)
+with open(os.path.join(d, "log"), "a") as fh:
+    fh.write(line + "\n")
+
+def path(name): return os.path.join(d, name)
+def has(name): return os.path.exists(path(name))
+def read(name, default=""):
+    try:
+        with open(path(name)) as fh: return fh.read()
+    except OSError: return default
+def write(name, text):
+    with open(path(name), "w") as fh: fh.write(text)
+
+if "uiautomator dump" in line:
+    n = int(read("dumps", "0") or 0) + 1
+    write("dumps", str(n))
+    while n > 1 and not has("dump-%d.xml" % n): n -= 1
+    # quoteattr quotes as uiautomator does on a device (measured on an API 34
+    # emulator): "..." as a rule, '...' around a value that holds a ".
+    sys.stdout.write(read("dump-%d.xml" % n).replace('="@TYPED@"', "=" + quoteattr(read("typed"))))
+elif args[:1] == ["shell"] and line.startswith("shell input text "):
+    q = line[len("shell input text "):]
+    if q.startswith("'") and q.endswith("'"): q = q[1:-1]
+    q = q.replace("'\\''", "'").replace("%s", " ")
+    if has("lossy"): q = q[:-1]
+    write("typed", read("typed") + q)
+elif args[:3] == ["shell", "input", "keyevent"]:
+    typed = read("typed")
+    for k in args[3:]:
+        if k == "67": typed = typed[:-1]
+    write("typed", typed)
+elif args[:3] == ["shell", "input", "tap"]:
+    sys.exit(1 if has("tap-fails") else 0)
+elif args[:2] == ["exec-out", "screencap"]:
+    mode = read("screencap").strip()
+    if mode == "fail": sys.exit(1)
+    if mode == "hang": time.sleep(120)
+    sys.stdout.buffer.write(b"\x89PNG\r\n\x1a\n" + b"\0" * 32)
+elif line == "shell wm size":
+    print("Physical size: 1080x2400")
+elif line == "shell wm density":
+    print("Physical density: 420")
+elif args[:1] == ["devices"]:
+    print("List of devices attached\nemulator-5554\tdevice\n")

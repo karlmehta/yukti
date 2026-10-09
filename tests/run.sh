@@ -9,6 +9,7 @@
 # no mapfile, no associative arrays, no GNU-only flags.
 #
 #   tests/run.sh            run every case, exit 1 if any failed
+#   KEEP=1 tests/run.sh     the same, and leave the case directories behind
 # ─────────────────────────────────────────────────────────────────────────────
 set -uo pipefail   # no -e: one failed case must not hide the ones after it
 
@@ -16,7 +17,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 YUKTI="$ROOT/yukti"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/yukti-tests.XXXXXX")" || exit 1
 [ -n "$WORK" ] || { echo "no temporary directory for the cases" >&2; exit 1; }
-trap 'rm -rf "$WORK"' EXIT
+trap '[ -n "${KEEP:-}" ] || rm -rf "$WORK"' EXIT
 
 pass=0; fail=0; case_dir=""
 
@@ -115,6 +116,165 @@ flow_file "$case_dir/b4.json" '{ "do": "waitFor", "value": "${YUKTI_TEST_DEEP}" 
 expect "include: the value of a parameter reaches the fourth block" 1 \
   "step 1 'waitFor' of block 'b4.json': \"value\" contains a character the runner separates fields with" \
   env -u YUKTI_TEST_DEEP "$YUKTI" flow --check "$case_dir/flow.json"
+
+# ── a failing step on a device (#94) ─────────────────────────────────────────
+# The device is tests/fake-sdk/platform-tools/adb, put first in PATH through
+# ANDROID_HOME (the engine derives its SDK path from it). Each case gets its own
+# directory for the fake, the results and $TMPDIR.
+dev_case(){ new_case "$1"; mkdir -p "$case_dir/adb" "$case_dir/res" "$case_dir/tmp"; }
+
+# screen <file> <node>... - a uiautomator dump holding these nodes.
+screen(){ local f="$1" n; shift
+  { printf '<?xml version="1.0" encoding="UTF-8" standalone="yes" ?><hierarchy rotation="0">'
+    for n in "$@"; do printf '%s' "$n"; done
+    printf '</hierarchy>\n'; } > "$f"; }
+
+# node <class> <resource-id> <text> [focused] [password] - one node of a dump.
+node(){ printf '<node index="0" text="%s" resource-id="com.example:id/%s" class="android.widget.%s" package="com.example" content-desc="%s" checkable="false" checked="false" clickable="true" enabled="true" focusable="true" focused="%s" scrollable="false" long-clickable="false" password="%s" selected="false" bounds="[0,%d][1080,%d]" />' \
+  "$3" "$2" "$1" "$3" "${4:-false}" "${5:-false}" "$(node_y "$2")" "$(( $(node_y "$2") + 120 ))"; }
+# Each node its own band, the same on every run: the place comes from the id.
+node_y(){ local y; y="$(printf '%s' "$1" | cksum | cut -d' ' -f1)"; printf '%d' $(( (y % 15) * 140 + 100 )); }
+
+# run_flow <flow> [VAR=value...] - the flow against the fake, output kept in
+# $case_dir/out and the status in $run_status.
+run_flow(){ local f="$1"; shift
+  env -u ANDROID_SDK_ROOT ANDROID_HOME="$ROOT/tests/fake-sdk" YUKTI_PLATFORM=android \
+    FAKE_ADB_DIR="$case_dir/adb" YUKTI_RESULTS_DIR="$case_dir/res" TMPDIR="$case_dir/tmp" "$@" \
+    "$YUKTI" flow "$f" > "$case_dir/out" 2>&1
+  run_status=$?
+  sed $'s/\033\\[[0-9;]*m//g' "$case_dir/out" > "$case_dir/out.txt"; }
+
+# Assertions for one case collect into $why; verdict prints it.
+begin(){ case_name="$1"; why=""; }
+no(){ why="$why
+     $*"; }
+status_is(){ [ "$run_status" -eq "$1" ] || no "status $run_status, wanted $1"; }
+file_full(){ [ -s "$case_dir/$1" ] || no "$1 is missing or empty"; }
+file_absent(){ [ ! -e "$case_dir/$1" ] || no "$1 exists and should not"; }
+has(){ grep -qF -- "$2" "$case_dir/$1" 2>/dev/null || no "$1 lacks: $2"; }
+lacks(){ ! grep -qiF -- "$2" "$case_dir/$1" 2>/dev/null || no "$1 holds: $2"; }
+# The fake was asked something - otherwise a case that passed against a real
+# adb found first in PATH would look exactly the same.
+fake_used(){ [ -s "$case_dir/adb/log" ] || no "the fake adb was never called"; }
+verdict(){ if [ -z "$why" ]; then pass=$((pass + 1)); printf 'ok   %s\n' "$case_name"
+  else fail=$((fail + 1)); printf 'FAIL %s%s\n     output:\n%s\n' "$case_name" "$why" "$(sed 's/^/       /' "$case_dir/out.txt" 2>/dev/null)"; fi; }
+
+MARK="Synthetic marker text"   # on every screen, never secret: a mask that
+                               # blanked the whole tree must not pass
+
+dev_case capture-missing-id
+screen "$case_dir/adb/dump-1.xml" "$(node TextView title Today)" "$(node TextView marker "$MARK")"
+flow_file "$case_dir/flow.json" '{ "do": "waitForId", "value": "missing", "timeout": 1 }'
+run_flow "$case_dir/flow.json"
+begin "capture: a failed step leaves its screen and its tree"
+status_is 1; fake_used
+file_full res/flow-fail.png; file_full res/flow-fail.xml
+has res/flow-fail.xml "$MARK"
+has res/flow.xml "not on screen"; has res/flow.xml "screen: flow-fail.png"; has res/flow.xml "tree: flow-fail.xml"
+verdict
+
+# What a flow typed is masked in the tree, and so is a password field however
+# it arrived there. The typed value carries an & and a quote: the dump writes
+# the & escaped and puts the value in '...' because of the quote, and a mask
+# that looked only for the raw text, or only inside "...", would miss it. The
+# second field holds its hint and a piece of an earlier attempt - what a React
+# Native input showed after a retyped value.
+LEFTOVER="<node index=\"0\" text='Type a message...beth&amp;co\"x@exa' resource-id=\"com.example:id/chat\" class=\"android.widget.EditText\" package=\"com.example\" content-desc=\"\" focused=\"false\" password=\"false\" bounds=\"[0,1900][1080,2000]\" />"
+dev_case capture-mask
+screen "$case_dir/adb/dump-1.xml" "$(node EditText email @TYPED@ true)" "$LEFTOVER" \
+  "$(node EditText pin 'Static&amp;pin&quot;9' false true)" "$(node TextView marker "$MARK")"
+flow_file "$case_dir/flow.json" '{ "do": "type", "value": "${TEST_EMAIL}" }' \
+  '{ "do": "waitForId", "value": "missing", "timeout": 1 }'
+run_flow "$case_dir/flow.json" TEST_EMAIL='beth&co"x@example.invalid'
+begin "capture: typed text and password fields are masked in the tree"
+status_is 1; fake_used; file_full res/flow-fail.xml
+has res/flow-fail.xml "$MARK"
+lacks res/flow-fail.xml 'beth&amp;co'; lacks res/flow-fail.xml '@example.invalid'; lacks res/flow-fail.xml 'Static&amp;pin'
+lacks res/flow-fail.xml 'co"x@exa'; has res/flow-fail.xml 'resource-id="com.example:id/chat"'
+verdict
+
+# The step that types is the one that fails: its value is only in the record
+# of the running step. Every burst of keys loses its last character, so the
+# field ends up holding the value with gaps - what an emulator under load
+# leaves - which a mask that matched whole values would let through.
+dev_case capture-type-fails
+screen "$case_dir/adb/dump-1.xml" "$(node EditText password @TYPED@ true)" "$(node TextView marker "$MARK")"
+: > "$case_dir/adb/lossy"
+flow_file "$case_dir/flow.json" '{ "do": "type", "value": "${TEST_PASSWORD}" }'
+run_flow "$case_dir/flow.json" TEST_PASSWORD='Pa&ss"w0rd!Long'
+begin "capture: a failed type step is masked, gaps included"
+status_is 1; fake_used; file_full res/flow-fail.xml
+has res/flow-fail.xml "$MARK"
+lacks res/flow-fail.xml 'Pa&amp;ss'; lacks res/flow-fail.xml 'wrd!Lon'
+verdict
+
+dev_case capture-screencap-fails
+screen "$case_dir/adb/dump-1.xml" "$(node TextView title Today)"
+echo fail > "$case_dir/adb/screencap"
+flow_file "$case_dir/flow.json" '{ "do": "waitForId", "value": "missing", "timeout": 1 }'
+run_flow "$case_dir/flow.json"
+begin "capture: a screenshot that fails still leaves the result and the reason"
+status_is 1; fake_used; file_absent res/flow-fail.png; file_full res/flow-fail.xml
+has res/flow.xml "not on screen"; has res/flow.xml "screen not captured"
+verdict
+
+dev_case capture-screencap-hangs
+screen "$case_dir/adb/dump-1.xml" "$(node TextView title Today)"
+echo hang > "$case_dir/adb/screencap"
+flow_file "$case_dir/flow.json" '{ "do": "waitForId", "value": "missing", "timeout": 1 }'
+t0=$SECONDS; run_flow "$case_dir/flow.json"; took=$((SECONDS - t0))
+begin "capture: a screenshot that never answers is given up on"
+status_is 1; fake_used
+[ "$took" -lt 40 ] || no "the run took ${took}s"
+has res/flow.xml "not on screen"; has res/flow.xml "screen not captured"
+verdict
+
+# A tap by coordinates reads no tree. The tree that is kept was read by the
+# step before it, and the result says so instead of passing it off as the
+# screen of the failure.
+dev_case capture-older-tree
+screen "$case_dir/adb/dump-1.xml" "$(node TextView title Today)"
+: > "$case_dir/adb/tap-fails"
+flow_file "$case_dir/flow.json" '{ "do": "waitForId", "value": "title", "timeout": 1 }' '{ "do": "tap", "x": 10, "y": 10 }'
+run_flow "$case_dir/flow.json"
+begin "capture: a tree read by an earlier step is named as such"
+status_is 1; fake_used
+has res/flow.xml "tree: flow-fail.xml (read by step 1)"
+verdict
+
+# A condition that cannot read the screen stops the run before its step is
+# recorded: the failure lands on "00 flow", and the screen is still taken.
+dev_case capture-when-unreadable
+printf 'not a dump' > "$case_dir/adb/dump-1.xml"
+flow_file "$case_dir/flow.json" '{ "do": "wait", "value": "0" }' \
+  '{ "do": "tap", "x": 10, "y": 10, "when": { "visibleId": "title" } }'
+run_flow "$case_dir/flow.json"
+begin "capture: a condition that cannot read the screen still leaves the screen"
+status_is 1; fake_used; file_full res/flow-fail.png
+has res/flow.xml 'name="00 flow"'; has res/flow.xml "screen: flow-fail.png"; has res/flow.xml "tree: none"
+verdict
+
+dev_case capture-pass
+screen "$case_dir/adb/dump-1.xml" "$(node TextView title Today)"
+flow_file "$case_dir/flow.json" '{ "do": "waitForId", "value": "title", "timeout": 1 }'
+run_flow "$case_dir/flow.json"
+begin "capture: a flow that passes leaves no failure files"
+status_is 0; fake_used; file_full res/flow.xml
+file_absent res/flow-fail.png; file_absent res/flow-fail.xml
+verdict
+
+# A step of a block four levels down is named with its block in the result.
+dev_case capture-deep-block
+screen "$case_dir/adb/dump-1.xml" "$(node TextView title Today)"
+flow_file "$case_dir/flow.json" '{ "do": "include", "value": "b1.json" }'
+flow_file "$case_dir/b1.json" '{ "do": "include", "value": "b2.json" }'
+flow_file "$case_dir/b2.json" '{ "do": "include", "value": "b3.json" }'
+flow_file "$case_dir/b3.json" '{ "do": "include", "value": "b4.json" }'
+flow_file "$case_dir/b4.json" '{ "do": "waitForId", "value": "missing", "timeout": 1 }'
+run_flow "$case_dir/flow.json"
+begin "results: a step four blocks down is named with its block"
+status_is 1; fake_used; has res/flow.xml "[b4.json] waitForId missing"
+verdict
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
