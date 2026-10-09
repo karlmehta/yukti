@@ -704,6 +704,28 @@ Two flows whose files have the same name write the same JUnit file, because the
 report is named after the file and not after its directory. Keep block names
 distinct from flow names.
 
+### Failure or error: fix the app, or restart the device
+
+The JUnit file tells two kinds of red apart, so neither a report nor a wrapper
+has to parse the message for it:
+
+| In the file | Means | Examples |
+|---|---|---|
+| `<failure type="StepFailed">` | the app did not do what the step expected | an element not on screen, a text that differs, typed characters that did not arrive |
+| `<failure type="FlowFailed">` on `00 flow` | the flow file itself | a file that is not valid JSON, a variable that is not set |
+| `<error type="DeviceError">` | the device or the engine, on a step | the screen could not be read after the retries, the screenshot was not taken |
+| `<error type="FlowError">` on `00 flow` | the device, before a step was counted | a `when` read the screen and could not |
+
+Only what the engine knows for sure is an error. An element that is not there
+is a failure even when a system dialog hid it: the engine cannot know whose
+dialog it was. A step that polls and misses one read, then reads the screen and
+does not find the element, is a failure too - it failed on what it saw. A
+screenshot name the engine refuses (`..`) is the flow's mistake, a failure. A
+screenshot that cannot be written where it was named counts as not taken, an
+error: the engine does not tell the two apart.
+The exit status is 1 for both kinds; tools that count reds by `<failure>` have
+to count `<error>` as well.
+
 ### What a failed flow leaves
 
 Beside `<flow>.xml`, a flow whose step failed - or whose `when` could not read
