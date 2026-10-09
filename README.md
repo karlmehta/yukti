@@ -91,6 +91,10 @@ Typed text is never written to the file, only its length: flow files take
 `${TEST_PASSWORD}` from the environment, and an artifact that carries it is worse
 than no artifact.
 
+A red step is a `<failure>` when the app did not do what the step expected, and an
+`<error>` when the device or the engine could not do its part - the screen
+could not be read, the screenshot was not taken (RUNBOOK, "Failure or error").
+
 A flow that fails also leaves what was on the screen, next to its JUnit file:
 `<flow>-fail.png` and the last screen tree a step read, `<flow>-fail.xml` on
 Android, `<flow>-fail.json` on iOS. The failure names both. The tree is masked:

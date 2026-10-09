@@ -44,6 +44,15 @@ skipped(){ printf '%s~%s %s\n' "$Y" "$R" "$*"; }
 YUKTI_STEP_SRC=""
 die(){ local m="$*"; if [ -n "${YUKTI_STEP_SRC:-}" ]; then m="$m ($YUKTI_STEP_SRC)"; fi
   printf '%s✗%s %s\n' "$E" "$R" "$m" >&2; [ -n "${YUKTI_STEP_ERR:-}" ] && printf '%s' "$m" > "$YUKTI_STEP_ERR"; exit 1; }
+# A failure of the device or of the engine itself, not of the app: the screen
+# could not be read, the screenshot was not taken. Marked beside the step's
+# message, in a file for the same reason - the reads that fail run in
+# subshells - and the result reports it as a JUnit <error> instead of a
+# <failure> (#96). Only what the engine knows for sure is marked; an element
+# that is not there stays a failure even when a system dialog hid it. A read
+# that succeeds takes the mark back: a step that polls may miss one read and
+# still fail on what it then saw.
+device_fault(){ [ -z "${YUKTI_STEP_ERR:-}" ] || { : > "$YUKTI_STEP_ERR.kind"; } 2>/dev/null || true; }
 
 need_config(){ [ -f "$CONFIG" ] || die "no config at '$CONFIG' — run 'yukti init' or set YUKTI_CONFIG"; }
 
@@ -167,7 +176,10 @@ shot_path(){ local n="${1:-yukti-shot.png}"
   # a file inside it, so refuse rather than guess what was meant.
   case "$n" in *..*) die "screenshot name must not contain '..': '$n'";; esac
   case "$n" in /*) printf '%s' "$n";; *) printf '%s/%s' "${TMPDIR:-/tmp}" "$n";; esac; }
-ashot(){ apaths; local o; o="$(shot_path "${1:-}")"; mkdir -p "$(dirname "$o")"; adb exec-out screencap -p > "$o" && echo "$o"; }
+# A refused name stops the shot here: the step calls it as `$(shot ...) || die`,
+# and on the left of || bash does not stop on errors, so without the return a
+# refused name went on to take a screenshot to an empty path.
+ashot(){ apaths; local o; o="$(shot_path "${1:-}")" || return 1; mkdir -p "$(dirname "$o")"; if adb exec-out screencap -p > "$o"; then echo "$o"; else device_fault; return 1; fi; }
 # Delete the dump before writing a new one. uiautomator refuses to dump while the
 # screen is animating ("could not get idle state!"), the error was swallowed, and
 # `cat` then served the tree of the PREVIOUS call: the next assert checked the
@@ -204,7 +216,8 @@ HELD_TREE=""
 # beside it: a tap by coordinates reads no tree, and a tree two steps old must
 # not be passed off as the screen of the failure. Outside a flow - `yukti ui`
 # from the command line - there is nothing to keep it for.
-keep_tree(){ [ -n "${YUKTI_LAST_TREE:-}" ] || return 0
+keep_tree(){ [ -z "${YUKTI_STEP_ERR:-}" ] || rm -f "$YUKTI_STEP_ERR.kind" 2>/dev/null || true
+  [ -n "${YUKTI_LAST_TREE:-}" ] || return 0
   { printf '%s' "$1" > "$YUKTI_LAST_TREE" && printf '%s' "${FLOW_IDX:-0}" > "$YUKTI_LAST_TREE.step"; } 2>/dev/null || true; }
 aui(){ [ -n "$HELD_TREE" ] && { printf '%s' "$HELD_TREE"; return 0; }
   apaths; local xml i f="/sdcard/yukti-dump-$$.xml"
@@ -213,7 +226,7 @@ aui(){ [ -n "$HELD_TREE" ] && { printf '%s' "$HELD_TREE"; return 0; }
     case "$xml" in *"<hierarchy"*"</hierarchy>"*) keep_tree "$xml"; printf '%s' "$xml"; return 0;; esac
     [ "$i" = 3 ] || sleep 0.6
   done
-  die "uiautomator produced no usable dump after 3 tries - the screen may still be animating"; }
+  device_fault; die "uiautomator produced no usable dump after 3 tries - the screen may still be animating"; }
 afind(){ apaths; aui | "$PY" -c '
 import sys,re,html
 # Rank candidates instead of taking the first substring hit. Honors resource-id
@@ -868,13 +881,13 @@ up(){ local V="${1:?usage: yukti up <variant>}"; build "$V"; boot; install "$V";
 # ── drive primitives (used by flows AND by AI agents) ────────────────────────
 U(){ cat "$(udid_file)" 2>/dev/null || booted; }
 idb_ready(){ paths; idb connect "$(U)" >/dev/null 2>&1 || true; }
-shot(){ is_android && { ashot "$@"; return; }; paths; local o; o="$(shot_path "${1:-}")"; mkdir -p "$(dirname "$o")"; xcrun simctl io "$(U)" screenshot "$o" >/dev/null 2>&1 && echo "$o"; }
+shot(){ is_android && { ashot "$@"; return; }; paths; local o; o="$(shot_path "${1:-}")" || return 1; mkdir -p "$(dirname "$o")"; if xcrun simctl io "$(U)" screenshot "$o" >/dev/null 2>&1; then echo "$o"; else device_fault; return 1; fi; }
 ui(){ is_android && { aui; return; }; [ -n "$HELD_TREE" ] && { printf '%s' "$HELD_TREE"; return 0; }; idb_ready; local u out i; u="$(U)"; for i in 1 2 3 4; do out="$(idb ui describe-all --udid "$u" 2>/dev/null)"; [ -n "$out" ] && { keep_tree "$out"; printf '%s' "$out"; return 0; }; sleep 0.6; done
   # An empty tree after four tries is idb failing, not a screen with nothing on
   # it: a booted simulator always reports at least its window. Returning the
   # empty string made every caller read it as "the element is not there". The
   # Android path already fails here; this is the same rule for iOS.
-  die "idb returned no accessibility tree after 4 tries - is the simulator booted?"; }
+  device_fault; die "idb returned no accessibility tree after 4 tries - is the simulator booted?"; }
 find_el(){ is_android && { afind "$1" "${2:-text}" "${3:-exact}" "${4:-centre}"; return; }; paths; ui | "$PY" -c '
 import json,sys,os,traceback
 # A lookup must never leave with status 1: that status now means the screen
@@ -1158,7 +1171,7 @@ sys.exit(1)
 kb_shown(){ if is_android; then akb_shown; else ikb_shown; fi; }
 hide_keyboard(){ local st=0
   kb_shown || st=$?
-  if [ "$st" -eq 2 ]; then die "hideKeyboard: the device did not report its input method state"; fi
+  if [ "$st" -eq 2 ]; then device_fault; die "hideKeyboard: the device did not report its input method state"; fi
   if [ "$st" -eq 1 ]; then ok "hideKeyboard: no keyboard was up"; return 0; fi
   kb_close hideKeyboard; }
 # Closing a keyboard that is up, with the check that it closed. `who` opens every
@@ -1167,7 +1180,7 @@ kb_close(){ local who="$1" st=0
   press_key escape >/dev/null || die "$who: the device refused the escape key"
   sleep 0.6
   kb_shown || st=$?
-  if [ "$st" -eq 2 ]; then die "$who: the device did not report its input method state"; fi
+  if [ "$st" -eq 2 ]; then device_fault; die "$who: the device did not report its input method state"; fi
   if [ "$st" -eq 1 ]; then ok "$who: keyboard closed"; return 0; fi
   if ! is_android; then die "$who: the keyboard is still up after escape"; fi
   # Back is the fallback and never the mechanism, and only while the keyboard is
@@ -1178,7 +1191,7 @@ kb_close(){ local who="$1" st=0
   akey back || die "$who: the device refused the back key"
   sleep 0.6
   st=0; akb_shown || st=$?
-  if [ "$st" -eq 2 ]; then die "$who: the device did not report its input method state"; fi
+  if [ "$st" -eq 2 ]; then device_fault; die "$who: the device did not report its input method state"; fi
   if [ "$st" -eq 1 ]; then ok "$who: keyboard closed (Back)"; return 0; fi
   die "$who: the keyboard is still up after escape and Back"; }
 # A swipe that starts on a soft keyboard is taken by the keyboard: Gboard reads a
@@ -1193,7 +1206,7 @@ kb_close(){ local who="$1" st=0
 kb_before_swipe(){ local who="$1, before swiping" st=0
   kb_shown || st=$?
   if [ "$st" -eq 1 ]; then return 0; fi
-  if [ "$st" -eq 2 ]; then die "$who: the device did not report its input method state"; fi
+  if [ "$st" -eq 2 ]; then device_fault; die "$who: the device did not report its input method state"; fi
   # A tree held from before the escape still shows the keyboard, and kb_close
   # asks again after it.
   HELD_TREE=""
@@ -1366,8 +1379,10 @@ lookup_die(){ local st="${1:-1}" msg="${2:-}"
     3) die "${msg:-$(lookup_err 3)}";;
     *) die "$(lookup_err "$st")";;
   esac; }
+# Status 2 is the device's, wherever it is reported: the mark is set here, in
+# the one place every caller passes through to word it (#96).
 lookup_err(){ case "${1:-1}" in
-    2) printf '%s' "the device answered, but not with a tree that can be read";;
+    2) device_fault; printf '%s' "the device answered, but not with a tree that can be read";;
     3) printf '%s' "the screen was read but does not report its own bounds, so nothing on it can be called visible";;
     *) printf '%s' "cannot read the screen - see the error above";; esac; }
 # The negative assertions. Absence is the one verdict where an EMPTY answer is the
@@ -2281,25 +2296,34 @@ for step in steps:
     else:
         cases.append('    <testcase classname=%s name=%s time="%.3f"/>'
                      % (quoteattr(stem), quoteattr(shown(step)), step["t"]))
+# Fix the app, or restart the device? A failure of the device or of the engine
+# (device_fault: the screen could not be read, the screenshot was not taken)
+# is an <error>; everything else stays a <failure>, a missing element too. The
+# exit status is the same for both - only the report tells them apart.
+fault = int(num(st)) != 0 and os.path.exists(errf + ".kind")
 if failing is not None:
+    tag, kind = ("error", "DeviceError") if fault else ("failure", "StepFailed")
     cases.append('    <testcase classname=%s name=%s time="%.3f">\n'
-                 '      <failure message=%s type="StepFailed"/>\n'
+                 '      <%s message=%s type="%s"/>\n'
                  '    </testcase>'
-                 % (quoteattr(stem), quoteattr(shown(failing)), failing["t"], quoteattr(msg)))
+                 % (quoteattr(stem), quoteattr(shown(failing)), failing["t"], tag, quoteattr(msg), kind))
 elif int(num(st)) != 0:
     # The run died before or between steps: still a failure, and a result that
-    # said "all green, exit 1" would be worse than none.
+    # said "all green, exit 1" would be worse than none. A `when` that could not
+    # read the screen dies here too, and that is the device's.
+    tag, kind = ("error", "FlowError") if fault else ("failure", "FlowFailed")
     cases.append('    <testcase classname=%s name="00 flow" time="0.000">\n'
-                 '      <failure message=%s type="FlowFailed"/>\n'
-                 '    </testcase>' % (quoteattr(stem), quoteattr(msg)))
+                 '      <%s message=%s type="%s"/>\n'
+                 '    </testcase>' % (quoteattr(stem), tag, quoteattr(msg), kind))
 
 skips = sum(1 for s in steps if s["skip"])
+red = int(num(st)) != 0 or failing is not None
 arts = [s["art"] for s in steps if s["art"]] + captured
 out = [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<testsuites>',
-    '  <testsuite name=%s tests="%d" failures="%d" errors="0" skipped="%d" time="%.3f" timestamp=%s>'
-    % (quoteattr(stem), len(cases), 0 if failing is None and int(num(st)) == 0 else 1,
+    '  <testsuite name=%s tests="%d" failures="%d" errors="%d" skipped="%d" time="%.3f" timestamp=%s>'
+    % (quoteattr(stem), len(cases), red and not fault, red and fault,
        skips, max(0.0, num(t1) - num(t0)),
        quoteattr(time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(num(t0))))),
     '    <properties>',
@@ -2327,7 +2351,7 @@ PY
   else
     warn "could not write the results file to '$RESULTS_DIR'"
   fi
-  rm -f "$FLOW_REC" "$FLOW_CUR" "$FLOW_ERR" "$FLOW_TREE" "$FLOW_TREE.step"; FLOW_REC=""
+  rm -f "$FLOW_REC" "$FLOW_CUR" "$FLOW_ERR" "$FLOW_ERR.kind" "$FLOW_TREE" "$FLOW_TREE.step"; FLOW_REC=""
   return 0
 }
 
@@ -2819,7 +2843,7 @@ PY
       else export YUKTI_STEP_SRC=""; fi
       if [ "$chk" = 0 ]; then
         printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' "$FLOW_IDX" "$do_" "${val//[$'\n\r']/ }" "$FLOW_S0" "${src//[$'\n\r']/ }" "$ttl" > "$FLOW_CUR"
-        : > "$FLOW_ERR"
+        : > "$FLOW_ERR"; rm -f "$FLOW_ERR.kind"
       fi
       # The name first, the keys after it, because the order decides what a typo
       # hears. A step named `tpText` carrying a `match` would otherwise be told
@@ -2858,7 +2882,9 @@ PY
         # the step used to report PASS with an empty path, whether the name was
         # refused or screencap itself failed. The status has to be checked here,
         # in the shell that can stop the flow.
-        screenshot)  FLOW_ART="$(shot "$val")" || die "screenshot failed"
+        # A reason the shot already gave (a refused name) is kept: "screenshot
+        # failed" over it would leave the result without the why.
+        screenshot)  FLOW_ART="$(shot "$val")" || { [ ! -s "$FLOW_ERR" ] || exit 1; die "screenshot failed"; }
                      [ -n "$FLOW_ART" ] || die "screenshot produced no file"
                      ok "shot → $FLOW_ART";;
         tap)         tap $(scale_xy "$x" "$y");;
