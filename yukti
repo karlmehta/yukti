@@ -2352,10 +2352,14 @@ KV, CSEP = "\x1d", "\x1e"
 # exactly like steps written in the file itself - a failure inside the login
 # block is a failed step in the report, not a silence.
 #
-# A flow may include a block, and that block may include one more. Deeper than
-# that has no use we can name, and an author who hits the limit reads a message
-# instead of watching the run expand.
-MAX_DEPTH = 2
+# Blocks are built from smaller blocks: "open the account" is "open the account
+# screen" + "back to a known screen" + "back to the tabs", and a flow that
+# includes it is three levels down already. Two levels made authors copy steps
+# or run a block as a flow of its own. The limit stays as a guard against a
+# mistake, not as a rule of style: eight is deeper than any block structure we
+# have seen, and a chain that reaches it is far more likely an error than a
+# design. A circle is refused on its own, whatever the depth.
+MAX_DEPTH = 8
 
 def load(path, what, pre=""):
     try:
@@ -2590,8 +2594,8 @@ def include(step, at, base, src, scope, chain, depth):
         fail("%s: '%s' is already running - a block cannot include itself, "
              "directly or in a circle: %s" % (at, name, " -> ".join(trail)))
     if depth + 1 > MAX_DEPTH:
-        fail("%s: a flow may include a block, and a block one more - '%s' is "
-             "deeper than that: %s" % (at, name, " -> ".join(trail)))
+        fail("%s: includes may go %d blocks deep - '%s' would be block %d: %s"
+             % (at, MAX_DEPTH, name, depth + 1, " -> ".join(trail)))
     with_ = step.get("with", {})
     if not isinstance(with_, dict):
         fail('%s: "with" is an object of name/value pairs, for instance '
