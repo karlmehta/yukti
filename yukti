@@ -198,11 +198,19 @@ ashot(){ apaths; local o; o="$(shot_path "${1:-}")"; mkdir -p "$(dirname "$o")";
 # before anything taps: a held tree outliving a tap would be a step deciding
 # against a screen that is no longer there.
 HELD_TREE=""
+# The tree a step read last, kept for the result of a failed flow (#94). Nearly
+# every read happens inside $(...), so a variable would die with the subshell;
+# a file outlives it, the way the step's message does. The step number goes
+# beside it: a tap by coordinates reads no tree, and a tree two steps old must
+# not be passed off as the screen of the failure. Outside a flow - `yukti ui`
+# from the command line - there is nothing to keep it for.
+keep_tree(){ [ -n "${YUKTI_LAST_TREE:-}" ] || return 0
+  { printf '%s' "$1" > "$YUKTI_LAST_TREE" && printf '%s' "${FLOW_IDX:-0}" > "$YUKTI_LAST_TREE.step"; } 2>/dev/null || true; }
 aui(){ [ -n "$HELD_TREE" ] && { printf '%s' "$HELD_TREE"; return 0; }
   apaths; local xml i f="/sdcard/yukti-dump-$$.xml"
   for i in 1 2 3; do
     xml="$(adb shell "rm -f $f; uiautomator dump $f >/dev/null 2>&1; cat $f 2>/dev/null; rm -f $f" 2>/dev/null)"
-    case "$xml" in *"<hierarchy"*"</hierarchy>"*) printf '%s' "$xml"; return 0;; esac
+    case "$xml" in *"<hierarchy"*"</hierarchy>"*) keep_tree "$xml"; printf '%s' "$xml"; return 0;; esac
     [ "$i" = 3 ] || sleep 0.6
   done
   die "uiautomator produced no usable dump after 3 tries - the screen may still be animating"; }
@@ -861,7 +869,7 @@ up(){ local V="${1:?usage: yukti up <variant>}"; build "$V"; boot; install "$V";
 U(){ cat "$(udid_file)" 2>/dev/null || booted; }
 idb_ready(){ paths; idb connect "$(U)" >/dev/null 2>&1 || true; }
 shot(){ is_android && { ashot "$@"; return; }; paths; local o; o="$(shot_path "${1:-}")"; mkdir -p "$(dirname "$o")"; xcrun simctl io "$(U)" screenshot "$o" >/dev/null 2>&1 && echo "$o"; }
-ui(){ is_android && { aui; return; }; [ -n "$HELD_TREE" ] && { printf '%s' "$HELD_TREE"; return 0; }; idb_ready; local u out i; u="$(U)"; for i in 1 2 3 4; do out="$(idb ui describe-all --udid "$u" 2>/dev/null)"; [ -n "$out" ] && { printf '%s' "$out"; return 0; }; sleep 0.6; done
+ui(){ is_android && { aui; return; }; [ -n "$HELD_TREE" ] && { printf '%s' "$HELD_TREE"; return 0; }; idb_ready; local u out i; u="$(U)"; for i in 1 2 3 4; do out="$(idb ui describe-all --udid "$u" 2>/dev/null)"; [ -n "$out" ] && { keep_tree "$out"; printf '%s' "$out"; return 0; }; sleep 0.6; done
   # An empty tree after four tries is idb failing, not a screen with nothing on
   # it: a booted simulator always reports at least its window. Returning the
   # empty string made every caller read it as "the element is not there". The
@@ -2172,7 +2180,7 @@ with open(path, "w", encoding="utf-8") as fh:
 print(path)
 PY
 )" && ok "results → $out" || warn "could not write the results file to '$RESULTS_DIR'"
-  rm -f "$FLOW_REC" "$FLOW_CUR" "$FLOW_ERR"; FLOW_REC=""
+  rm -f "$FLOW_REC" "$FLOW_CUR" "$FLOW_ERR" "$FLOW_TREE" "$FLOW_TREE.step"; FLOW_REC=""
   return 0
 }
 
@@ -2300,8 +2308,8 @@ flow(){
     say "checking flow: $f"
   else
     say "running flow: $f"
-    FLOW_REC="$(mktemp)"; FLOW_CUR="$(mktemp)"; FLOW_ERR="$(mktemp)"; FLOW_T0="$(now)"
-    export YUKTI_STEP_ERR="$FLOW_ERR"
+    FLOW_REC="$(mktemp)"; FLOW_CUR="$(mktemp)"; FLOW_ERR="$(mktemp)"; FLOW_TREE="$(mktemp)"; FLOW_T0="$(now)"
+    export YUKTI_STEP_ERR="$FLOW_ERR" YUKTI_LAST_TREE="$FLOW_TREE"
     # Nothing ran, so nothing is reported: a JUnit file written by --check would
     # say a flow passed on a machine that never had a device.
     trap 'flow_results $?; run_dir_cleanup' EXIT
