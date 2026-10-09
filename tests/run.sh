@@ -276,5 +276,74 @@ begin "results: a step four blocks down is named with its block"
 status_is 1; fake_used; has res/flow.xml "[b4.json] waitForId missing"
 verdict
 
+# ── fix the app, or restart the device (#96) ─────────────────────────────────
+# What the engine knows for sure is the device's - a screen that could not be
+# read, a screenshot not taken - and is a JUnit <error>. Everything else stays
+# a <failure>. The exit status is 1 either way.
+red_is(){ has res/flow.xml "<$1 message="; has res/flow.xml "type=\"$2\""
+  has res/flow.xml "failures=\"$3\" errors=\"$4\""; }
+
+dev_case junit-unreadable
+printf 'not a dump' > "$case_dir/adb/dump-1.xml"
+flow_file "$case_dir/flow.json" '{ "do": "waitForId", "value": "title", "timeout": 1 }'
+run_flow "$case_dir/flow.json"
+begin "junit: a screen that cannot be read is an error"
+status_is 1; fake_used; red_is error DeviceError 0 1
+verdict
+
+# One read of three fails, the next ones work, the element is not there: the
+# step failed on what it saw. A mark left by the bad read must not decide.
+dev_case junit-one-bad-read
+printf 'not a dump' > "$case_dir/adb/dump-1.xml"
+cp "$case_dir/adb/dump-1.xml" "$case_dir/adb/dump-2.xml"; cp "$case_dir/adb/dump-1.xml" "$case_dir/adb/dump-3.xml"
+screen "$case_dir/adb/dump-4.xml" "$(node TextView title Today)"
+flow_file "$case_dir/flow.json" '{ "do": "waitForId", "value": "missing", "timeout": 3 }'
+run_flow "$case_dir/flow.json"
+begin "junit: a missed read does not make a missing element an error"
+status_is 1; fake_used; red_is failure StepFailed 1 0; has res/flow.xml "not on screen"
+verdict
+
+dev_case junit-missing
+screen "$case_dir/adb/dump-1.xml" "$(node TextView title Today)"
+flow_file "$case_dir/flow.json" '{ "do": "waitForId", "value": "missing", "timeout": 1 }'
+run_flow "$case_dir/flow.json"
+begin "junit: a missing element is a failure"
+status_is 1; fake_used; red_is failure StepFailed 1 0
+verdict
+
+dev_case junit-screenshot
+screen "$case_dir/adb/dump-1.xml" "$(node TextView title Today)"
+echo fail > "$case_dir/adb/screencap"
+flow_file "$case_dir/flow.json" '{ "do": "screenshot", "value": "home" }'
+run_flow "$case_dir/flow.json"
+begin "junit: a screenshot the device did not take is an error"
+status_is 1; fake_used; red_is error DeviceError 0 1; has res/flow.xml "screenshot failed"
+verdict
+
+# A name the engine refuses is the author's mistake, not the device's.
+dev_case junit-screenshot-name
+screen "$case_dir/adb/dump-1.xml" "$(node TextView title Today)"
+flow_file "$case_dir/flow.json" '{ "do": "screenshot", "value": "../home" }'
+run_flow "$case_dir/flow.json"
+begin "junit: a screenshot name the engine refuses is a failure"
+status_is 1; red_is failure StepFailed 1 0; has res/flow.xml "must not contain"
+verdict
+
+dev_case junit-when-unreadable
+printf 'not a dump' > "$case_dir/adb/dump-1.xml"
+flow_file "$case_dir/flow.json" '{ "do": "wait", "value": "0" }' \
+  '{ "do": "tap", "x": 10, "y": 10, "when": { "visibleId": "title" } }'
+run_flow "$case_dir/flow.json"
+begin "junit: a condition that cannot read the screen is an error on 00 flow"
+status_is 1; fake_used; red_is error FlowError 0 1; has res/flow.xml 'name="00 flow"'
+verdict
+
+dev_case junit-bad-file
+printf '{ "steps": [' > "$case_dir/flow.json"
+run_flow "$case_dir/flow.json"
+begin "junit: a flow file that does not build is a failure"
+status_is 1; red_is failure FlowFailed 1 0
+verdict
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
