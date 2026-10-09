@@ -704,6 +704,37 @@ Two flows whose files have the same name write the same JUnit file, because the
 report is named after the file and not after its directory. Keep block names
 distinct from flow names.
 
+### What a failed flow leaves
+
+Beside `<flow>.xml`, a flow whose step failed - or whose `when` could not read
+the screen - leaves:
+
+- `<flow>-fail.png` - the screen when the run stopped, taken by `screencap` on
+  Android and `simctl io screenshot` on iOS. It gets 10 seconds; a device that
+  does not answer leaves no picture and the line `screen not captured: no answer
+  in 10 s` instead.
+- `<flow>-fail.xml` (Android) or `<flow>-fail.json` (iOS) - the last screen tree
+  a step of the flow read. Only steps that look for something read the screen; a
+  tap by coordinates does not, so after a failed tap the tree is older than the
+  failure, and the result says `tree: <file> (read by step N)`.
+
+Both are named in the failure message of the JUnit file and listed in its
+`system-out`. Neither replaces the message: what could not be captured is one
+more line under it. A flow that passes, or `flow --check`, leaves neither.
+
+The tree is masked. A password field shows `[N chars]`. Text the flow typed shows
+`[typed]` wherever it appears - unescaped first, without regard to case - and a
+text field is masked whole when it holds four characters of a typed value in a
+row, or at least half of the value in order: an emulator under load drops keys,
+a field emptied short of the end keeps the beginning, and a field typed into
+again keeps pieces of every attempt.
+A typed value under four characters is masked only as the whole text of a field.
+The rule errs on the side of hiding: the hint of an empty field whose letters
+come in the same order in a long typed value may show as `[typed]` too.
+The screenshot is NOT masked: Android shows the last character of a password for
+a moment, and an address typed into a field is on screen as typed. Treat the
+pictures as you treat the screenshots a flow takes itself.
+
 ### A step that only runs sometimes
 
 `"when"` on a step, or on an `include`, says under which conditions it runs:

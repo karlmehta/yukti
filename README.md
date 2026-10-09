@@ -84,12 +84,18 @@ because that is when it matters. Report viewers and CI read the format as is:
 
 ```
 - uses: actions/upload-artifact@v4
-  with: { name: results, path: yukti-results/*.xml }
+  with: { name: results, path: yukti-results/ }
 ```
 
 Typed text is never written to the file, only its length: flow files take
 `${TEST_PASSWORD}` from the environment, and an artifact that carries it is worse
 than no artifact.
+
+A flow that fails also leaves what was on the screen, next to its JUnit file:
+`<flow>-fail.png` and the last screen tree a step read, `<flow>-fail.xml` on
+Android, `<flow>-fail.json` on iOS. The failure names both. The tree is masked:
+password fields and everything the flow typed, escaped, in pieces or with
+characters lost on the way. The screenshot is not - see RUNBOOK.
 
 ## Commands
 

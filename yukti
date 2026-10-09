@@ -198,11 +198,19 @@ ashot(){ apaths; local o; o="$(shot_path "${1:-}")"; mkdir -p "$(dirname "$o")";
 # before anything taps: a held tree outliving a tap would be a step deciding
 # against a screen that is no longer there.
 HELD_TREE=""
+# The tree a step read last, kept for the result of a failed flow (#94). Nearly
+# every read happens inside $(...), so a variable would die with the subshell;
+# a file outlives it, the way the step's message does. The step number goes
+# beside it: a tap by coordinates reads no tree, and a tree two steps old must
+# not be passed off as the screen of the failure. Outside a flow - `yukti ui`
+# from the command line - there is nothing to keep it for.
+keep_tree(){ [ -n "${YUKTI_LAST_TREE:-}" ] || return 0
+  { printf '%s' "$1" > "$YUKTI_LAST_TREE" && printf '%s' "${FLOW_IDX:-0}" > "$YUKTI_LAST_TREE.step"; } 2>/dev/null || true; }
 aui(){ [ -n "$HELD_TREE" ] && { printf '%s' "$HELD_TREE"; return 0; }
   apaths; local xml i f="/sdcard/yukti-dump-$$.xml"
   for i in 1 2 3; do
     xml="$(adb shell "rm -f $f; uiautomator dump $f >/dev/null 2>&1; cat $f 2>/dev/null; rm -f $f" 2>/dev/null)"
-    case "$xml" in *"<hierarchy"*"</hierarchy>"*) printf '%s' "$xml"; return 0;; esac
+    case "$xml" in *"<hierarchy"*"</hierarchy>"*) keep_tree "$xml"; printf '%s' "$xml"; return 0;; esac
     [ "$i" = 3 ] || sleep 0.6
   done
   die "uiautomator produced no usable dump after 3 tries - the screen may still be animating"; }
@@ -861,7 +869,7 @@ up(){ local V="${1:?usage: yukti up <variant>}"; build "$V"; boot; install "$V";
 U(){ cat "$(udid_file)" 2>/dev/null || booted; }
 idb_ready(){ paths; idb connect "$(U)" >/dev/null 2>&1 || true; }
 shot(){ is_android && { ashot "$@"; return; }; paths; local o; o="$(shot_path "${1:-}")"; mkdir -p "$(dirname "$o")"; xcrun simctl io "$(U)" screenshot "$o" >/dev/null 2>&1 && echo "$o"; }
-ui(){ is_android && { aui; return; }; [ -n "$HELD_TREE" ] && { printf '%s' "$HELD_TREE"; return 0; }; idb_ready; local u out i; u="$(U)"; for i in 1 2 3 4; do out="$(idb ui describe-all --udid "$u" 2>/dev/null)"; [ -n "$out" ] && { printf '%s' "$out"; return 0; }; sleep 0.6; done
+ui(){ is_android && { aui; return; }; [ -n "$HELD_TREE" ] && { printf '%s' "$HELD_TREE"; return 0; }; idb_ready; local u out i; u="$(U)"; for i in 1 2 3 4; do out="$(idb ui describe-all --udid "$u" 2>/dev/null)"; [ -n "$out" ] && { keep_tree "$out"; printf '%s' "$out"; return 0; }; sleep 0.6; done
   # An empty tree after four tries is idb failing, not a screen with nothing on
   # it: a booted simulator always reports at least its window. Returning the
   # empty string made every caller read it as "the element is not there". The
@@ -2046,14 +2054,21 @@ FLOW_IDX=0
 now(){ if [ -n "${EPOCHREALTIME:-}" ]; then printf '%s' "${EPOCHREALTIME/,/.}"; else date +%s; fi; }
 
 flow_results(){
-  local st="${1:-0}" out
+  local st="${1:-0}" out udid=""
   [ -n "${FLOW_REC:-}" ] || return 0
   trap - EXIT
-  out="$("$PY" - "$FLOW_FILE" "$FLOW_REC" "$FLOW_CUR" "$FLOW_ERR" "$FLOW_T0" "$(now)" "$st" "$RESULTS_DIR" "$YUKTI_PLATFORM" <<'PY'
+  # A failed flow takes a screenshot below, and the tools for it are on the PATH
+  # only where paths/apaths ran - for a locator that was a subshell. Every
+  # command here is guarded: -e still holds in a trap, and a capture that
+  # stopped the trap would lose the result it was meant to complete.
+  if [ "$st" != 0 ]; then
+    if is_android; then apaths; else paths; udid="$(U 2>/dev/null)" || udid=""; fi
+  fi
+  out="$("$PY" - "$FLOW_FILE" "$FLOW_REC" "$FLOW_CUR" "$FLOW_ERR" "$FLOW_T0" "$(now)" "$st" "$RESULTS_DIR" "$YUKTI_PLATFORM" "$FLOW_TREE" "$udid" <<'PY'
 import os, sys, time
 from xml.sax.saxutils import escape, quoteattr
 
-flow, rec, cur, errf, t0, t1, st, outdir, plat = sys.argv[1:10]
+flow, rec, cur, errf, t0, t1, st, outdir, plat, treef, udid = sys.argv[1:12]
 SEP = "\x1f"
 
 def num(v, d=0.0):
@@ -2095,6 +2110,140 @@ if int(num(st)) != 0:
                    "title": parts[5] if len(parts) > 5 else ""}
 
 msg = read(errf).strip() or "the run stopped with exit code %d" % int(num(st))
+stem = os.path.splitext(os.path.basename(flow))[0] or "flow"
+
+# The first question about a red step is what was on the screen (#94). The
+# failed step leaves a screenshot and the last tree the flow read, next to this
+# file, and the failure names both. Best effort: what cannot be captured is
+# said in one line, and the failure itself is never replaced.
+CAPTURE_S = 10
+captured, notes = [], []
+
+def screenshot(path):
+    import subprocess
+    cmd = (["adb", "exec-out", "screencap", "-p"] if plat == "android"
+           else ["xcrun", "simctl", "io", udid or "booted", "screenshot", path])
+    try:
+        with open(path, "wb") as fh:
+            r = subprocess.run(cmd, stdout=fh if plat == "android" else subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, timeout=CAPTURE_S)
+        if r.returncode != 0: return "%s exited with status %d" % (cmd[0], r.returncode)
+    except subprocess.TimeoutExpired: return "no answer in %d s" % CAPTURE_S
+    except OSError as e: return "%s: %s" % (cmd[0], e.strerror or e)
+    if os.path.getsize(path) == 0: return "the screenshot came back empty"
+    return ""
+
+# What a flow typed is a credential as often as not, and a field that lost
+# characters holds what is left of it - the value with gaps, which no search
+# for the whole value finds. A text field holding four characters of a typed
+# value in a row, or at least half of it in order, is masked whole. The tree is masked on the text as
+# the screen shows it - attributes unescaped first, because the dump writes a
+# typed & as &amp; - and compared without case, because a field may have
+# capitalised the first letter. A value shorter than four characters is masked
+# only as the whole text of a field: masked everywhere, "72" would erase every
+# reading of 72 on the screen. PNGs are not masked; RUNBOOK says so.
+typed = [x["value"] for x in steps if x["verb"] == "type" and x["value"]]
+if failing is not None and failing["verb"] == "type" and failing["value"]:
+    typed.append(failing["value"])
+
+def in_order(part, whole):
+    it = iter(whole)
+    return all(ch in it for ch in part)
+
+def run_of(text, v, n):
+    return any(v[i:i + n] in text for i in range(len(v) - n + 1))
+
+def masked(text, secret_field, editable):
+    if not text: return text
+    if secret_field: return "[%d chars]" % len(text)
+    low = text.lower()
+    for v in typed:
+        lv = v.lower(); half = max(4, len(v) // 2)
+        if low == lv and (editable or len(v) >= 4): return "[typed]"
+        # In a text field, four characters of the value in a row are already
+        # part of a password: a field typed into again keeps pieces of every
+        # attempt next to its hint (measured on a React Native input), and one
+        # emptied short of the end keeps the beginning. Letters in order with
+        # gaps - what dropped keys leave - count only from half the value: a
+        # hint such as "Email" is also a few letters of an address in order.
+        if editable and (run_of(low, lv, 4) or (len(low) >= half and in_order(low, lv))):
+            return "[typed]"
+    import re
+    for v in typed:
+        if len(v) >= 4: text = re.sub(re.escape(v), "[typed]", text, flags=re.I)
+    return text
+
+def mask_android(xml):
+    import html, re
+    def node(m):
+        tag = m.group(0)
+        secret = 'password="true"' in tag
+        edit = "EditText" in (re.search(r'class="([^"]*)"', tag) or [None, ""])[1]
+        # uiautomator quotes an attribute with ' when its value holds a ",
+        # so both forms are read; what is written back is always "...".
+        def attr(a):
+            name = a.group(1)
+            raw = a.group(2) if a.group(2) is not None else a.group(3)
+            if name not in ("text", "content-desc", "hint", "tooltip-text"): return a.group(0)
+            val = html.unescape(raw)
+            new = masked(val, secret, edit and name in ("text", "content-desc"))
+            return a.group(0) if new == val else '%s=%s' % (name, quoteattr(new, {'"': "&quot;"}))
+        return re.sub(r'''([\w:-]+)=(?:"([^"]*)"|'([^']*)')''', attr, tag)
+    return re.sub(r"<node\b[^>]*>", node, xml)
+
+def mask_ios(text):
+    import json
+    def walk(o):
+        if isinstance(o, list): return [walk(x) for x in o]
+        if not isinstance(o, dict): return o
+        t = str(o.get("type", "")).lower()
+        secret = "securetext" in t
+        edit = secret or "textfield" in t or "text field" in t or "textview" in t
+        out = {}
+        for k, v in o.items():
+            if isinstance(v, str) and k in ("AXLabel", "AXValue", "title"):
+                v = masked(v, secret and k == "AXValue", edit and k == "AXValue")
+            elif isinstance(v, (list, dict)):
+                v = walk(v)
+            out[k] = v
+        return out
+    return json.dumps(walk(json.loads(text)), indent=1)
+
+# A step that started is enough: a `when` that cannot read the screen stops the
+# run before its step is recorded, and that is a failure on "00 flow" - the one
+# where the screen is wanted most. A flow file the builder refused started no
+# step and touched no device, and leaves nothing.
+if failing is not None or (int(num(st)) != 0 and read(cur).strip()):
+    os.makedirs(outdir, exist_ok=True)
+    png = os.path.join(outdir, stem + "-fail.png")
+    why = screenshot(png)
+    if why:
+        try: os.remove(png)
+        except OSError: pass
+        notes.append("screen not captured: " + why)
+    else:
+        captured.append(png); notes.append("screen: " + os.path.basename(png))
+    tree = read(treef) if treef else ""
+    if not tree.strip():
+        notes.append("tree: none - no step of this flow read the screen")
+    else:
+        name = os.path.join(outdir, stem + ("-fail.xml" if plat == "android" else "-fail.json"))
+        try:
+            body = mask_android(tree) if plat == "android" else mask_ios(tree)
+            with open(name, "w", encoding="utf-8") as fh: fh.write(body)
+        except (OSError, ValueError) as e:
+            notes.append("tree not kept: %s" % e)
+        else:
+            captured.append(name)
+            # The step that read it. A `when` reads before its step is counted,
+            # so its tree carries the number of the step before; 0 is a read
+            # before the first step.
+            by = int(num(read(treef + ".step").strip()))
+            line = "tree: " + os.path.basename(name)
+            if by == 0: line += " (read before step 1)"
+            elif failing is None or by != failing["i"]: line += " (read by step %d)" % by
+            notes.append(line)
+    msg = msg + "\n" + "\n".join(notes)
 
 # A typed string is a credential as often as not - the flow files take
 # ${TEST_PASSWORD} from the environment. The result file records how much was
@@ -2118,7 +2267,6 @@ def shown(step):
         return ("%02d [%s] %s %s" % (step["i"], step["src"], verb, value)).strip()
     return ("%02d %s %s" % (step["i"], verb, value)).strip()
 
-stem = os.path.splitext(os.path.basename(flow))[0] or "flow"
 cases = []
 for step in steps:
     if step["skip"]:
@@ -2146,7 +2294,7 @@ elif int(num(st)) != 0:
                  '    </testcase>' % (quoteattr(stem), quoteattr(msg)))
 
 skips = sum(1 for s in steps if s["skip"])
-arts = [s["art"] for s in steps if s["art"]]
+arts = [s["art"] for s in steps if s["art"]] + captured
 out = [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<testsuites>',
@@ -2170,9 +2318,16 @@ path = os.path.join(outdir, stem + ".xml")
 with open(path, "w", encoding="utf-8") as fh:
     fh.write("\n".join(out) + "\n")
 print(path)
+for note in notes: print(note)
 PY
-)" && ok "results → $out" || warn "could not write the results file to '$RESULTS_DIR'"
-  rm -f "$FLOW_REC" "$FLOW_CUR" "$FLOW_ERR"; FLOW_REC=""
+)" || out=""
+  if [ -n "$out" ]; then
+    ok "results → ${out%%$'\n'*}"
+    case "$out" in *$'\n'*) printf '%s\n' "${out#*$'\n'}" | while IFS= read -r l; do say "$l"; done;; esac
+  else
+    warn "could not write the results file to '$RESULTS_DIR'"
+  fi
+  rm -f "$FLOW_REC" "$FLOW_CUR" "$FLOW_ERR" "$FLOW_TREE" "$FLOW_TREE.step"; FLOW_REC=""
   return 0
 }
 
@@ -2300,8 +2455,8 @@ flow(){
     say "checking flow: $f"
   else
     say "running flow: $f"
-    FLOW_REC="$(mktemp)"; FLOW_CUR="$(mktemp)"; FLOW_ERR="$(mktemp)"; FLOW_T0="$(now)"
-    export YUKTI_STEP_ERR="$FLOW_ERR"
+    FLOW_REC="$(mktemp)"; FLOW_CUR="$(mktemp)"; FLOW_ERR="$(mktemp)"; FLOW_TREE="$(mktemp)"; FLOW_T0="$(now)"
+    export YUKTI_STEP_ERR="$FLOW_ERR" YUKTI_LAST_TREE="$FLOW_TREE"
     # Nothing ran, so nothing is reported: a JUnit file written by --check would
     # say a flow passed on a machine that never had a device.
     trap 'flow_results $?; run_dir_cleanup' EXIT
