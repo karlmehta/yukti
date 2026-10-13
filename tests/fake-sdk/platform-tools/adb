@@ -24,7 +24,6 @@
 #   server-port    where the fake helper listens; a forward points there
 #   forward        the local port of this device's forward to the helper
 #   installed      both helper packages are on the device
-#   install-fails  present: `adb install` exits 1
 #   start-fails    present: `am instrument` exits at once, nothing comes up
 import os, sys, time
 from xml.sax.saxutils import quoteattr
@@ -106,7 +105,6 @@ elif args == ["shell", "am force-stop %s; am force-stop %s.test" % (HELPER, HELP
 elif args == ["shell", "pm path %s; pm path %s.test" % (HELPER, HELPER)]:
     if has("installed"): print("package:/data/app/server/base.apk\npackage:/data/app/test/base.apk")
 elif args[:3] == ["install", "-r", "-g"]:
-    if has("install-fails"): sys.exit(1)
     write("installed", "")
 elif args[:4] == ["shell", "am", "instrument", "-w"]:
     # The real client returns when the instrumentation ends; this one when the

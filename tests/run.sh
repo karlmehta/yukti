@@ -714,6 +714,18 @@ status_is 0; has adb/log "curl https://github.com/appium/appium-uiautomator2-ser
 lacks adb/log "install -r -g"; lacks adb/log "am instrument"
 file_absent "$CACHE/$SERVER_APK"; [ -z "$(ls -A "$case_dir/$CACHE" | grep download)" ] || no "a partial download was left in the cache"
 count_is out.txt "did not match the pinned sha256" 1; value_is adb/dumps 2
+file_absent "$CACHE/start-fail-emulator-5554"
+verdict; helper_done
+
+helper_case helper-no-forward
+gone adb/server-port
+screen "$case_dir/adb/dump-1.xml" "$(node TextView title Today)"
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "title" }' '{ "do": "assertId", "value": "title" }'
+run_helper flow "$case_dir/flow.json"
+begin "helper: a flow that gets no forward from adb says so, and counts it as a fallback"
+status_is 0; has adb/log "forward tcp:0 tcp:6790"; lacks adb/log "am instrument"; value_is adb/dumps 2
+count_is out.txt "screen helper: adb could not forward a port to it" 1
+has out.txt "screen reads: 0 by the helper, 2 by uiautomator dump, 1 fallback(s)"
 verdict; helper_done
 
 helper_case helper-stale-session
@@ -809,6 +821,16 @@ run_helper ui
 begin "helper: 'yukti ui' reads through a kept helper whose forward was lost, and leaves it up"
 status_is 0; has out "com.example:id/title"; file_absent adb/dumps; has adb/log "forward tcp:0 tcp:6790"
 is_there adb/running; lacks adb/log "force-stop"; lacks adb/log "am instrument"
+verdict; helper_done
+
+helper_case helper-ui-forward-kept
+: > "$case_dir/adb/running"; printf 's1' > "$case_dir/adb/session"; printf '1' > "$case_dir/adb/sessions"
+printf 's1' > "$case_dir/$CACHE/session-emulator-5554"; cp "$case_dir/adb/server-port" "$case_dir/adb/forward"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hnode TextView title Today)"
+run_helper ui
+begin "helper: 'yukti ui' reads through a kept helper and its forward, checked once"
+status_is 0; has out "com.example:id/title"; file_absent adb/dumps
+lacks adb/log "forward tcp:0"; count_is adb/http-log "/status" 1; is_there adb/running
 verdict; helper_done
 
 helper_case helper-ui-none

@@ -336,14 +336,15 @@ helper_force_stop(){ adb shell "am force-stop $UIA2_PKG; am force-stop $UIA2_TES
 # back the 6-8 s a start costs. A single command reads once - `yukti ui` would
 # pay the start and the stop for one look that a dump gives in 2.4 s - so it
 # uses a helper that is already up and otherwise dumps. Two refusals are
-# reported: a helper this run already restarted once, and a device where the
+# reported: a helper this run has already started once, and a device where the
 # last two starts failed - an Android older than 8, a phone that puts a dialog
 # in front of every install from USB, another build of the same package signed
 # with another key. Such a device would pay a failed start, up to 15 s, on every
-# flow of a suite. The mark expires after a day, and `yukti helper stop` clears it.
+# flow of a suite. A download that failed is not the device's failure and does
+# not count. The mark expires after a day, and `yukti helper stop` clears it.
 helper_may_start(){ local d c f n; d="$(run_dir)"
   [ -n "${YUKTI_STEP_ERR:-}" ] || return 1
-  [ ! -e "$d/helper-tried" ] || { HELPER_WHY="it stopped answering after a restart"; return 1; }
+  [ ! -e "$d/helper-tried" ] || { HELPER_WHY="it stopped answering, and this run has already started it once"; return 1; }
   c="$(helper_cache)"; f="$c/start-fail-$(helper_key "$(helper_serial)")"
   n="$(cat "$f" 2>/dev/null || true)"
   if [ "${n:-0}" -ge 2 ] 2>/dev/null && [ -n "$(find "$f" -mmin -1440 2>/dev/null)" ]; then
@@ -372,13 +373,15 @@ helper_apk(){ local c="$1" n="$2" want="$3" p t; p="$c/$n"
 # saw "another version" would reinstall 18 MB on every flow. A different build
 # of the same packages installed by someone else after our mark does not clear
 # it: that start fails, and the start counter above takes it from there.
+# Status 2 is a download that failed or did not match - the network's fault,
+# not the device's; 1 is a device that refused the install.
 helper_install(){ local c="$1" k="$2" m sp tp; m="$c/installed-$k"
   if [ "$(cat "$m" 2>/dev/null || true)" = "$UIA2_SERVER_SHA $UIA2_TEST_SHA" ] \
      && [ "$(adb shell "pm path $UIA2_PKG; pm path $UIA2_TEST_PKG" 2>/dev/null | grep -c '^package:' || true)" = 2 ]; then
     return 0
   fi
   sp="$(helper_apk "$c" "$UIA2_SERVER_APK" "$UIA2_SERVER_SHA")" && tp="$(helper_apk "$c" "$UIA2_TEST_APK" "$UIA2_TEST_SHA")" \
-    || { HELPER_WHY="its APK could not be fetched, or did not match the pinned sha256"; return 1; }
+    || { HELPER_WHY="its APK could not be fetched, or did not match the pinned sha256"; return 2; }
   rm -f "$m"
   adb install -r -g "$sp" >/dev/null 2>&1 && adb install -r -g "$tp" >/dev/null 2>&1 \
     || { HELPER_WHY="adb install refused it"; return 1; }
@@ -391,10 +394,11 @@ helper_install(){ local c="$1" k="$2" m sp tp; m="$c/installed-$k"
 # runs in would keep that read waiting forever. The client returning on its own
 # means the instrumentation ended - nothing is going to answer. A failed start
 # is stopped by the fallback that follows it (helper_give_up).
-helper_start(){ local d c k pid end; d="$(run_dir)"; : > "$d/helper-tried"
+helper_start(){ local d c k pid end r=0; d="$(run_dir)"; : > "$d/helper-tried"
   c="$(helper_cache)"; k="$(helper_key "$(helper_serial)")"
   mkdir -p "$c" 2>/dev/null && [ -w "$c" ] || { HELPER_WHY="the cache directory $c cannot be written"; return 1; }
-  if helper_install "$c" "$k"; then
+  helper_install "$c" "$k" || r=$?
+  if [ "$r" = 0 ]; then
     "$PY" -c 'import os,sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' \
       adb shell am instrument -w "$UIA2_TEST_PKG/androidx.test.runner.AndroidJUnitRunner" \
       > "$c/instrument-$k.log" 2>&1 < /dev/null &
@@ -407,7 +411,7 @@ helper_start(){ local d c k pid end; d="$(run_dir)"; : > "$d/helper-tried"
     done
     HELPER_WHY="it did not come up (log: $c/instrument-$k.log)"
   fi
-  echo $(( $(cat "$c/start-fail-$k" 2>/dev/null || echo 0) + 1 )) > "$c/start-fail-$k" 2>/dev/null || true
+  [ "$r" = 2 ] || echo $(( $(cat "$c/start-fail-$k" 2>/dev/null || echo 0) + 1 )) > "$c/start-fail-$k" 2>/dev/null || true
   return 1; }
 # A new session forgets every setting (the server resets them per session), so
 # the wait is set again each time: at most half a second for the screen to
@@ -424,7 +428,15 @@ helper_session(){ local d sid; d="$(run_dir)"
 # adbd restarts on every `adb root`, the forward goes with it and the helper may
 # or may not have survived. A kept helper's session is taken from the cache.
 helper_connect(){ local d p check="" kf; d="$(run_dir)"
-  if [ ! -s "$d/helper-port" ]; then p="$(helper_forward)" || return 1; printf '%s' "$p" > "$d/helper-port"; check=1; fi
+  if [ ! -s "$d/helper-port" ]; then
+    # A flow says why it reads with the dump; a single command finding no helper
+    # is the normal case and says nothing.
+    p="$(helper_forward)" || {
+      [ -z "${YUKTI_STEP_ERR:-}" ] || if helper_serial >/dev/null; then HELPER_WHY="adb could not forward a port to it"
+        else HELPER_WHY="adb did not name the device"; fi
+      return 1; }
+    printf '%s' "$p" > "$d/helper-port"; check=1
+  fi
   if [ ! -s "$d/helper-session" ]; then
     kf="$(helper_cache)/session-$(helper_key "$(helper_serial)")"
     [ -s "$kf" ] && cp "$kf" "$d/helper-session" 2>/dev/null || check=1

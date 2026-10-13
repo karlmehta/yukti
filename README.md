@@ -132,7 +132,8 @@ and a flow ends with a count: `screen reads: 41 by the helper, 0 by uiautomator 
 
 - **Lifetime.** The helper is started by `yukti flow` and stopped when that
   flow ends. Single commands (`yukti ui`, `yukti tap-id` ...) use a helper that
-  is already up and otherwise dump. A suite runner sets `YUKTI_HELPER_KEEP=1` so
+  is already up, and forward to it again if the forward was lost, and otherwise
+  dump. A suite runner sets `YUKTI_HELPER_KEEP=1` so
   the helper stays up from one flow to the next, and runs `yukti helper stop`
   when the suite ends - including when it fails.
 - **One reader per device.** While the helper is up, any other
