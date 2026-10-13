@@ -114,7 +114,49 @@ yukti up    <variant>   build + boot + install + launch
 yukti flow  <file>      run a deterministic flow (Talos engine) → yukti-results/<flow>.xml
 yukti flow --check <file>  build the flow and stop — no device, nothing performed
 yukti shot | ui | find "<label>" | tap <x> <y> | type "<text>" | clear <x> <y>
+yukti helper stop       Android: stop the resident screen helper (below)
 ```
+
+### Reading the screen on Android
+
+Every step reads the screen at least once. `uiautomator dump` takes about 2.4 s
+a read and refuses a screen that is still moving, so on Android a flow reads
+through a resident helper instead: [appium-uiautomator2-server](https://github.com/appium/appium-uiautomator2-server),
+two APKs from its GitHub release, pinned by version and sha256, downloaded once
+into `${XDG_CACHE_HOME:-~/.cache}/yukti/` and installed with `adb install -r -g`.
+A read then takes a fraction of a second - tens of milliseconds on a still
+screen - and the helper waits at most half a second for the screen to settle.
+Nothing else of Appium is used, and taps and typing still go through adb.
+When the helper cannot answer, the run falls back to `uiautomator dump` and
+says so once. Each read prints its source and time,
+and a flow ends with a count: `screen reads: 41 by the helper, 0 by uiautomator dump, 0 fallback(s)`.
+
+- **Lifetime.** The helper is started by `yukti flow` and stopped when that
+  flow ends. Single commands (`yukti ui`, `yukti tap-id` ...) use a helper that
+  is already up, and forward to it again if the forward was lost, and otherwise
+  dump. A suite runner should set `YUKTI_HELPER_KEEP=1` so
+  the helper stays up from one flow to the next, and run `yukti helper stop`
+  when the suite ends - including when it fails. The template in
+  `examples/ci/` does not do this yet: each flow there starts and stops its
+  own helper.
+- **One reader per device.** While the helper is up, any other
+  `uiautomator dump` on that device - yours, Maestro's, another Appium - is
+  killed. Stop it first with `yukti helper stop`.
+- **`YUKTI_HELPER=0`** turns it off: nothing is downloaded or installed, every
+  read is a dump. For a device that already runs its own Appium, and for
+  comparing before and after.
+- **On a phone.** The helper listens on port 6790 on every interface of the
+  device for as long as it is up: on Wi-Fi that is the screen and its taps open
+  to the network. `-g` grants it every runtime permission it declares, and while
+  it runs it suppresses other accessibility services, TalkBack included. All of
+  that ends when it stops, which is why it does not outlive the run by default.
+- **Trust.** The project publishes no checksums; the pinned sha256 are those of
+  our own download of the release. They catch a file that changed after the
+  pin, not a bad first one.
+- **A device where it cannot start** (Android older than 8, a phone that asks
+  before every install over USB, another build of the same package signed with
+  another key) is tried twice and then left alone for a day; `yukti helper stop`
+  clears that.
 
 ## CI
 
