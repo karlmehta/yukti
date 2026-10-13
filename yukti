@@ -404,11 +404,14 @@ atyped_is(){ local start="$1" sent="$2" dots="" k
   return 1; }
 # `input text` delivers nothing back. Under load the emulator drops characters
 # and the command still exits 0: 22 went in, 15 arrived, and the step reported
-# "type 22 chars" (#66). So the field is read back after every eight characters
-# - a short burst loses less than a long one - and a field that does not hold
-# what was sent is emptied and typed again, three times, before the step fails.
-# The failure names counts and never the value: the value may be a password.
-atype(){ apaths; local s="$1" m before start pre="" v i try sent empty n; m=${#s}
+# "type 22 chars" (#66). So the value goes in bursts of eight characters - a
+# short burst loses less than a long one - and the field is read back once,
+# after the last burst. A read costs seconds and a burst does not, so a read
+# after every burst made a 22-character value cost three reads where one says
+# the same (#106). A field that does not hold what was sent is emptied and typed
+# again, three times, before the step fails. The failure names counts and never
+# the value: the value may be a password.
+atype(){ apaths; local s="$1" m before start pre="" v i try empty n; m=${#s}
   # `input text` has key events for ASCII only; anything else never arrives, and
   # three attempts at it would end in counts that are not even characters.
   if printf '%s' "$s" | LC_ALL=C grep -q '[^ -~]'; then die "type: only ASCII text can be typed on Android"; fi
@@ -421,14 +424,11 @@ atype(){ apaths; local s="$1" m before start pre="" v i try sent empty n; m=${#s
     die "type: the masked field already holds text, and it cannot be typed again - clear the field first"
   fi
   for try in 1 2 3; do
-    i=0; sent=""
-    while [ "$i" -lt "${#v}" ]; do
-      asend "${v:$i:8}"; sent="${v:0:$((i+8))}"; i=$((i+8))
-      aread_typed
-      # A field that renders late is not a field that lost characters.
-      atyped_is "$start" "$sent" || { sleep 0.5; aread_typed; }
-      atyped_is "$start" "$sent" || [ "$try" = 3 ] || break
-    done
+    i=0
+    while [ "$i" -lt "${#v}" ]; do asend "${v:$i:8}"; i=$((i+8)); done
+    aread_typed
+    # A field that renders late is not a field that lost characters.
+    atyped_is "$start" "$v" || { sleep 0.5; aread_typed; }
     atyped_is "$start" "$v" && { [ "$try" = 1 ] || ok "type: $m characters arrived on attempt $try"; return 0; }
     [ "$try" = 3 ] && break
     warn "type: attempt $try lost characters - clearing the field and typing again"
@@ -527,6 +527,11 @@ if mode=="typed":
 best=best[:6]
 sys.stdout.write("%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s" % best)
 ' "$@"; }
+# Two rectangles "x1 y1 x2 y2" with the same left and right edges and the same
+# height: one field moved straight up or down, which is what a keyboard does.
+same_column(){ local a1 b1 a2 b2 c1 d1 c2 d2
+  read -r a1 b1 a2 b2 <<<"$1"; read -r c1 d1 c2 d2 <<<"$2"
+  [ "$a1" = "$c1" ] && [ "$a2" = "$c2" ] && [ $((b2 - b1)) -eq $((d2 - d1)) ]; }
 # Select all, then one delete. Forty blind deletes were a guess about how much
 # was in the field and about where the caret sat; two calls are neither. The
 # result is then read back, because the only fact that matters here is the state
@@ -541,12 +546,20 @@ aclear(){ apaths; local x="$1" y="$2" vb="${3:-clearText}" sdk before after prob
   # ever turns out to be wrong again. No quiet fallback to deleting character by
   # character: a clear that only looks like one is what this verb exists to end.
   [ "$sdk" -ge 31 ] || die "$vb needs Android 12 (API 31) or newer - 'input keycombination' does not exist on API $sdk"
-  local cls enb fcb res box out res2 box2 txt2
+  local cls enb fcb res box out res2 box2 txt2 st pre="" prebox="" asked=""
   # What the flow aimed at, read BEFORE the tap: a disabled or read-only field
   # takes no focus and no keys, and its text would sit there unchanged through
   # select-all, delete and the probe below - three readings agreeing on a lie.
-  out="$(afield at "$x" "$y")" || lookup_die $? "$vb: no element at $x,$y"
+  # The same read says which field holds focus before the tap, and clearTextId
+  # has already found the field in it: one tree for everything known before the
+  # first touch (#106).
+  [ -n "$HELD_TREE" ] || { HELD_TREE="$(aui)" || exit 1; }
+  st=0; out="$(afield at "$x" "$y")" || st=$?
+  [ "$st" -eq 0 ] || { HELD_TREE=""; lookup_die "$st" "$vb: no element at $x,$y"; }
   IFS=$'\x1f' read -r cls enb fcb res box before <<<"$out"
+  st=0; pre="$(afield focused)" || st=$?
+  HELD_TREE=""
+  case "$st" in 0) IFS=$'\x1f' read -r _ _ _ _ prebox _ <<<"$pre";; 3) ;; *) lookup_die "$st";; esac
   case "$cls" in *EditText*) ;; *) die "$vb: the element at $x,$y is a ${cls:-node with no class}, not a text field";; esac
   [ "$enb" = true ] || die "$vb: the field at $x,$y is disabled - it takes no keys"
   [ "$fcb" = true ] || die "$vb: the field at $x,$y cannot take focus - the keys would go elsewhere"
@@ -554,26 +567,48 @@ aclear(){ apaths; local x="$1" y="$2" vb="${3:-clearText}" sdk before after prob
   # From here on the focused field is the subject: it is the one the keys reach.
   # Which is only safe once it is the SAME field - a tap that opened a picker,
   # or landed on a keyboard the dump does not show, leaves focus where it was,
-  # and clearing that field would be reported as clearing this one.
-  out="$(afield focused)" || die "$vb: the tap at $x,$y did not put focus in a text field"
-  IFS=$'\x1f' read -r cls enb fcb res2 box2 txt2 <<<"$out"
-  # Two ids that differ settle it. Two that MATCH settle nothing: a resource id
-  # is not unique - the rows of a list and the repeated rows of a form share
-  # one. So the second question is asked every time: the same rectangle, or the
-  # same text it had before the tap. A field that is neither is another field.
-  if [ -n "$res" ] && [ -n "$res2" ] && [ "$res" != "$res2" ]; then
-    die "$vb: focus is in a different field ($res2), not the one at $x,$y ($res)"
+  # and clearing that field would be reported as clearing this one. Focus can
+  # only stay in ANOTHER field if another field had it before the tap. Then the
+  # field is asked for before any key, and a wrong one is left untouched.
+  # Otherwise the read after the keys answers both questions at once (#106).
+  if [ -n "$prebox" ] && [ "$prebox" != "$box" ]; then
+    out="$(afield focused)" || die "$vb: the tap at $x,$y did not put focus in a text field"
+    IFS=$'\x1f' read -r cls enb fcb res2 box2 txt2 <<<"$out"
+    # Two ids that differ settle it. Two that MATCH settle nothing: a resource id
+    # is not unique - the rows of a list and the repeated rows of a form share
+    # one. So the second question is asked every time: the same rectangle, or the
+    # same text it had before the tap. A field that is neither is another field.
+    if [ -n "$res" ] && [ -n "$res2" ] && [ "$res" != "$res2" ]; then
+      die "$vb: focus is in a different field ($res2), not the one at $x,$y ($res)"
+    fi
+    if [ "$box" != "$box2" ] && [ "$before" != "$txt2" ]; then
+      die "$vb: focus is in a different field than the one at $x,$y"
+    fi
+    asked=1
   fi
-  if [ "$box" != "$box2" ] && [ "$before" != "$txt2" ]; then
-    die "$vb: focus is in a different field than the one at $x,$y"
+  adb shell input keycombination 113 29 || die "$vb: the device refused select-all (Ctrl+A)"
+  adb shell input keyevent 67 || die "$vb: the device refused the delete key"
+  st=0; out="$(afield focused)" || st=$?
+  [ "$st" -eq 0 ] || lookup_die "$st" "$vb: the tap at $x,$y did not put focus in a text field"
+  IFS=$'\x1f' read -r cls enb fcb res2 box2 after <<<"$out"
+  # Nothing else held focus before the tap, so the focused field is the one the
+  # tap reached - or the one a picker it opened brought up. The ids tell them
+  # apart when both have one. The rectangle does it the rest of the time: the
+  # keyboard moves a field up the screen and leaves its left and right edges
+  # and its height alone. The text it had cannot be the proof here, as it was
+  # before the keys - the keys have just removed it.
+  if [ -z "$asked" ]; then
+    if [ -n "$res" ] && [ -n "$res2" ] && [ "$res" != "$res2" ]; then
+      die "$vb: focus is in a different field ($res2), not the one at $x,$y ($res)"
+    fi
+    # A node keeps its resource id when the keyboard moves it, so a rectangle that
+    # changed has to bring the same id with it - an empty one included.
+    [ "$box" = "$box2" ] || { [ "$res" = "$res2" ] && same_column "$box" "$box2"; } \
+      || die "$vb: focus is in a different field than the one at $x,$y"
   fi
   if [ "$box" != "$box2" ]; then
     warn "$vb: the field moved to $box2 when the keyboard opened"
   fi
-  adb shell input keycombination 113 29 || die "$vb: the device refused select-all (Ctrl+A)"
-  adb shell input keyevent 67 || die "$vb: the device refused the delete key"
-  out="$(afield focused)" || lookup_die $? "$vb: nothing on the screen has focus"
-  IFS=$'\x1f' read -r cls enb fcb res box after <<<"$out"
   [ -n "$after" ] || { ok "$vb: field empty at $x,$y"; return 0; }
   # Any text left is unresolved, whatever it is and whether or not it changed:
   # an EditText with nothing in it reports its HINT in the same attribute that
@@ -1078,7 +1113,105 @@ dismiss(){ local L xy st hit round=0
     round=$((round + 1))
     [ "$round" -lt 6 ] || { warn "dismiss: six interstitials tapped in a row - stopping here without reading the screen again, and leaving whatever is on it to the step that follows"; return 0; }
   done; }
-type_str(){ [ -n "${1:-}" ] || die "type: the value is empty"; is_android && { atype "$1"; return; }; paths; local s="$1" i; for ((i=0;i<${#s};i++)); do idb ui text --udid "$(U)" "${s:$i:1}" >/dev/null 2>&1; sleep 0.12; done; }  # char-by-char = reliable
+type_str(){ [ -n "${1:-}" ] || die "type: the value is empty"; is_android && { atype "$1"; return; }; itype "$1"; }
+# The text fields of the iOS tree, and what `type` made of them. idb reports no
+# focus, so the field that was typed into is the one whose value changed: the
+# fields are listed before the keys ("list", as JSON in $YUKTI_FIELDS) and
+# compared after them ("check", the value in $YUKTI_SENT - in the environment,
+# never on a command line). A field matches when it holds what it held plus the
+# value, or the value alone (it was empty, or showed its placeholder), and has
+# changed - a field that held the value already proves nothing. A secure
+# field is compared as dots, with its last character allowed in the clear for a
+# moment, the way the Android side does it. Status 0: arrived. 4: not there,
+# with how many characters did arrive - as many deletes take them back out.
+# 5: more than one field changed, so there is no telling which one was typed
+# into. 1 and 2 are the lookup statuses: no tree, an unreadable one.
+ifields(){ paths; ui | "$PY" -c '
+import json,sys,os,traceback
+# Never status 1 on its own: that one means the screen could not be read and
+# the reason is already out. Anything unforeseen leaves as 2, as in find_el.
+def _unforeseen(t,v,tb):
+    traceback.print_exception(t,v,tb); sys.stderr.flush(); os._exit(2)
+sys.excepthook=_unforeseen
+raw=sys.stdin.read()
+if not raw.strip(): sys.exit(1)
+try: els=json.loads(raw)
+except ValueError: sys.exit(2)
+def fields(els):
+    out=[]
+    for e in els:
+        b=e.get("frame") or {}
+        g=lambda *k: float(next((b[n] for n in k if n in b), 0) or 0)
+        x,y,w,h=g("x","X"),g("y","Y"),g("width","Width"),g("height","Height")
+        t=(str(e.get("type") or "")+" "+str(e.get("role_description") or "")).lower()
+        if w<=0 or h<=0 or not ("field" in t or "textview" in t): continue
+        out.append([int(x),int(y),int(w),int(h),str(e.get("AXValue") or "")])
+    return out
+now=fields(els)
+if sys.argv[1]=="list":
+    sys.stdout.write(json.dumps(now)); sys.exit(0)
+was=json.loads(os.environ["YUKTI_FIELDS"]); sent=os.environ["YUKTI_SENT"]
+DOT="\u2022"
+# The same field before the keys: the same frame, or - when the keyboard or a
+# scroll to the caret moved the layout between the reads - the same place in
+# the column of fields of its shape, counted from the top. A move up or down
+# keeps that order; a column that gained or lost a field has no answer.
+def column(fs,f): return sorted((o for o in fs if (o[0],o[2],o[3])==(f[0],f[2],f[3])), key=lambda o:o[1])
+def before(f):
+    for o in was:
+        if o[:4]==f[:4]: return o[4]
+    old,new=column(was,f),column(now,f)
+    return old[new.index(f)][4] if len(old)==len(new) else ""
+def arrived(old,new):
+    if new in (old+sent, sent): return True
+    dots=DOT*(len(sent)-1)
+    return new in (dots+DOT, dots+sent[-1]) or (old and set(old)<={DOT} and new in (old+dots+DOT, old+dots+sent[-1]))
+changed=[]
+for f in now:
+    old=before(f)
+    # Unchanged is not arrived: a field that already held the value says
+    # nothing about where the keys went.
+    if f[4]==old: continue
+    if arrived(old,f[4]): sys.exit(0)
+    changed.append((old,f[4]))
+if len(changed)>1: sys.exit(5)
+n=0
+if changed:
+    old,new=changed[0]
+    n=len(new)-len(old) if new.startswith(old) else len(new)
+sys.stdout.write("%d" % max(n,0)); sys.exit(4)
+' "$1"; }
+# iOS types in the same shape as Android: the status of every key kept (#28),
+# and one read after the last to see that the value arrived (#106). A field that
+# renders late gets one more read half a second on; a field that is still short
+# loses what did arrive, and the value is typed again, three times in all - the
+# deletes go from the caret, so the value is taken to have gone in at the end of
+# the field, as on Android. The keys stay one at a time: idb's own bulk text
+# drops characters (README), and bursts wait until they can be measured on a
+# simulator. Written from the idb docs, not run on a simulator yet (#87).
+itype(){ paths; local s="$1" m=${#1} u was st try i n=0
+  u="$(U)"
+  st=0; was="$(ifields list)" || st=$?
+  [ "$st" -eq 0 ] || lookup_die "$st"
+  for try in 1 2 3; do
+    i=0
+    while [ "$i" -lt "$m" ]; do
+      idb ui text --udid "$u" "${s:$i:1}" >/dev/null 2>&1 || die "type: the simulator refused a key"
+      sleep 0.12; i=$((i+1))
+    done
+    st=0; n="$(YUKTI_FIELDS="$was" YUKTI_SENT="$s" ifields check)" || st=$?
+    [ "$st" -eq 4 ] && { sleep 0.5; st=0; n="$(YUKTI_FIELDS="$was" YUKTI_SENT="$s" ifields check)" || st=$?; }
+    case "$st" in
+      0) [ "$try" = 1 ] || ok "type: $m characters arrived on attempt $try"; return 0;;
+      4) ;;
+      5) die "type: more than one text field changed - there is no telling which one was typed into";;
+      *) lookup_die "$st";;
+    esac
+    [ "$try" = 3 ] && break
+    warn "type: attempt $try lost characters - clearing the field and typing again"
+    for ((i=0;i<n;i++)); do idb ui key --udid "$u" 42 >/dev/null 2>&1 || die "type: the simulator refused the delete key"; done
+  done
+  die "type: arrived $n of $m characters after 3 attempts"; }
 # The right edge of the field under a point, and what it holds. Both come out of
 # one dump: on iOS the caret has to be put at the end of THIS field before
 # deleting, and the old code tapped a fixed x=360 - right for one screen width
@@ -1118,12 +1251,18 @@ sys.stdout.write("%d\x1f%s\x1f%s" % (int(x+w-4), "field" if ("field" in t or "te
 # one form. The read-back after them is the same rule as on Android.
 iclear(){ paths; local x="${1:?x}" y="${2:?y}" vb="${3:-clearText}" u out edge val after i kind
   # iOS is written from the idb docs and has not been run - see AF-USER-GUIDE.
-  u="$(U)"
-  idb ui tap --udid "$u" "$x" "$y" || die "$vb: the simulator refused the tap on the field"
-  sleep .4
-  out="$(ifield_probe "$x" "$y")" || lookup_die $? "$vb: no element at $x,$y"
+  # The field is read before the tap: what it holds and where its edge is are
+  # the same either side of it, and clearTextId has already found the field in
+  # this tree - one read for both (#106). The tap stays even for an empty field:
+  # the `type` that follows a clear types into the field the clear focused.
+  local st=0; u="$(U)"
+  out="$(ifield_probe "$x" "$y")" || st=$?
+  HELD_TREE=""
+  [ "$st" -eq 0 ] || lookup_die "$st" "$vb: no element at $x,$y"
   IFS=$'\x1f' read -r edge kind val <<<"$out"
   [ "$kind" = field ] || die "$vb: the element at $x,$y is a $kind, not a text field"
+  idb ui tap --udid "$u" "$x" "$y" || die "$vb: the simulator refused the tap on the field"
+  sleep .4
   [ -n "$val" ] || { ok "$vb: the field was already empty"; return 0; }
   idb ui tap --udid "$u" "$edge" "$y" || die "$vb: the simulator refused the tap at the end of the field"
   sleep .3
@@ -1354,7 +1493,14 @@ assert_box(){
 # makes a value neither the flow nor the app ever names, and the run fails on a
 # later step, far from the line that caused it. The clearing itself, and every
 # check around it, is the one `clearText` does.
-clear_id(){ local q="${1:-}"; [ -n "$q" ] || die "clearTextId needs a non-empty id"; local xy st=0; xy="$(find_el "$q" id)" || st=$?; [ "$st" -eq 0 ] || die "$(lookup_err "$st")"; [ -n "$xy" ] || die "no element with id '$q'"; clear_field $xy "clearTextId '$q'"; }
+# The tree the field is found in is held for the clearing, which reads the same
+# screen before its first touch: one read where there were two (#106).
+clear_id(){ local q="${1:-}"; [ -n "$q" ] || die "clearTextId needs a non-empty id"; local xy st=0
+  HELD_TREE=""; HELD_TREE="$(ui)" || exit 1
+  xy="$(find_el "$q" id)" || st=$?
+  [ "$st" -eq 0 ] || { HELD_TREE=""; die "$(lookup_err "$st")"; }
+  [ -n "$xy" ] || { HELD_TREE=""; die "no element with id '$q'"; }
+  clear_field $xy "clearTextId '$q'"; }
 # A lookup answers with coordinates, with "no such element", or with no answer at
 # all - and "no answer" comes in two flavours the caller has to tell apart: the
 # screen could not be read (status 1: the dump failed) and the screen was read but
