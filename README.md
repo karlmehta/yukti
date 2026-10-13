@@ -124,18 +124,21 @@ a read and refuses a screen that is still moving, so on Android a flow reads
 through a resident helper instead: [appium-uiautomator2-server](https://github.com/appium/appium-uiautomator2-server),
 two APKs from its GitHub release, pinned by version and sha256, downloaded once
 into `${XDG_CACHE_HOME:-~/.cache}/yukti/` and installed with `adb install -r -g`.
-A read then takes tens of milliseconds, and the helper waits at most half a
-second for the screen to settle. Nothing else of Appium is used, and taps and
-typing still go through adb. When the helper cannot answer, the run falls back
-to `uiautomator dump` and says so once. Each read prints its source and time,
-and a flow ends with a count: `screen reads: 41 by the helper, 0 by uiautomator dump`.
+A read then takes a fraction of a second - tens of milliseconds on a still
+screen - and the helper waits at most half a second for the screen to settle.
+Nothing else of Appium is used, and taps and typing still go through adb.
+When the helper cannot answer, the run falls back to `uiautomator dump` and
+says so once. Each read prints its source and time,
+and a flow ends with a count: `screen reads: 41 by the helper, 0 by uiautomator dump, 0 fallback(s)`.
 
 - **Lifetime.** The helper is started by `yukti flow` and stopped when that
   flow ends. Single commands (`yukti ui`, `yukti tap-id` ...) use a helper that
   is already up, and forward to it again if the forward was lost, and otherwise
-  dump. A suite runner sets `YUKTI_HELPER_KEEP=1` so
-  the helper stays up from one flow to the next, and runs `yukti helper stop`
-  when the suite ends - including when it fails.
+  dump. A suite runner should set `YUKTI_HELPER_KEEP=1` so
+  the helper stays up from one flow to the next, and run `yukti helper stop`
+  when the suite ends - including when it fails. The template in
+  `examples/ci/` does not do this yet: each flow there starts and stops its
+  own helper.
 - **One reader per device.** While the helper is up, any other
   `uiautomator dump` on that device - yours, Maestro's, another Appium - is
   killed. Stop it first with `yukti helper stop`.
