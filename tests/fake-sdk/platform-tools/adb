@@ -17,6 +17,15 @@
 #                  holding a number n: only the first n bursts do
 #   tap-fails      present: `input tap` exits 1
 #   screencap      "fail": exit 1; "hang": never answer; absent: a small PNG
+#
+# The screen helper (tests/fake-sdk/uia2-server) shares the directory:
+#   running        the helper is up; a dump while it is gets killed (empty)
+#   foreign        another tool's helper is up: the same, for the dump
+#   server-port    where the fake helper listens; a forward points there
+#   forward        the local port of this device's forward to the helper
+#   installed      both helper packages are on the device
+#   install-fails  present: `adb install` exits 1
+#   start-fails    present: `am instrument` exits at once, nothing comes up
 import os, sys, time
 from xml.sax.saxutils import quoteattr
 
@@ -35,9 +44,12 @@ def read(name, default=""):
 def write(name, text):
     with open(path(name), "w") as fh: fh.write(text)
 
+HELPER = "io.appium.uiautomator2.server"
 if "uiautomator dump" in line:
     n = int(read("dumps", "0") or 0) + 1
     write("dumps", str(n))
+    # One UiAutomation per device: a live helper kills the dump on the spot.
+    if has("running") or has("foreign"): sys.exit(0)
     while n > 1 and not has("dump-%d.xml" % n): n -= 1
     # quoteattr quotes as uiautomator does on a device (measured on an API 34
     # emulator): "..." as a rule, '...' around a value that holds a ".
@@ -76,3 +88,30 @@ elif line == "shell wm density":
     print("Physical density: 420")
 elif args[:1] == ["devices"]:
     print("List of devices attached\nemulator-5554\tdevice\n")
+elif args == ["get-serialno"]:
+    print("emulator-5554")
+elif args == ["forward", "--list"]:
+    if has("forward"): print("emulator-5554 tcp:%s tcp:6790" % read("forward").strip())
+elif args == ["forward", "tcp:0", "tcp:6790"]:
+    p = read("server-port").strip()
+    if not p: sys.exit(1)
+    write("forward", p); print(p)
+elif args[:2] == ["forward", "--remove"]:
+    if has("forward") and args[2:] == ["tcp:" + read("forward").strip()]: os.remove(path("forward"))
+elif args == ["shell", "pidof", HELPER]:
+    if has("running") or has("foreign"): print("4242")
+    else: sys.exit(1)
+elif args == ["shell", "am force-stop %s; am force-stop %s.test" % (HELPER, HELPER)]:
+    if has("running"): os.remove(path("running"))
+elif args == ["shell", "pm path %s; pm path %s.test" % (HELPER, HELPER)]:
+    if has("installed"): print("package:/data/app/server/base.apk\npackage:/data/app/test/base.apk")
+elif args[:3] == ["install", "-r", "-g"]:
+    if has("install-fails"): sys.exit(1)
+    write("installed", "")
+elif args[:4] == ["shell", "am", "instrument", "-w"]:
+    # The real client returns when the instrumentation ends; this one when the
+    # helper is stopped, or after a minute so a forgotten case cannot hang.
+    if has("start-fails"): sys.exit(1)
+    write("running", "")
+    t = time.time()
+    while has("running") and time.time() - t < 60: time.sleep(0.1)

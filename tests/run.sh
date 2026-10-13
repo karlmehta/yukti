@@ -138,7 +138,7 @@ node_y(){ local y; y="$(printf '%s' "$1" | cksum | cut -d' ' -f1)"; printf '%d' 
 # run_flow <flow> [VAR=value...] - the flow against the fake, output kept in
 # $case_dir/out and the status in $run_status.
 run_flow(){ local f="$1"; shift
-  env -u ANDROID_SDK_ROOT ANDROID_HOME="$ROOT/tests/fake-sdk" YUKTI_PLATFORM=android \
+  env -u ANDROID_SDK_ROOT ANDROID_HOME="$ROOT/tests/fake-sdk" YUKTI_PLATFORM=android YUKTI_HELPER=0 \
     FAKE_ADB_DIR="$case_dir/adb" YUKTI_RESULTS_DIR="$case_dir/res" TMPDIR="$case_dir/tmp" "$@" \
     "$YUKTI" flow "$f" > "$case_dir/out" 2>&1
   run_status=$?
@@ -600,6 +600,263 @@ begin "clearTextId on iOS: one read finds the field, one proves it empty"
 status_is 0; ireads_are 2; ityped_is ""
 has out.txt "field empty at 190,220"
 verdict
+
+# ── the resident screen helper (#105) ────────────────────────────────────────
+# The helper is tests/fake-sdk/uia2-server, one per case on a free port, and
+# the fake adb forwards to it. The cache starts with the pinned pair already
+# marked as installed on the fake device, so a case downloads and installs
+# nothing unless it means to - the fake APKs could never match the real sha.
+SERVER_SHA="$(sed -n 's/^UIA2_SERVER_SHA="\(.*\)"$/\1/p' "$YUKTI")"
+TEST_SHA="$(sed -n 's/^UIA2_TEST_SHA="\(.*\)"$/\1/p' "$YUKTI")"
+SERVER_APK="$(sed -n 's/^UIA2_VER="\(.*\)"$/appium-uiautomator2-server-\1.apk/p' "$YUKTI")"
+CACHE_SUB="$(sed -n 's/^UIA2_VER="\(.*\)"$/yukti\/uia2-\1/p' "$YUKTI")"
+CACHE="cache/$CACHE_SUB"
+server_pid=""
+helper_case(){ dev_case "$1"; mkdir -p "$case_dir/$CACHE" "$case_dir/bin"
+  printf '%s %s' "$SERVER_SHA" "$TEST_SHA" > "$case_dir/$CACHE/installed-emulator-5554"
+  : > "$case_dir/adb/installed"
+  /usr/bin/python3 "$ROOT/tests/fake-sdk/uia2-server" "$case_dir/adb" & server_pid=$!
+  local i; for i in $(seq 1 50); do [ -s "$case_dir/adb/server-port" ] && break; sleep 0.1; done; }
+# Remove one file of the case. The guard keeps an empty case_dir from turning
+# the path into one at the root.
+gone(){ rm -f "${case_dir:?}/$1"; }
+# Stop what a case left running: the fake server, and a fake `am instrument`
+# that waits for the helper to be stopped.
+helper_done(){ gone adb/running; [ -z "$server_pid" ] || kill "$server_pid" 2>/dev/null; wait "$server_pid" 2>/dev/null; server_pid=""; }
+# helper_screen <file> <element>... - the tree as the helper writes it:
+# indented, one element per line, each named by its class.
+helper_screen(){ local f="$1" n; shift
+  { printf "<?xml version='1.0' encoding='UTF-8' standalone='yes' ?>\r\n"
+    printf '<hierarchy index="0" class="hierarchy" rotation="0" width="1080" height="2400">\r\n'
+    printf '  <android.widget.FrameLayout index="0" package="com.example" class="android.widget.FrameLayout" text="" resource-id="" bounds="[0,0][1080,2400]" displayed="true">\r\n'
+    for n in "$@"; do printf '    %s\r\n' "$n"; done
+    printf '  </android.widget.FrameLayout>\r\n</hierarchy>'; } > "$f"; }
+# hnode <class> <resource-id> <text> - one element as the helper writes it: no
+# content-desc when it is empty, attributes of its own the dump does not have.
+hnode(){ printf '<android.widget.%s index="0" package="com.example" class="android.widget.%s" text="%s" resource-id="com.example:id/%s" clickable="true" enabled="true" focusable="true" focused="false" password="false" bounds="[0,%d][1080,%d]" displayed="true" />' \
+  "$1" "$1" "$3" "$2" "$(node_y "$2")" "$(( $(node_y "$2") + 120 ))"; }
+# run_helper <yukti args...> [-- VAR=value...] - like run_flow, with the helper
+# allowed and the case's own cache and PATH.
+run_helper(){ local a=() e=()
+  while [ $# -gt 0 ] && [ "$1" != "--" ]; do a+=("$1"); shift; done
+  [ $# -gt 0 ] && { shift; e=("$@"); }
+  env -u ANDROID_SDK_ROOT -u YUKTI_HELPER -u YUKTI_HELPER_KEEP -u ANDROID_SERIAL \
+    ANDROID_HOME="$ROOT/tests/fake-sdk" YUKTI_PLATFORM=android PATH="$case_dir/bin:$PATH" \
+    FAKE_ADB_DIR="$case_dir/adb" YUKTI_RESULTS_DIR="$case_dir/res" TMPDIR="$case_dir/tmp" \
+    XDG_CACHE_HOME="$case_dir/cache" ${e[@]+"${e[@]}"} "$YUKTI" "${a[@]}" > "$case_dir/out" 2>&1
+  run_status=$?
+  sed $'s/\033\\[[0-9;]*m//g' "$case_dir/out" > "$case_dir/out.txt"; }
+count_is(){ local n; n="$(grep -cF -- "$2" "$case_dir/$1" 2>/dev/null)"; [ "${n:-0}" -eq "$3" ] || no "$1 has \"$2\" ${n:-0} times, wanted $3"; }
+is_there(){ [ -e "$case_dir/$1" ] || no "$1 is missing"; }
+value_is(){ [ "$(cat "$case_dir/$1" 2>/dev/null)" = "$2" ] || no "$1 is '$(cat "$case_dir/$1" 2>/dev/null)', wanted '$2'"; }
+
+helper_case helper-reads
+: > "$case_dir/adb/running"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hnode TextView title Today)"
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "title" }' '{ "do": "tapId", "value": "title" }'
+run_helper flow "$case_dir/flow.json"
+begin "helper: a live helper answers every read, no dump at all"
+status_is 0; fake_used; file_absent adb/dumps
+has adb/settings '"waitForIdleTimeout":500'; count_is adb/http-log "/source" 2
+lacks adb/log "am instrument"; lacks adb/log "force-stop"
+has out.txt "· read helper"; has out.txt "screen reads: 2 by the helper, 0 by uiautomator dump, 0 fallback(s)"
+verdict; helper_done
+
+helper_case helper-start-fails
+: > "$case_dir/adb/start-fails"
+screen "$case_dir/adb/dump-1.xml" "$(node TextView title Today)"
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "title" }' '{ "do": "assertId", "value": "title" }'
+run_helper flow "$case_dir/flow.json"
+begin "helper: a start that fails is tried once, then the run dumps"
+status_is 0; count_is adb/log "am instrument" 1; count_is adb/log "force-stop" 1; value_is adb/dumps 2
+count_is out.txt "screen helper: it did not come up" 1
+value_is "$CACHE/start-fail-emulator-5554" 1
+verdict; helper_done
+
+helper_case helper-nonxml
+: > "$case_dir/adb/running"; echo nonxml > "$case_dir/adb/source-mode"
+screen "$case_dir/adb/dump-1.xml" "$(node TextView title Today)"
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "title" }' '{ "do": "assertId", "value": "title" }'
+run_helper flow "$case_dir/flow.json"
+begin "helper: three answers in a row that are not a tree stop it, and the run dumps"
+status_is 0; value_is adb/sources 3; count_is adb/log "force-stop" 1; value_is adb/dumps 2
+has out.txt "three reads in a row gave no tree"; has out.txt "1 fallback(s)"
+verdict; helper_done
+
+helper_case helper-nonxml-once
+: > "$case_dir/adb/running"; echo nonxml-once > "$case_dir/adb/source-mode"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hnode TextView title Today)"
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "title" }'
+run_helper flow "$case_dir/flow.json"
+begin "helper: one answer that is not a tree is read again, not given up on"
+status_is 0; value_is adb/sources 2; file_absent adb/dumps; lacks adb/log "force-stop"
+verdict; helper_done
+
+helper_case helper-off
+gone "$CACHE/installed-emulator-5554"
+screen "$case_dir/adb/dump-1.xml" "$(node TextView title Today)"
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "title" }'
+run_helper flow "$case_dir/flow.json" -- YUKTI_HELPER=0
+begin "helper: YUKTI_HELPER=0 never asks the helper and never touches the cache"
+status_is 0; value_is adb/dumps 1; file_absent adb/http-log
+[ -z "$(ls -A "$case_dir/$CACHE")" ] || no "the cache was written: $(ls -A "$case_dir/$CACHE")"
+lacks adb/log "forward"; lacks adb/log "get-serialno"; lacks adb/log "pidof"
+verdict; helper_done
+
+helper_case helper-sha-mismatch
+gone adb/installed; gone "$CACHE/installed-emulator-5554"
+printf 'not the release' > "$case_dir/adb/download-$SERVER_APK"
+screen "$case_dir/adb/dump-1.xml" "$(node TextView title Today)"
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "title" }' '{ "do": "assertId", "value": "title" }'
+run_helper flow "$case_dir/flow.json"
+begin "helper: a download that does not match the pinned sha is thrown away, nothing installed"
+status_is 0; has adb/log "curl https://github.com/appium/appium-uiautomator2-server/releases/download/"
+lacks adb/log "install -r -g"; lacks adb/log "am instrument"
+file_absent "$CACHE/$SERVER_APK"; [ -z "$(ls -A "$case_dir/$CACHE" | grep download)" ] || no "a partial download was left in the cache"
+count_is out.txt "did not match the pinned sha256" 1; value_is adb/dumps 2
+verdict; helper_done
+
+helper_case helper-stale-session
+: > "$case_dir/adb/running"; printf 'stale' > "$case_dir/$CACHE/session-emulator-5554"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hnode TextView title Today)"
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "title" }'
+run_helper flow "$case_dir/flow.json" -- YUKTI_HELPER_KEEP=1
+begin "helper: a kept session that expired is opened again, and the wait set after it"
+status_is 0; file_absent adb/dumps; value_is adb/sessions 1; has adb/settings '"waitForIdleTimeout":500'
+has adb/http-log "GET /session/stale/source"; value_is "$CACHE/session-emulator-5554" s1
+verdict; helper_done
+
+helper_case helper-forward-lost
+: > "$case_dir/adb/running"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hnode TextView title Today)"
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "title" }'
+run_helper flow "$case_dir/flow.json" -- YUKTI_HELPER_KEEP=1
+gone adb/forward; : > "$case_dir/adb/log"
+run_helper flow "$case_dir/flow.json" -- YUKTI_HELPER_KEEP=1
+begin "helper: a forward lost with adbd is made again; nothing is installed or started"
+status_is 0; file_absent adb/dumps; has adb/log "forward tcp:0 tcp:6790"
+lacks adb/log "install"; lacks adb/log "am instrument"; value_is adb/sessions 1
+verdict; helper_done
+
+helper_case helper-stop
+: > "$case_dir/adb/running"; echo 4321 > "$case_dir/adb/forward"
+printf 's9' > "$case_dir/$CACHE/session-emulator-5554"; echo 2 > "$case_dir/$CACHE/start-fail-emulator-5554"
+run_helper helper stop
+begin "helper: 'yukti helper stop' stops it, removes the forward and forgets the kept state"
+status_is 0; has adb/log "force-stop"; has adb/log "forward --remove tcp:4321"
+file_absent adb/running; file_absent adb/forward
+file_absent "$CACHE/session-emulator-5554"; file_absent "$CACHE/start-fail-emulator-5554"
+verdict; helper_done
+
+helper_case helper-start-twice
+: > "$case_dir/adb/start-fails"
+screen "$case_dir/adb/dump-1.xml" "$(node TextView title Today)"
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "title" }'
+run_helper flow "$case_dir/flow.json"; run_helper flow "$case_dir/flow.json"; run_helper flow "$case_dir/flow.json"
+begin "helper: after two failed starts in a row the device is not tried again"
+status_is 0; count_is adb/log "am instrument" 2; value_is "$CACHE/start-fail-emulator-5554" 2
+has out.txt "failed to start twice in a row"
+verdict; helper_done
+
+helper_case helper-holds-dump
+: > "$case_dir/adb/foreign"
+screen "$case_dir/adb/dump-1.xml" "$(node TextView title Today)"
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "title" }'
+run_helper flow "$case_dir/flow.json" -- YUKTI_HELPER=0
+begin "helper: a dump killed by somebody's helper says so"
+status_is 1; has out.txt "is running on the device and takes every dump down"; has out.txt "yukti helper stop"
+verdict; helper_done
+
+helper_case helper-no-dump
+printf 'garbage' > "$case_dir/adb/dump-1.xml"
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "title" }'
+run_helper flow "$case_dir/flow.json" -- YUKTI_HELPER=0
+begin "helper: with no helper on the device an empty dump keeps its old message"
+status_is 1; has out.txt "the screen may still be animating"; lacks out.txt "takes every dump down"
+verdict; helper_done
+
+helper_case helper-other-sha
+printf 'old old' > "$case_dir/$CACHE/installed-emulator-5554"
+printf 'tampered' > "$case_dir/$CACHE/$SERVER_APK"
+screen "$case_dir/adb/dump-1.xml" "$(node TextView title Today)"
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "title" }'
+run_helper flow "$case_dir/flow.json"
+begin "helper: another pair on the device means a reinstall, and the cached APK is checked first"
+status_is 0; lacks adb/log "install -r -g"; file_absent "$CACHE/$SERVER_APK"
+has adb/log "curl "; has out.txt "did not match the pinned sha256"
+verdict; helper_done
+
+helper_case helper-tags
+: > "$case_dir/adb/running"
+helper_screen "$case_dir/adb/helper-1.xml" \
+  '<android.widget.FrameLayout index="0" package="com.example" class="android.widget.FrameLayout" text="" resource-id="" bounds="[0,100][1080,2400]">' \
+  '<com.facebook.react.views.view.ReactViewGroup index="0" package="com.example" class="com.facebook.react.views.view.ReactViewGroup" text="" resource-id="" bounds="[0,100][1080,2400]">' \
+  '<com.example.Outer$Inner index="0" package="com.example" class="com.example.Outer$Inner" text="" resource-id="" bounds="[0,100][1080,2400]">' \
+  "$(hnode TextView deep "$MARK")" '</com.example.Outer$Inner>' '</com.facebook.react.views.view.ReactViewGroup>' '</android.widget.FrameLayout>'
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "deep" }' '{ "do": "waitForId", "value": "missing", "timeout": 1 }'
+run_helper flow "$case_dir/flow.json"
+begin "helper: every tag but the root becomes <node>, open, closing and empty"
+status_is 1; has out.txt "not on screen"; file_full res/flow-fail.xml; has res/flow-fail.xml "$MARK"
+lacks res/flow-fail.xml "<android."; lacks res/flow-fail.xml "</android."; lacks res/flow-fail.xml "<com."; lacks res/flow-fail.xml "</com."
+has res/flow-fail.xml "<hierarchy"; has res/flow-fail.xml "</hierarchy>"
+verdict; helper_done
+
+helper_case helper-ui-kept
+: > "$case_dir/adb/running"; printf 's1' > "$case_dir/adb/session"; printf '1' > "$case_dir/adb/sessions"
+printf 's1' > "$case_dir/$CACHE/session-emulator-5554"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hnode TextView title Today)"
+run_helper ui
+begin "helper: 'yukti ui' reads through a kept helper whose forward was lost, and leaves it up"
+status_is 0; has out "com.example:id/title"; file_absent adb/dumps; has adb/log "forward tcp:0 tcp:6790"
+is_there adb/running; lacks adb/log "force-stop"; lacks adb/log "am instrument"
+verdict; helper_done
+
+helper_case helper-ui-none
+screen "$case_dir/adb/dump-1.xml" "$(node TextView title Today)"
+run_helper ui
+begin "helper: 'yukti ui' with no helper dumps, and starts nothing"
+status_is 0; has out "com.example:id/title"; value_is adb/dumps 1
+lacks adb/log "am instrument"; lacks adb/log "forward tcp:0"; lacks out.txt "screen helper:"
+verdict; helper_done
+
+helper_case helper-own-stop
+printf '#!/bin/sh\necho "setsid $*" >> "%s/adb/log"; exit 1\n' "$case_dir" > "$case_dir/bin/setsid"; chmod +x "$case_dir/bin/setsid"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hnode TextView title Today)"
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "title" }'
+run_helper flow "$case_dir/flow.json"
+begin "helper: a flow starts it without setsid(1) and stops it on the way out"
+status_is 0; file_absent adb/dumps; count_is adb/log "am instrument" 1; lacks adb/log "setsid"
+has adb/log "force-stop"; file_absent adb/running; file_absent adb/forward
+file_absent "$CACHE/start-fail-emulator-5554"
+verdict; helper_done
+
+helper_case helper-keep
+helper_screen "$case_dir/adb/helper-1.xml" "$(hnode TextView title Today)"
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "title" }'
+run_helper flow "$case_dir/flow.json" -- YUKTI_HELPER_KEEP=1
+begin "helper: YUKTI_HELPER_KEEP=1 leaves it up with its session for the next run"
+status_is 0; count_is adb/log "am instrument" 1; lacks adb/log "force-stop"
+is_there adb/running; value_is "$CACHE/session-emulator-5554" s1
+verdict; run_helper helper stop; helper_done
+
+helper_case helper-slow
+: > "$case_dir/adb/running"; echo slow > "$case_dir/adb/source-mode"
+screen "$case_dir/adb/dump-1.xml" "$(node TextView title Today)"
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "title" }'
+run_helper flow "$case_dir/flow.json" -- YUKTI_HELPER_TIMEOUT=1
+begin "helper: a read that times out is a failed try; three of them and the run dumps"
+status_is 0; value_is adb/sources 3; value_is adb/dumps 1; has out.txt "three reads in a row gave no tree"
+[ "$(sed -n '/source/,$p' "$case_dir/adb/http-log" | grep -c /status)" -eq 0 ] || no "/status was asked after a timeout"
+verdict; helper_done
+
+helper_case helper-died
+: > "$case_dir/adb/running"; echo die > "$case_dir/adb/source-mode"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hnode TextView title Today)"
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "title" }'
+run_helper flow "$case_dir/flow.json"
+begin "helper: a helper that died mid-run is started again, once"
+status_is 0; file_absent adb/dumps; count_is adb/log "am instrument" 1; value_is adb/sessions 2
+verdict; helper_done
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

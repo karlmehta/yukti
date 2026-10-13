@@ -219,14 +219,302 @@ HELD_TREE=""
 keep_tree(){ [ -z "${YUKTI_STEP_ERR:-}" ] || rm -f "$YUKTI_STEP_ERR.kind" 2>/dev/null || true
   [ -n "${YUKTI_LAST_TREE:-}" ] || return 0
   { printf '%s' "$1" > "$YUKTI_LAST_TREE" && printf '%s' "${FLOW_IDX:-0}" > "$YUKTI_LAST_TREE.step"; } 2>/dev/null || true; }
+# ── resident screen helper (Android) ─────────────────────────────────────────
+# A dump costs 2.4 s on a still screen and is refused outright on a moving one
+# ("could not get idle state"), and every step reads the screen at least once.
+# appium-uiautomator2-server answers the same tree in 20-60 ms: it holds one
+# UiAutomation open for as long as it lives instead of building one per read,
+# and it can be told to wait at most half a second for the screen to settle
+# (#105). It is two APKs from the project's GitHub release, pinned by version
+# and sha256; nothing else of Appium is involved.
+#
+# The helper is a READER only: aui() asks it first and falls back to the dump
+# exactly as before when it cannot answer. Taps, typing and scrolling stay on
+# adb. There is one UiAutomation per device: while the helper lives, a dump -
+# ours, or anybody else's - is killed on the spot. So the fallback stops the
+# helper before it dumps, and the helper does not outlive the run that started
+# it unless the caller asks for that (YUKTI_HELPER_KEEP=1, which a suite runner
+# sets and pairs with `yukti helper stop`). It listens on every interface of the
+# device, which on a phone on Wi-Fi is the screen and its taps open to the
+# network for as long as it is up - one more reason not to leave it behind.
+#
+# Where things live: what one run learned (port, session, "do not use it here")
+# in the run directory, gone when the run ends; what outlives a run (the APKs,
+# which sha is installed on which device, a session a kept helper still holds,
+# how many starts failed in a row) in the user's cache, keyed by serial.
+UIA2_VER="v10.6.6"
+UIA2_REL="https://github.com/appium/appium-uiautomator2-server/releases/download/$UIA2_VER"
+UIA2_SERVER_APK="appium-uiautomator2-server-$UIA2_VER.apk"
+UIA2_SERVER_SHA="8ff760a2a86b487f53090fbdcd5b0360e67d02bb811887d527a9557b0d59c80d"
+UIA2_TEST_APK="appium-uiautomator2-server-debug-androidTest.apk"
+UIA2_TEST_SHA="e6f729287d72351388fd66597c35b69988b9091a7011954bf92a55d416cb1e1c"
+UIA2_PKG="io.appium.uiautomator2.server"
+UIA2_TEST_PKG="io.appium.uiautomator2.server.test"
+UIA2_PORT=6790
+HELPER_WHY=""
+helper_cache(){ printf '%s/yukti/uia2-%s' "${XDG_CACHE_HOME:-$HOME/.cache}" "$UIA2_VER"; }
+# The serial names the files a device's state lives in, and picks its forward
+# out of `adb forward --list`, which lists every device on the machine. adb
+# itself is never told a serial here: it takes ANDROID_SERIAL like every other
+# adb call of the engine.
+helper_serial(){ local d s; d="$(run_dir)"
+  [ -s "$d/helper-serial" ] && { cat "$d/helper-serial"; return 0; }
+  s="${ANDROID_SERIAL:-}"; [ -n "$s" ] || s="$(adb get-serialno 2>/dev/null | tr -d '\r\n' || true)"
+  case "$s" in ''|unknown) return 1;; esac
+  printf '%s' "$s" > "$d/helper-serial"; printf '%s' "$s"; }
+# The serial as part of a file name: a device on Wi-Fi is "192.168.1.5:5555".
+helper_key(){ printf '%s' "$1" | tr -c 'A-Za-z0-9._-' '_'; }
+file_sha(){ "$PY" -c 'import hashlib,sys
+h=hashlib.sha256()
+with open(sys.argv[1],"rb") as f:
+    for b in iter(lambda: f.read(1<<20), b""): h.update(b)
+print(h.hexdigest())' "$1" 2>/dev/null; }
+# One HTTP call to the helper: helper_http <port> <GET|POST> <path> <timeout> [body]
+# The status says what went wrong, because what to do next depends on it:
+#   2  nothing answered - the forward or the helper is gone
+#   3  no such session (404)
+#   4  no answer in time
+#   5  an answer, but not a tree (or another HTTP error)
+# A source is printed as the tree the dump would have given: the helper names
+# every element by its class (<android.widget.TextView ...>), the dump calls
+# each one <node> and keeps the class in class=, and every parser here looks for
+# <node>. Every tag but the root is renamed - not only android.* ones, React
+# Native classes are com.facebook.react.* - and the indentation between tags
+# goes, so the tree reads the way a dump does.
+HELPER_PY='
+import http.client, json, re, socket, sys, urllib.error, urllib.request
+port, method, path, timeout = sys.argv[1], sys.argv[2], sys.argv[3], float(sys.argv[4])
+body = sys.argv[5].encode() if len(sys.argv) > 5 else None
+req = urllib.request.Request("http://127.0.0.1:%s%s" % (port, path), data=body, method=method)
+if body: req.add_header("Content-Type", "application/json")
+try:
+    with urllib.request.urlopen(req, timeout=timeout) as r: raw = r.read()
+except urllib.error.HTTPError as e:
+    sys.exit(3 if e.code == 404 else 5)
+except urllib.error.URLError as e:
+    sys.exit(4 if isinstance(e.reason, socket.timeout) else 2)
+except socket.timeout:
+    sys.exit(4)
+except (OSError, http.client.HTTPException):
+    sys.exit(2)
+if path.endswith("/source"):
+    try: x = json.loads(raw)["value"]
+    except Exception: sys.exit(5)
+    if not isinstance(x, str) or "<hierarchy" not in x or "</hierarchy>" not in x: sys.exit(5)
+    x = re.sub(r">\s+<", "><", x)
+    x = re.sub(r"<(/?)(?!hierarchy[\s/>])[A-Za-z_][\w.$-]*", r"<\1node", x)
+    sys.stdout.write(x)
+elif method == "POST" and path == "/session":
+    try:
+        v = json.loads(raw); s = v.get("sessionId") or (v.get("value") or {}).get("sessionId")
+    except Exception: sys.exit(5)
+    if not s: sys.exit(5)
+    sys.stdout.write(s)
+'
+helper_http(){ local d; d="$(run_dir)"
+  "$PY" -c "$HELPER_PY" "$(cat "$d/helper-port" 2>/dev/null)" "$@" 2>/dev/null; }
+# Seconds one read may take. Not less than the dump's own ceiling (it waits up
+# to 10 s for the screen to settle), or a slow screen that the dump would still
+# have read becomes a "failure" of the helper. Tests shorten it.
+helper_read_timeout(){ printf '%s' "${YUKTI_HELPER_TIMEOUT:-12}"; }
+# The forward for this device, or a new one. adb picks the local port (tcp:0)
+# and prints it, so two devices on one machine never fight over a number. More
+# than one forward to the helper port can exist when another tool forwarded it
+# too; there is one server on the device, so the first will do. A command that
+# is not a flow makes no forward for a helper that is not there.
+helper_forward(){ local s p; s="$(helper_serial)" || return 1
+  p="$(adb forward --list 2>/dev/null | awk -v s="$s" -v r="tcp:$UIA2_PORT" '$1==s && $3==r {sub(/^tcp:/,"",$2); print $2; exit}' || true)"
+  if [ -z "$p" ]; then
+    [ -n "${YUKTI_STEP_ERR:-}" ] || helper_alive || return 1
+    p="$(adb forward tcp:0 "tcp:$UIA2_PORT" 2>/dev/null | tr -d '\r\n' || true)"
+  fi
+  case "$p" in ''|*[!0-9]*) return 1;; esac
+  printf '%s' "$p"; }
+helper_alive(){ [ -n "$(adb shell pidof "$UIA2_PKG" 2>/dev/null | tr -d '\r\n ' || true)" ]; }
+helper_force_stop(){ adb shell "am force-stop $UIA2_PKG; am force-stop $UIA2_TEST_PKG" >/dev/null 2>&1 || true; }
+# Only a flow starts the helper: it reads the screen dozens of times and earns
+# back the 6-8 s a start costs. A single command reads once - `yukti ui` would
+# pay the start and the stop for one look that a dump gives in 2.4 s - so it
+# uses a helper that is already up and otherwise dumps. Two refusals are
+# reported: a helper this run already restarted once, and a device where the
+# last two starts failed - an Android older than 8, a phone that puts a dialog
+# in front of every install from USB, another build of the same package signed
+# with another key. Such a device would pay a failed start, up to 15 s, on every
+# flow of a suite. The mark expires after a day, and `yukti helper stop` clears it.
+helper_may_start(){ local d c f n; d="$(run_dir)"
+  [ -n "${YUKTI_STEP_ERR:-}" ] || return 1
+  [ ! -e "$d/helper-tried" ] || { HELPER_WHY="it stopped answering after a restart"; return 1; }
+  c="$(helper_cache)"; f="$c/start-fail-$(helper_key "$(helper_serial)")"
+  n="$(cat "$f" 2>/dev/null || true)"
+  if [ "${n:-0}" -ge 2 ] 2>/dev/null && [ -n "$(find "$f" -mmin -1440 2>/dev/null)" ]; then
+    HELPER_WHY="it failed to start twice in a row on this device - 'yukti helper stop' clears that, YUKTI_HELPER=0 turns it off"
+    return 1
+  fi
+  return 0; }
+# An APK from the cache, checked against its pinned sha every time it is about
+# to be installed; one that is missing or does not match is fetched again. The
+# download goes to a temporary file in the cache itself and only a file that
+# matches is moved into place. The pins are this project's own download of the
+# release - the project publishes no checksums - so they guard against a file
+# that changed after the pin, not against the first one.
+helper_apk(){ local c="$1" n="$2" want="$3" p t; p="$c/$n"
+  if [ -s "$p" ] && [ "$(file_sha "$p")" = "$want" ]; then printf '%s' "$p"; return 0; fi
+  rm -f "$p"
+  t="$(mktemp "$c/.download.XXXXXX" 2>/dev/null)" || return 1
+  if curl -fsSL --proto '=https' --tlsv1.2 --connect-timeout 10 --max-time 120 -o "$t" "$UIA2_REL/$n" 2>/dev/null \
+     && [ "$(file_sha "$t")" = "$want" ]; then
+    mv -f "$t" "$p" && { printf '%s' "$p"; return 0; }
+  fi
+  rm -f "$t"; return 1; }
+# What is installed is known from our own mark - which pair of sha went onto
+# which serial - plus `pm path` that both packages are still there. The release
+# APK's versionName is not a version we can rely on, and a check that always
+# saw "another version" would reinstall 18 MB on every flow. A different build
+# of the same packages installed by someone else after our mark does not clear
+# it: that start fails, and the start counter above takes it from there.
+helper_install(){ local c="$1" k="$2" m sp tp; m="$c/installed-$k"
+  if [ "$(cat "$m" 2>/dev/null || true)" = "$UIA2_SERVER_SHA $UIA2_TEST_SHA" ] \
+     && [ "$(adb shell "pm path $UIA2_PKG; pm path $UIA2_TEST_PKG" 2>/dev/null | grep -c '^package:' || true)" = 2 ]; then
+    return 0
+  fi
+  sp="$(helper_apk "$c" "$UIA2_SERVER_APK" "$UIA2_SERVER_SHA")" && tp="$(helper_apk "$c" "$UIA2_TEST_APK" "$UIA2_TEST_SHA")" \
+    || { HELPER_WHY="its APK could not be fetched, or did not match the pinned sha256"; return 1; }
+  rm -f "$m"
+  adb install -r -g "$sp" >/dev/null 2>&1 && adb install -r -g "$tp" >/dev/null 2>&1 \
+    || { HELPER_WHY="adb install refused it"; return 1; }
+  printf '%s %s' "$UIA2_SERVER_SHA" "$UIA2_TEST_SHA" > "$m"; }
+# The server runs inside `am instrument -w`, whose adb client has to outlive the
+# flow: it goes into a session of its own, so the `timeout` a suite wraps a flow
+# in kills the flow's process group and not the helper. setsid(1) is util-linux
+# and a Mac has none; Python's os.setsid is everywhere this engine runs. Its
+# output goes to a file: anything still holding the pipe of the $(...) the read
+# runs in would keep that read waiting forever. The client returning on its own
+# means the instrumentation ended - nothing is going to answer. A failed start
+# is stopped by the fallback that follows it (helper_give_up).
+helper_start(){ local d c k pid end; d="$(run_dir)"; : > "$d/helper-tried"
+  c="$(helper_cache)"; k="$(helper_key "$(helper_serial)")"
+  mkdir -p "$c" 2>/dev/null && [ -w "$c" ] || { HELPER_WHY="the cache directory $c cannot be written"; return 1; }
+  if helper_install "$c" "$k"; then
+    "$PY" -c 'import os,sys; os.setsid(); os.execvp(sys.argv[1], sys.argv[1:])' \
+      adb shell am instrument -w "$UIA2_TEST_PKG/androidx.test.runner.AndroidJUnitRunner" \
+      > "$c/instrument-$k.log" 2>&1 < /dev/null &
+    pid=$!
+    end=$(( SECONDS + 15 ))
+    while [ "$SECONDS" -lt "$end" ]; do
+      helper_http GET /status 2 >/dev/null && { rm -f "$c/start-fail-$k"; : > "$d/helper-ours"; return 0; }
+      kill -0 "$pid" 2>/dev/null || { helper_http GET /status 2 >/dev/null && { rm -f "$c/start-fail-$k"; : > "$d/helper-ours"; return 0; }; break; }
+      sleep 0.3
+    done
+    HELPER_WHY="it did not come up (log: $c/instrument-$k.log)"
+  fi
+  echo $(( $(cat "$c/start-fail-$k" 2>/dev/null || echo 0) + 1 )) > "$c/start-fail-$k" 2>/dev/null || true
+  return 1; }
+# A new session forgets every setting (the server resets them per session), so
+# the wait is set again each time: at most half a second for the screen to
+# settle, where the server's own default is ten.
+helper_session(){ local d sid; d="$(run_dir)"
+  sid="$(helper_http POST /session 5 '{"capabilities":{"alwaysMatch":{"platformName":"Android"}}}')" \
+    && helper_http POST "/session/$sid/appium/settings" 5 '{"settings":{"waitForIdleTimeout":500}}' >/dev/null \
+    || { HELPER_WHY="it did not open a session"; return 1; }
+  printf '%s' "$sid" > "$d/helper-session"
+  [ "${YUKTI_HELPER_KEEP:-}" = 1 ] && { mkdir -p "$(helper_cache)" && printf '%s' "$sid" > "$(helper_cache)/session-$(helper_key "$(helper_serial)")"; } 2>/dev/null || true; }
+# Port and session, found once per run and remembered in the run directory.
+# They are trusted until a read fails: no "is it alive" round trip in front of
+# every read. A forward found anew is checked with /status before it is used -
+# adbd restarts on every `adb root`, the forward goes with it and the helper may
+# or may not have survived. A kept helper's session is taken from the cache.
+helper_connect(){ local d p check="" kf; d="$(run_dir)"
+  if [ ! -s "$d/helper-port" ]; then p="$(helper_forward)" || return 1; printf '%s' "$p" > "$d/helper-port"; check=1; fi
+  if [ ! -s "$d/helper-session" ]; then
+    kf="$(helper_cache)/session-$(helper_key "$(helper_serial)")"
+    [ -s "$kf" ] && cp "$kf" "$d/helper-session" 2>/dev/null || check=1
+  fi
+  if [ -n "$check" ] && ! helper_http GET /status 2 >/dev/null; then
+    helper_may_start && helper_start || return 1
+    rm -f "$d/helper-session"
+  fi
+  [ -s "$d/helper-session" ] || helper_session; }
+# The helper is given up on for the rest of the run, and stopped, so that the
+# dump that follows is not killed by it. Only a reason worth saying is said: a
+# single command finding no helper, or YUKTI_HELPER=0, is the normal case.
+helper_give_up(){ local d; d="$(run_dir)"; : > "$d/helper-off"
+  [ -n "$HELPER_WHY" ] || return 0
+  warn "screen helper: $HELPER_WHY - this run reads the screen with uiautomator dump" >&2
+  printf 'x' >> "$d/helper-fallbacks"
+  rm -f "$(helper_cache)/session-$(helper_key "$(helper_serial 2>/dev/null)")" 2>/dev/null || true
+  helper_force_stop; }
+# The tree from the helper, or a failure that sends aui() to the dump. A read
+# is tried three times, as the dump is: a timeout or an answer that is not a
+# tree is a failed try and not a dead helper, and on a moving screen one try
+# can miss. What failed decides the repair before the next try - a lost
+# forward is made again, a lost session is opened again.
+helper_tree(){ local d out rc i; d="$(run_dir)"; HELPER_WHY=""
+  [ "${YUKTI_HELPER:-1}" != 0 ] && [ -n "$d" ] && [ ! -e "$d/helper-off" ] || return 1
+  helper_connect || { helper_give_up; return 1; }
+  for i in 1 2 3; do
+    rc=0; out="$(helper_http GET "/session/$(cat "$d/helper-session")/source" "$(helper_read_timeout)")" || rc=$?
+    case "$rc" in
+      0) printf '%s' "$out"; return 0;;
+      2) rm -f "$d/helper-port"; helper_connect || { helper_give_up; return 1; };;
+      3) rm -f "$d/helper-session" "$(helper_cache)/session-$(helper_key "$(helper_serial)")"
+         helper_connect || { helper_give_up; return 1; };;
+    esac
+  done
+  HELPER_WHY="three reads in a row gave no tree"; helper_give_up; return 1; }
+# Stop the helper on this device, remove its forwards and forget what a kept
+# helper left in the cache. For a caller who reads the screen with a plain
+# `uiautomator dump` after yukti, and for the end of a suite that kept it.
+helper_stop(){ local s p c k; apaths; command -v adb >/dev/null 2>&1 || return 0
+  helper_force_stop
+  s="${ANDROID_SERIAL:-}"; [ -n "$s" ] || s="$(adb get-serialno 2>/dev/null | tr -d '\r\n' || true)"
+  case "$s" in ''|unknown) return 0;; esac
+  for p in $(adb forward --list 2>/dev/null | awk -v s="$s" -v r="tcp:$UIA2_PORT" '$1==s && $3==r {print $2}' || true); do
+    adb forward --remove "$p" >/dev/null 2>&1 || true
+  done
+  c="$(helper_cache)"; k="$(helper_key "$s")"; rm -f "$c/session-$k" "$c/start-fail-$k" 2>/dev/null || true; }
+# At the end of the run that started it, unless the caller asked to keep it.
+helper_release(){ [ -n "${YUKTI_RUN_DIR:-}" ] && [ -e "$YUKTI_RUN_DIR/helper-ours" ] || return 0
+  [ "${YUKTI_HELPER_KEEP:-}" = 1 ] && return 0
+  helper_stop; }
+helper_cmd(){ case "${1:-}" in
+    stop) helper_stop; ok "screen helper stopped";;
+    *) die "usage: yukti helper stop";;
+  esac; }
+# What each read cost and where it came from, one line on stderr: a step's time
+# is a read plus an action, and without this a slow step cannot be put on
+# either. The run directory counts them for the line at the end of a flow.
+us_of(){ local s="${1%%.*}" f="000000"; case "$1" in *.*) f="${1#*.}000000"; f="${f:0:6}";; esac
+  printf '%s' $(( s * 1000000 + 10#$f )); }
+read_note(){ local d; d="$(run_dir)"
+  printf '  · read %s %d ms\n' "$1" $(( ($(us_of "$(now)") - $(us_of "$2")) / 1000 )) >&2
+  [ -z "$d" ] || printf 'x' >> "$d/reads-$1" 2>/dev/null || true; }
+read_summary(){ local d h u f; d="$(run_dir)"; [ -n "$d" ] || return 0
+  h="$(cat "$d/reads-helper" 2>/dev/null || true)"; u="$(cat "$d/reads-dump" 2>/dev/null || true)"
+  f="$(cat "$d/helper-fallbacks" 2>/dev/null || true)"
+  [ $(( ${#h} + ${#u} )) -gt 0 ] || return 0
+  say "screen reads: ${#h} by the helper, ${#u} by uiautomator dump, ${#f} fallback(s)"; }
+# The resident helper answers first (see helper_tree); the dump below is the
+# fallback, and the only reader when YUKTI_HELPER=0.
+#
+# The dump's own exit status never reaches this side: the status of the round
+# trip is that of the last `rm`, and "Killed" goes to the device's stderr. A
+# dump killed because a UiAutomation helper holds the device - ours left by a
+# kept run, or anybody's Appium - looks exactly like a screen that never
+# settled: three empty answers. So before giving up, look for the helper
+# process, and name it when it is there.
 aui(){ [ -n "$HELD_TREE" ] && { printf '%s' "$HELD_TREE"; return 0; }
-  apaths; local xml i f="/sdcard/yukti-dump-$$.xml"
+  apaths; local xml i f="/sdcard/yukti-dump-$$.xml" t0
+  t0="$(now)"
+  if xml="$(helper_tree)"; then read_note helper "$t0"; keep_tree "$xml"; printf '%s' "$xml"; return 0; fi
+  t0="$(now)"
   for i in 1 2 3; do
     xml="$(adb shell "rm -f $f; uiautomator dump $f >/dev/null 2>&1; cat $f 2>/dev/null; rm -f $f" 2>/dev/null)"
-    case "$xml" in *"<hierarchy"*"</hierarchy>"*) keep_tree "$xml"; printf '%s' "$xml"; return 0;; esac
+    case "$xml" in *"<hierarchy"*"</hierarchy>"*) read_note dump "$t0"; keep_tree "$xml"; printf '%s' "$xml"; return 0;; esac
     [ "$i" = 3 ] || sleep 0.6
   done
-  device_fault; die "uiautomator produced no usable dump after 3 tries - the screen may still be animating"; }
+  device_fault
+  helper_alive && die "uiautomator produced no usable dump after 3 tries - a UiAutomator helper ($UIA2_PKG) is running on the device and takes every dump down; stop it with 'yukti helper stop'"
+  die "uiautomator produced no usable dump after 3 tries - the screen may still be animating"; }
 afind(){ apaths; aui | "$PY" -c '
 import sys,re,html
 # Rank candidates instead of taking the first substring hit. Honors resource-id
@@ -2629,7 +2917,7 @@ flow(){
     export YUKTI_STEP_ERR="$FLOW_ERR" YUKTI_LAST_TREE="$FLOW_TREE"
     # Nothing ran, so nothing is reported: a JUnit file written by --check would
     # say a flow passed on a machine that never had a device.
-    trap 'flow_results $?; run_dir_cleanup' EXIT
+    trap 'flow_results $?; read_summary || true; run_dir_cleanup' EXIT
   fi
   # The steps are built before the first one runs, and a flow file the builder
   # refuses never starts. It used to be generated straight into the loop, where
@@ -3133,6 +3421,7 @@ ${B}yukti v$YUKTI_VERSION${R} — YUKTI — smart mobile-app QA automation for R
   drive primitives (for flows or an AI agent — Claude Code / OpenAI):
   yukti shot [file]         screenshot the sim (an agent reads the PNG)
   yukti ui                  accessibility tree (JSON, coords in points)
+  yukti helper stop         Android: stop the resident screen helper and remove its forward
   yukti find "<label>"      -> "x y" center of the first element matching label
   yukti tap <x> <y>         tap
   yukti type "<text>"       type (char-by-char = reliable; idb bulk-type drops chars)
@@ -3204,6 +3493,7 @@ fi
 # plain call and the second one disappears without a sound.
 run_dir_cleanup(){
   [ "${RUN_DIR_OWNED:-}" = 1 ] || return 0
+  helper_release || true   # the helper this run started goes with it
   case "${YUKTI_RUN_DIR:-}" in */yukti-run.??????) rm -rf "$YUKTI_RUN_DIR";; esac
   return 0; }
 trap run_dir_cleanup EXIT
@@ -3259,6 +3549,7 @@ case "$cmd" in
   flow) flow "$@";;
   shot) shot "$@";;
   ui) ui;;
+  helper) helper_cmd "$@";;
   find) find_el "$@";;
   tap) tap "$@";;
   "tap-text"|tapText) tap_text "$@";;
