@@ -322,7 +322,10 @@ another field, and the step fails. On Android the step reads the screen twice:
 once before the tap, once after the delete. A third read comes in two cases -
 the field shows text after the delete, which may be its hint, and one more
 delete tells the two apart; or another field held focus before the tap, and the
-field is checked before any key so that the other one is never cleared.
+field is checked before any key so that the other one is never cleared. When no
+field held focus before the tap, focus that went somewhere else - a field the app
+focused on its own, a dialog the field opened - is caught after the keys, not
+before them: the step fails, and that other field has been cleared.
 
 `clearTextId` empties the field with that id: the same select-all, the same
 read-back, the field named the way the rest of the flow names things. It taps
@@ -515,9 +518,9 @@ value, or the value alone. A field that does not is cleared of what arrived and
 typed again, three times in all, and the step fails with the same counts. A key
 idb refuses stops the step instead of being skipped.
 
-One verb stays outside the guarantee. `type` on iOS sends the characters one by
-one and never reads a status, so it cannot fail. It does not belong in a flow as
-its checkpoint - put an `assertText` or an `assertId` after it.
+`type` on iOS is written from the idb docs and has not been run on a simulator
+yet. Until it has, a flow that depends on the value follows it with an
+`assertText` or an `assertId`.
 
 ### Waiting for a screen
 

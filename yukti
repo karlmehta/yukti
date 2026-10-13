@@ -601,7 +601,10 @@ aclear(){ apaths; local x="$1" y="$2" vb="${3:-clearText}" sdk before after prob
     if [ -n "$res" ] && [ -n "$res2" ] && [ "$res" != "$res2" ]; then
       die "$vb: focus is in a different field ($res2), not the one at $x,$y ($res)"
     fi
-    [ "$box" = "$box2" ] || same_column "$box" "$box2" || die "$vb: focus is in a different field than the one at $x,$y"
+    # A node keeps its resource id when the keyboard moves it, so a rectangle that
+    # changed has to bring the same id with it - an empty one included.
+    [ "$box" = "$box2" ] || { [ "$res" = "$res2" ] && same_column "$box" "$box2"; } \
+      || die "$vb: focus is in a different field than the one at $x,$y"
   fi
   if [ "$box" != "$box2" ]; then
     warn "$vb: the field moved to $box2 when the keyboard opened"
@@ -1124,7 +1127,12 @@ type_str(){ [ -n "${1:-}" ] || die "type: the value is empty"; is_android && { a
 # 5: more than one field changed, so there is no telling which one was typed
 # into. 1 and 2 are the lookup statuses: no tree, an unreadable one.
 ifields(){ paths; ui | "$PY" -c '
-import json,sys,os
+import json,sys,os,traceback
+# Never status 1 on its own: that one means the screen could not be read and
+# the reason is already out. Anything unforeseen leaves as 2, as in find_el.
+def _unforeseen(t,v,tb):
+    traceback.print_exception(t,v,tb); sys.stderr.flush(); os._exit(2)
+sys.excepthook=_unforeseen
 raw=sys.stdin.read()
 if not raw.strip(): sys.exit(1)
 try: els=json.loads(raw)
@@ -1144,11 +1152,16 @@ if sys.argv[1]=="list":
     sys.stdout.write(json.dumps(now)); sys.exit(0)
 was=json.loads(os.environ["YUKTI_FIELDS"]); sent=os.environ["YUKTI_SENT"]
 DOT="\u2022"
+# The same field before the keys: the same frame, or - when the keyboard or a
+# scroll to the caret moved the layout between the reads - the same place in
+# the column of fields of its shape, counted from the top. A move up or down
+# keeps that order; a column that gained or lost a field has no answer.
+def column(fs,f): return sorted((o for o in fs if (o[0],o[2],o[3])==(f[0],f[2],f[3])), key=lambda o:o[1])
 def before(f):
     for o in was:
         if o[:4]==f[:4]: return o[4]
-    same=[o for o in was if o[0]==f[0] and o[2]==f[2] and o[3]==f[3]]
-    return same[0][4] if len(same)==1 else ""
+    old,new=column(was,f),column(now,f)
+    return old[new.index(f)][4] if len(old)==len(new) else ""
 def arrived(old,new):
     if new in (old+sent, sent): return True
     dots=DOT*(len(sent)-1)
@@ -1171,10 +1184,11 @@ sys.stdout.write("%d" % max(n,0)); sys.exit(4)
 # iOS types in the same shape as Android: the status of every key kept (#28),
 # and one read after the last to see that the value arrived (#106). A field that
 # renders late gets one more read half a second on; a field that is still short
-# loses what did arrive, and the value is typed again, three times in all. The
-# keys stay one at a time: idb's own bulk text drops characters (README), and
-# bursts wait until they can be measured on a simulator. Written from the idb
-# docs, not run on a simulator yet (#87).
+# loses what did arrive, and the value is typed again, three times in all - the
+# deletes go from the caret, so the value is taken to have gone in at the end of
+# the field, as on Android. The keys stay one at a time: idb's own bulk text
+# drops characters (README), and bursts wait until they can be measured on a
+# simulator. Written from the idb docs, not run on a simulator yet (#87).
 itype(){ paths; local s="$1" m=${#1} u was st try i n=0
   u="$(U)"
   st=0; was="$(ifields list)" || st=$?

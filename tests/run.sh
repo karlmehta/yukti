@@ -444,6 +444,19 @@ status_is 1
 has out.txt "focus is in a different field (com.example:id/search)"
 verdict
 
+# The node a keyboard moves keeps its id; one that arrives without the id the
+# field had is another field, whatever its shape.
+dev_case clear-id-lost
+printf 'old text' > "$case_dir/adb/typed"
+screen "$case_dir/adb/dump-1.xml" "$(field email false 100,1500,900,1600)"
+screen "$case_dir/adb/dump-2.xml" "$(field email true 100,900,900,1000 | sed 's/com.example:id\/email//')"
+flow_file "$case_dir/flow.json" '{ "do": "clearTextId", "value": "email" }'
+run_flow "$case_dir/flow.json"
+begin "clearTextId: a moved field that lost its id is another field"
+status_is 1; reads_are 2
+has out.txt "focus is in a different field than the one at 500,1550"
+verdict
+
 # Another field held focus before the tap: a tap that does not take would leave
 # the keys to that field, so it is asked for before any key - and left alone.
 dev_case clear-focus-stays
@@ -523,6 +536,59 @@ flow_file "$case_dir/flow.json" '{ "do": "type", "value": "${TEST_VALUE}" }'
 run_ios "$case_dir/flow.json" TEST_VALUE="$VALUE"
 begin "type on iOS: a field that already held the value is not where the keys went"
 status_is 1; has out.txt "arrived 0 of 22 characters after 3 attempts"
+verdict
+
+# Between the two reads the layout moved up - the keyboard, or a scroll to the
+# caret - and a field of the same shape above holds text of its own. The field
+# typed into is the one in the same place in the column, not the neighbour.
+ios_case ios-type-shifted
+tree "$case_dir/idb/desc-1.json" "$(itext name 100 '"Ada"')" "$(itext email 200)"
+tree "$case_dir/idb/desc-2.json" "$(itext name 50 '"Ada"')" "$(itext email 150)"
+printf '1' > "$case_dir/idb/lossy"
+flow_file "$case_dir/flow.json" '{ "do": "type", "value": "${TEST_VALUE}" }'
+run_ios "$case_dir/flow.json" TEST_VALUE="$VALUE"
+begin "type on iOS: a layout that moved between the reads still finds the field"
+status_is 0; ityped_is "$VALUE"
+has out.txt "22 characters arrived on attempt 2"
+verdict
+
+ios_case ios-type-shifted-lost
+tree "$case_dir/idb/desc-1.json" "$(itext name 100 '"Ada"')" "$(itext email 200)"
+tree "$case_dir/idb/desc-2.json" "$(itext name 50 '"Ada"')" "$(itext email 150)"
+printf '' > "$case_dir/idb/lossy"
+flow_file "$case_dir/flow.json" '{ "do": "type", "value": "${TEST_VALUE}" }'
+run_ios "$case_dir/flow.json" TEST_VALUE="$VALUE"
+begin "type on iOS: a moved neighbour's own text is not counted as arrived"
+status_is 1; has out.txt "arrived 0 of 22 characters after 3 attempts"
+verdict
+
+ios_case ios-type-secure
+tree "$case_dir/idb/desc-1.json" "$(itext pin 200 '"@DOTS@"')"
+flow_file "$case_dir/flow.json" '{ "do": "type", "value": "${TEST_VALUE}" }'
+run_ios "$case_dir/flow.json" TEST_VALUE="$VALUE"
+begin "type on iOS: a secure field is compared as dots"
+status_is 0; ireads_are 2; ityped_is "$VALUE"
+lacks out.txt "lost characters"
+verdict
+
+ios_case ios-type-placeholder
+printf 'Email' > "$case_dir/idb/hint"
+tree "$case_dir/idb/desc-1.json" "$(itext email 200)"
+flow_file "$case_dir/flow.json" '{ "do": "type", "value": "${TEST_VALUE}" }'
+run_ios "$case_dir/flow.json" TEST_VALUE="$VALUE"
+begin "type on iOS: a placeholder the value replaced is not text of the field's own"
+status_is 0; ireads_are 2; ityped_is "$VALUE"
+lacks out.txt "lost characters"
+verdict
+
+ios_case ios-type-placeholder-lost
+printf 'Email' > "$case_dir/idb/hint"; printf '1' > "$case_dir/idb/lossy"
+tree "$case_dir/idb/desc-1.json" "$(itext email 200)"
+flow_file "$case_dir/flow.json" '{ "do": "type", "value": "${TEST_VALUE}" }'
+run_ios "$case_dir/flow.json" TEST_VALUE="$VALUE"
+begin "type on iOS: a key lost in a field with a placeholder is typed again"
+status_is 0; ityped_is "$VALUE"
+has out.txt "22 characters arrived on attempt 2"
 verdict
 
 ios_case ios-clear
