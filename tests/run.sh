@@ -345,5 +345,195 @@ begin "junit: a flow file that does not build is a failure"
 status_is 1; red_is failure FlowFailed 1 0
 verdict
 
+# ── how often type and clear read the screen (#106) ──────────────────────────
+# A read of the screen costs seconds on a device, so the count of reads is what
+# these cases assert, beside the outcome. The fake counts them in `dumps` (adb)
+# and `describes` (idb).
+VALUE='synthetic.value+22@x.y'   # 22 characters, three bursts of eight
+
+# field <id> <focused> <x1,y1,x2,y2> [text] - an EditText at a given place.
+field(){ printf '<node index="0" text="%s" resource-id="com.example:id/%s" class="android.widget.EditText" package="com.example" content-desc="" checkable="false" checked="false" clickable="true" enabled="true" focusable="true" focused="%s" scrollable="false" long-clickable="false" password="false" selected="false" bounds="[%s][%s]" />' \
+  "${4:-@TYPED@}" "$1" "$2" "$(printf '%s' "$3" | cut -d, -f1-2)" "$(printf '%s' "$3" | cut -d, -f3-4)"; }
+reads_are(){ local got; got="$(cat "$case_dir/adb/dumps" 2>/dev/null || echo 0)"
+  [ "$got" = "$1" ] || no "the screen was read $got times, wanted $1"; }
+typed_is(){ [ "$(cat "$case_dir/adb/typed" 2>/dev/null)" = "$1" ] || no "the field holds '$(cat "$case_dir/adb/typed" 2>/dev/null)', wanted '$1'"; }
+
+dev_case type-one-read
+screen "$case_dir/adb/dump-1.xml" "$(field email true 100,500,900,600)"
+flow_file "$case_dir/flow.json" '{ "do": "type", "value": "${TEST_VALUE}" }'
+run_flow "$case_dir/flow.json" TEST_VALUE="$VALUE"
+begin "type: three bursts, the field read once before and once after"
+status_is 0; fake_used; reads_are 2; typed_is "$VALUE"
+lacks out.txt "lost characters"
+verdict
+
+dev_case type-retry
+screen "$case_dir/adb/dump-1.xml" "$(field email true 100,500,900,600)"
+printf '1' > "$case_dir/adb/lossy"
+flow_file "$case_dir/flow.json" '{ "do": "type", "value": "${TEST_VALUE}" }'
+run_flow "$case_dir/flow.json" TEST_VALUE="$VALUE"
+begin "type: a burst that lost a character is caught after the last one and typed again"
+status_is 0; typed_is "$VALUE"
+has out.txt "attempt 1 lost characters"; has out.txt "22 characters arrived on attempt 2"
+verdict
+
+dev_case clear-two-reads
+printf 'old text' > "$case_dir/adb/typed"
+screen "$case_dir/adb/dump-1.xml" "$(field email false 100,500,900,600)"
+screen "$case_dir/adb/dump-2.xml" "$(field email true 100,500,900,600)"
+flow_file "$case_dir/flow.json" '{ "do": "clearTextId", "value": "email" }'
+run_flow "$case_dir/flow.json"
+begin "clearTextId: one read finds the field, one after the delete proves it empty"
+status_is 0; fake_used; reads_are 2; typed_is ""
+has out.txt "field empty at 500,550"
+verdict
+
+dev_case clear-hint
+printf 'old text' > "$case_dir/adb/typed"; printf 'Email' > "$case_dir/adb/hint"
+screen "$case_dir/adb/dump-1.xml" "$(field email false 100,500,900,600)"
+screen "$case_dir/adb/dump-2.xml" "$(field email true 100,500,900,600)"
+flow_file "$case_dir/flow.json" '{ "do": "clearTextId", "value": "email" }'
+run_flow "$case_dir/flow.json"
+begin "clearTextId: a field showing its hint takes a third read to be called empty"
+status_is 0; reads_are 3; typed_is ""
+has out.txt "field empty at 500,550"
+verdict
+
+dev_case clear-leftover
+printf 'old text' > "$case_dir/adb/typed"
+screen "$case_dir/adb/dump-1.xml" "$(field email false 100,500,900,600)"
+screen "$case_dir/adb/dump-2.xml" "$(field email true 100,500,900,600 'left over')"
+screen "$case_dir/adb/dump-3.xml" "$(field email true 100,500,900,600 'left ove')"
+flow_file "$case_dir/flow.json" '{ "do": "clearTextId", "value": "email" }'
+run_flow "$case_dir/flow.json"
+begin "clearTextId: text the probing delete still shortens is not called empty"
+status_is 1; reads_are 3
+has out.txt "the field still holds text after select-all and delete"
+verdict
+
+dev_case clear-moved
+printf 'old text' > "$case_dir/adb/typed"
+screen "$case_dir/adb/dump-1.xml" "$(field email false 100,1500,900,1600)"
+screen "$case_dir/adb/dump-2.xml" "$(field email true 100,900,900,1000)"
+flow_file "$case_dir/flow.json" '{ "do": "clearTextId", "value": "email" }'
+run_flow "$case_dir/flow.json"
+begin "clearTextId: the field the keyboard moved up is still the field"
+status_is 0; reads_are 2; typed_is ""
+has out.txt "the field moved to 100 900 900 1000"
+verdict
+
+dev_case clear-other-shape
+printf 'old text' > "$case_dir/adb/typed"
+screen "$case_dir/adb/dump-1.xml" "$(field email false 100,1500,900,1600)"
+screen "$case_dir/adb/dump-2.xml" "$(field email true 0,300,1080,420)"
+flow_file "$case_dir/flow.json" '{ "do": "clearTextId", "value": "email" }'
+run_flow "$case_dir/flow.json"
+begin "clearTextId: a focused field of another width is another field"
+status_is 1; reads_are 2
+has out.txt "focus is in a different field than the one at 500,1550"
+verdict
+
+dev_case clear-other-id
+printf 'old text' > "$case_dir/adb/typed"
+screen "$case_dir/adb/dump-1.xml" "$(field email false 100,1500,900,1600)"
+screen "$case_dir/adb/dump-2.xml" "$(field search true 100,900,900,1000)"
+flow_file "$case_dir/flow.json" '{ "do": "clearTextId", "value": "email" }'
+run_flow "$case_dir/flow.json"
+begin "clearTextId: a focused field with another id is another field"
+status_is 1
+has out.txt "focus is in a different field (com.example:id/search)"
+verdict
+
+# Another field held focus before the tap: a tap that does not take would leave
+# the keys to that field, so it is asked for before any key - and left alone.
+dev_case clear-focus-stays
+printf 'old text' > "$case_dir/adb/typed"
+screen "$case_dir/adb/dump-1.xml" "$(field email false 100,1500,900,1600 Mine)" "$(field name true 100,300,900,400)"
+screen "$case_dir/adb/dump-2.xml" "$(field email false 100,1500,900,1600 Mine)" "$(field name true 100,300,900,400)"
+flow_file "$case_dir/flow.json" '{ "do": "clearTextId", "value": "email" }'
+run_flow "$case_dir/flow.json"
+begin "clearTextId: focus left in another field stops the step before any key"
+status_is 1; reads_are 2; typed_is "old text"
+has out.txt "focus is in a different field (com.example:id/name)"
+lacks adb/log "keycombination"
+verdict
+
+dev_case clear-focus-moves
+printf 'old text' > "$case_dir/adb/typed"
+screen "$case_dir/adb/dump-1.xml" "$(field email false 100,1500,900,1600)" "$(field name true 100,300,900,400 Name)"
+screen "$case_dir/adb/dump-2.xml" "$(field email true 100,1500,900,1600)" "$(field name false 100,300,900,400 Name)"
+flow_file "$case_dir/flow.json" '{ "do": "clearTextId", "value": "email" }'
+run_flow "$case_dir/flow.json"
+begin "clearTextId: focus taken from another field costs one read more, and clears"
+status_is 0; reads_are 3; typed_is ""
+verdict
+
+# iOS: the fake idb first in PATH, the simulator id where the engine keeps it.
+ios_case(){ new_case "$1"; mkdir -p "$case_dir/idb" "$case_dir/res" "$case_dir/tmp"
+  printf 'FAKE-UDID' > "$case_dir/tmp/yukti-udid"; }
+# tree <file> <element>... - an idb describe-all answer.
+tree(){ local f="$1" e sep=""; shift
+  { printf '['; for e in "$@"; do printf '%s%s' "$sep" "$e"; sep=","; done; printf ']\n'; } > "$f"; }
+# itext <id> <y> [value] - a text field 300 wide and 40 high at x 40.
+itext(){ printf '{"type":"TextField","role_description":"text field","AXUniqueId":"%s","AXLabel":"","AXValue":%s,"frame":{"x":40,"y":%s,"width":300,"height":40}}' \
+  "$1" "${3:-\"@TYPED@\"}" "$2"; }
+run_ios(){ local f="$1"; shift
+  env PATH="$ROOT/tests/fake-sdk/idb-bin:$PATH" YUKTI_PLATFORM=ios FAKE_IDB_DIR="$case_dir/idb" \
+    YUKTI_RESULTS_DIR="$case_dir/res" TMPDIR="$case_dir/tmp" "$@" \
+    "$YUKTI" flow "$f" > "$case_dir/out" 2>&1
+  run_status=$?
+  sed $'s/\033\\[[0-9;]*m//g' "$case_dir/out" > "$case_dir/out.txt"; }
+ireads_are(){ local got; got="$(cat "$case_dir/idb/describes" 2>/dev/null || echo 0)"
+  [ "$got" = "$1" ] || no "the screen was read $got times, wanted $1"; }
+ityped_is(){ [ "$(cat "$case_dir/idb/typed" 2>/dev/null)" = "$1" ] || no "the field holds '$(cat "$case_dir/idb/typed" 2>/dev/null)', wanted '$1'"; }
+bursts_are(){ local got; got="$(grep -c '^ui text ' "$case_dir/idb/log" 2>/dev/null)"
+  [ "$got" = "$1" ] || no "$got calls to type, wanted $1"; }
+
+ios_case ios-type
+tree "$case_dir/idb/desc-1.json" "$(itext name 100 '"Ada"')" "$(itext email 200)"
+flow_file "$case_dir/flow.json" '{ "do": "type", "value": "${TEST_VALUE}" }'
+run_ios "$case_dir/flow.json" TEST_VALUE="$VALUE"
+begin "type on iOS: a key at a time, the fields read once before and once after"
+status_is 0; ireads_are 2; bursts_are 22; ityped_is "$VALUE"
+verdict
+
+ios_case ios-type-retry
+tree "$case_dir/idb/desc-1.json" "$(itext email 200)"
+printf '1' > "$case_dir/idb/lossy"
+flow_file "$case_dir/flow.json" '{ "do": "type", "value": "${TEST_VALUE}" }'
+run_ios "$case_dir/flow.json" TEST_VALUE="$VALUE"
+begin "type on iOS: a lost character is deleted back out and the value typed again"
+status_is 0; ityped_is "$VALUE"; bursts_are 44
+has out.txt "22 characters arrived on attempt 2"
+verdict
+
+ios_case ios-type-fails
+tree "$case_dir/idb/desc-1.json" "$(itext email 200)"
+printf '' > "$case_dir/idb/lossy"
+flow_file "$case_dir/flow.json" '{ "do": "type", "value": "${TEST_VALUE}" }'
+run_ios "$case_dir/flow.json" TEST_VALUE="$VALUE"
+begin "type on iOS: a field that keeps losing characters fails with counts, not the value"
+status_is 1; has out.txt "arrived 0 of 22 characters after 3 attempts"
+lacks out.txt "$VALUE"
+verdict
+
+ios_case ios-type-unchanged
+tree "$case_dir/idb/desc-1.json" "$(itext email 200 "\"$VALUE\"")"
+flow_file "$case_dir/flow.json" '{ "do": "type", "value": "${TEST_VALUE}" }'
+run_ios "$case_dir/flow.json" TEST_VALUE="$VALUE"
+begin "type on iOS: a field that already held the value is not where the keys went"
+status_is 1; has out.txt "arrived 0 of 22 characters after 3 attempts"
+verdict
+
+ios_case ios-clear
+printf 'old text' > "$case_dir/idb/typed"
+tree "$case_dir/idb/desc-1.json" "$(itext email 200)"
+flow_file "$case_dir/flow.json" '{ "do": "clearTextId", "value": "email" }'
+run_ios "$case_dir/flow.json"
+begin "clearTextId on iOS: one read finds the field, one proves it empty"
+status_is 0; ireads_are 2; ityped_is ""
+has out.txt "field empty at 190,220"
+verdict
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -1,0 +1,54 @@
+#!/usr/bin/env python3
+# A stand-in for idb, the iOS counterpart of platform-tools/adb next to it:
+# tests/run.sh puts this directory first in PATH for an iOS case. It answers
+# what type, clearText and clearTextId ask, from files in $FAKE_IDB_DIR:
+#
+#   log            every call, one per line
+#   desc-<n>.json  the tree for the n-th `ui describe-all`; past the last one,
+#                  the last. The string "@TYPED@" in it becomes the text typed
+#                  so far
+#   describes      how many trees were read - a case counts the reads with it
+#   typed          the text in the field; a case may write it first
+#   lossy          present: every `ui text` loses its last character (one key
+#                  at a time: the key is lost); holding a number n: only the first
+#                  n do
+import json, os, sys
+
+d = os.environ["FAKE_IDB_DIR"]
+args = sys.argv[1:]
+with open(os.path.join(d, "log"), "a") as fh:
+    fh.write(" ".join(args) + "\n")
+
+def path(name): return os.path.join(d, name)
+def has(name): return os.path.exists(path(name))
+def read(name, default=""):
+    try:
+        with open(path(name)) as fh: return fh.read()
+    except OSError: return default
+def write(name, text):
+    with open(path(name), "w") as fh: fh.write(text)
+
+# Options come after the verb; what is left is the verb and its operands.
+ops = []; i = 0
+while i < len(args):
+    if args[i] == "--udid": i += 2; continue
+    ops.append(args[i]); i += 1
+
+if ops[:2] == ["ui", "describe-all"]:
+    n = int(read("describes", "0") or 0) + 1
+    write("describes", str(n))
+    while n > 1 and not has("desc-%d.json" % n): n -= 1
+    sys.stdout.write(read("desc-%d.json" % n).replace('"@TYPED@"', json.dumps(read("typed"))))
+elif ops[:2] == ["ui", "text"]:
+    q = ops[2]
+    if has("lossy"):
+        left = read("lossy").strip()
+        if not left: q = q[:-1]
+        elif int(left) > 0: q = q[:-1]; write("lossy", str(int(left) - 1))
+    write("typed", read("typed") + q)
+elif ops[:2] == ["ui", "key"]:
+    if ops[2:] == ["42"]: write("typed", read("typed")[:-1])
+elif ops[:2] == ["ui", "tap"] or ops[:1] == ["connect"]:
+    pass
+else:
+    sys.exit(1)
