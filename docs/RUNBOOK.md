@@ -317,8 +317,8 @@ password reaches the log as a count and nothing else. The field it clears is the
 one the tap focused: when the keyboard opens and the layout moves, the field is
 no longer under the coordinates that reached it, and the step says so in a
 warning rather than reading a different node. A field the keyboard moved keeps
-its left and right edges and its height; a focused field that does not is
-another field, and the step fails. On Android the step reads the screen twice:
+its left and right edges, its height and its id; a focused field that does not
+is another field, and the step fails. On Android the step reads the screen twice:
 once before the tap, once after the delete. A third read comes in two cases -
 the field shows text after the delete, which may be its hint, and one more
 delete tells the two apart; or another field held focus before the tap, and the
