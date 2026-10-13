@@ -316,11 +316,18 @@ back and fails if anything is left. It never prints what the field held - a
 password reaches the log as a count and nothing else. The field it clears is the
 one the tap focused: when the keyboard opens and the layout moves, the field is
 no longer under the coordinates that reached it, and the step says so in a
-warning rather than reading a different node.
+warning rather than reading a different node. A field the keyboard moved keeps
+its left and right edges and its height; a focused field that does not is
+another field, and the step fails. On Android the step reads the screen twice:
+once before the tap, once after the delete. A third read comes in two cases -
+the field shows text after the delete, which may be its hint, and one more
+delete tells the two apart; or another field held focus before the tap, and the
+field is checked before any key so that the other one is never cleared.
 
 `clearTextId` empties the field with that id: the same select-all, the same
 read-back, the field named the way the rest of the flow names things. It taps
-the field itself, so a `type` written after it goes where the clear went.
+the field itself, so a `type` written after it goes where the clear went. The
+read that finds the id is the read the clear starts from: two reads in all.
 
 `pressKey tab` moves focus without a tap, which reaches a field the keyboard is
 covering - the keyboard stays up through it. It is not a way to walk from field
@@ -488,17 +495,25 @@ list ends or the safety net runs out, and a miss is the failure, named with the 
 It used to pass on that miss. An empty value fails with its own message.
 
 `type` on Android reads the field back. The value goes in eight characters at a
-time, and after each piece the focused text field has to hold what was sent - the
-text itself, or one dot per character in a password field. A field that does not
-is emptied and typed again, up to three times, and then the step fails with
+time, and after the last piece the focused text field has to hold what was sent -
+the text itself, or one dot per character in a password field. A field that does
+not is emptied and typed again, up to three times, and then the step fails with
 `arrived N of M characters`. The message carries counts, never the value. This is
 what an emulator under load needs: `input text` drops characters there and still
 reports success. It also means `type` needs a text field with focus - tap one
 first. A password field that already holds text is refused before the first key,
 because its dots cannot be typed again: clear it before typing. Only ASCII can be
-typed on Android; anything else is refused rather than typed in part. Each piece
-costs one read of the screen, about a second on an emulator: four for a
-22-character value.
+typed on Android; anything else is refused rather than typed in part. The step
+reads the screen twice, whatever the length: once before the first key, once
+after the last. A read costs seconds on an emulator, a piece of eight does not.
+
+`type` on iOS keeps typing one key at a time - idb's bulk text drops characters -
+and now reads back the same way: the text fields before the first key and after
+the last. idb does not say which field has focus, so the field that was typed
+into is the one whose value changed, and it has to hold what it held plus the
+value, or the value alone. A field that does not is cleared of what arrived and
+typed again, three times in all, and the step fails with the same counts. A key
+idb refuses stops the step instead of being skipped.
 
 One verb stays outside the guarantee. `type` on iOS sends the characters one by
 one and never reads a status, so it cannot fail. It does not belong in a flow as

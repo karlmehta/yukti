@@ -175,8 +175,8 @@ A step with no constraint is refused before the run: an assertion that only
 says the element is on the screen is `assertId`, and saying it twice is not a
 stronger test.
 
-`clearText`, `clearTextId`, `pressKey` and `hideKeyboard` were measured on
-Android; their iOS halves are written and have not been run on a simulator, so
+`type`, `clearText`, `clearTextId`, `pressKey` and `hideKeyboard` were measured
+on Android; their iOS halves are written and have not been run on a simulator, so
 treat an iOS failure in them as a bug in the tool before doubting the app.
 
 A step that fails now fails the flow, and the message names the step. Two
