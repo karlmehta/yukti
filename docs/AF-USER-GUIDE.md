@@ -340,8 +340,9 @@ If the element never lands clear, the step fails and says where it is: a bottom
 bar cannot be moved, and a tap into it is the thing the request exists to
 prevent. Without the key, inside the viewport is enough, exactly as before.
 
-The search stops where the list ends, not after a count. Up to 30 swipes is a
-safety net; a list that stops moving earlier ends the search earlier. The step
+The search stops where the list ends, not after a count. Two minutes of
+swiping is a safety net; a list that stops moving earlier ends the search
+earlier. The step
 swipes inside the list itself, starting on a line of text where it can, away
 from anything inside it that says it scrolls, a slider and a chart. It only
 calls it the end when a second, shorter
@@ -362,8 +363,12 @@ The misses to tell apart:
   from where the search started, and then the step waited that long for a lower
   part laid out late. A screen that needs longer gets `"timeout"` on the step.
   A search that starts halfway down a list and goes down has not looked above.
-- `still moving after 30 swipes down, 'Sleep score' not found` - the list is
-  longer than the safety net.
+- `still moving after 120s of swiping down, 'Sleep score' not found` - the list
+  is longer than the safety net. The line `· search N swipes M ms` before it
+  says how far the search got. Two minutes is long on purpose: it is what the
+  slowest reader needs for the thirty swipes the search used to allow. A feed
+  that never ends, or a list whose rows carry no text to compare, reaches it
+  every time - that is a slow red step, not a hung run.
 - `no scrollable list on screen - searched 8 swipes down, 'Sleep score' not
   found` - the screen has no element that says it scrolls that way, so the step
   swiped down the middle eight times, as it used to, and cannot say where the
@@ -379,9 +384,9 @@ The misses to tell apart:
 `no element matching '<label>'`.
 
 Sideways, the request has a limit worth knowing: the clear band is a little over
-half the width and a swipe travels two fifths of the visible list, so on a narrow
-screen an element at one edge can fly past the other and be nudged back until the
-swipes run out. The step fails with the position it could not place; place it
+half the width and a swipe that places an element travels two fifths of the
+visible list, so on a narrow screen an element at one edge can fly past the other
+and be nudged back until the time runs out. The step fails with the position it could not place; place it
 with a `scroll` of your own instead.
 
 ### Saying something is NOT there

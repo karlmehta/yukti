@@ -126,7 +126,10 @@ two APKs from its GitHub release, pinned by version and sha256, downloaded once
 into `${XDG_CACHE_HOME:-~/.cache}/yukti/` and installed with `adb install -r -g`.
 A read then takes a fraction of a second - tens of milliseconds on a still
 screen - and the helper waits at most half a second for the screen to settle.
-Nothing else of Appium is used, and taps and typing still go through adb.
+Nothing else of Appium is used. Taps, typing and the `scroll` step still go
+through adb; the helper also plays the swipes of a search (`scrollToText`,
+`tapText`), with a finger that stops before it lifts, so a search can swipe a
+screen at a time without the list running past what it has not read.
 When the helper cannot answer, the run falls back to `uiautomator dump` and
 says so once. Each read prints its source and time,
 and a flow ends with a count: `screen reads: 41 by the helper, 0 by uiautomator dump, 0 fallback(s)`.
@@ -139,7 +142,7 @@ and a flow ends with a count: `screen reads: 41 by the helper, 0 by uiautomator 
   when the suite ends - including when it fails. The template in
   `examples/ci/` does not do this yet: each flow there starts and stops its
   own helper.
-- **One reader per device.** While the helper is up, any other
+- **One helper per device.** While the helper is up, any other
   `uiautomator dump` on that device - yours, Maestro's, another Appium - is
   killed. Stop it first with `yukti helper stop`.
 - **`YUKTI_HELPER=0`** turns it off: nothing is downloaded or installed, every

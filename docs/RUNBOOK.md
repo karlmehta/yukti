@@ -443,6 +443,17 @@ the swipe and the control swipe started on a chart, the list did not move, and
 the search reported the end of a list it had barely begun. Text does not hold on
 to a drag, so a line of text is the first choice, and fixed points in the list
 are the fallback. The swipe travels up to 40% of the visible part of the list.
+
+On Android with the screen helper up, a search swipes a screen at a time while
+the element is not on the screen: 80% of the visible list, so a fifth of it is
+read twice. The helper plays the gesture with a finger that stops before it
+lifts, so the list stops where the finger stopped and no row goes by unread.
+Without the helper, and on iOS, a swipe lets go at the speed it moved and the
+list runs on a little, so the swipe stays at 40%. Each swipe prints how it went
+and what it cost (`· swipe helper 480 ms`, `· swipe adb 830 ms`), and each
+search its total (`· search 4 swipes 5120 ms`). A search stops after two
+minutes of swiping, which on the slowest reader is the thirty swipes it used
+to be allowed.
 It starts between 15% and 90% of that part, which is already clipped clear of
 the status bar and the gesture bar, and keeps at least a twentieth of it before
 the end it travels towards.
