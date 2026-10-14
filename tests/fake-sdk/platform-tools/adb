@@ -25,6 +25,8 @@
 #   forward        the local port of this device's forward to the helper
 #   installed      both helper packages are on the device
 #   start-fails    present: `am instrument` exits at once, nothing comes up
+#
+# `dumpsys input_method` always answers that no keyboard is up.
 import os, sys, time
 from xml.sax.saxutils import quoteattr
 
@@ -81,6 +83,9 @@ elif args[:2] == ["exec-out", "screencap"]:
     if mode == "fail": sys.exit(1)
     if mode == "hang": time.sleep(120)
     sys.stdout.buffer.write(b"\x89PNG\r\n\x1a\n" + b"\0" * 32)
+elif line == "shell dumpsys input_method":
+    # No keyboard up: a swipe step asks first (kb_before_swipe).
+    print("  mInputShown=false")
 elif line == "shell wm size":
     print("Physical size: 1080x2400")
 elif line == "shell wm density":

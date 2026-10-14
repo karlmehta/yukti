@@ -880,5 +880,205 @@ begin "helper: a helper that died mid-run is started again, once"
 status_is 0; file_absent adb/dumps; count_is adb/log "am instrument" 1; value_is adb/sessions 2
 verdict; helper_done
 
+# ── searching a list: the helper's gesture and the time limit (#107) ──────────
+# A list from y 200 to 2200 on the fake 1080x2400 screen, rows 200 apart with
+# their centres at 300, 500 ... 2100. The anchors the search picks there:
+#   a screen at a time (80%): the row at 1900, 85% of the way, to 300
+#   two fifths (40%):         the row at 1500, 65% of the way, to 700
+# hlist / dlist <prefix> [target-label target-centre] - one such list as the
+# helper writes it / as a dump does, its rows named "<prefix> 1".."<prefix> 10";
+# a target replaces the row whose centre it takes.
+lrows(){ local fmt="$1" p="$2" t="${3:-}" ty="${4:-0}" k y lab
+  for k in 1 2 3 4 5 6 7 8 9 10; do y=$(( 100 + k * 200 )); lab="$p $k"
+    [ "$y" = "$ty" ] && lab="$t"
+    printf "$fmt" "$lab" $(( y - 50 )) $(( y + 50 )); done; }
+hlist(){ printf '<android.widget.ScrollView index="0" package="com.example" class="android.widget.ScrollView" text="" resource-id="com.example:id/list" scrollable="true" bounds="[0,200][1080,2200]" displayed="true">'
+  lrows '<android.widget.TextView index="0" package="com.example" class="android.widget.TextView" text="%s" resource-id="" scrollable="false" bounds="[40,%d][1040,%d]" displayed="true" />' "$@"
+  printf '</android.widget.ScrollView>'; }
+dlist(){ printf '<node index="0" text="" resource-id="com.example:id/list" class="android.widget.ScrollView" package="com.example" content-desc="" scrollable="true" bounds="[0,200][1080,2200]">'
+  lrows '<node index="0" text="%s" resource-id="" class="android.widget.TextView" package="com.example" content-desc="" scrollable="false" bounds="[40,%d][1040,%d]" />' "$@"
+  printf '</node>'; }
+# The gestures the helper was sent, one JSON line each.
+gestures_are(){ local n; n="$(wc -l < "$case_dir/adb/actions" 2>/dev/null || echo 0)"
+  [ "${n// /}" -eq "$1" ] || no "the helper was sent ${n// /} gestures, wanted $1"; }
+# gesture_line <n> <x1> <y1> <x2> <y2> - the n-th gesture went from one point to
+# the other, stopped, and lifted at speed zero: a 20 ms move to the same point.
+gesture_line(){ "$PY3" - "$case_dir/adb/actions" "$@" <<'PY' || no "gesture $1 is not $2,$3 -> $4,$5 with a stop before the lift"
+import json, sys
+f, n, x1, y1, x2, y2 = sys.argv[1], int(sys.argv[2]), *map(int, sys.argv[3:7])
+g = json.loads(open(f).read().splitlines()[n - 1])["actions"][0]
+a = g["actions"]
+assert g["parameters"]["pointerType"] == "touch"
+assert [s["type"] for s in a] == ["pointerMove", "pointerDown", "pointerMove", "pause", "pointerMove", "pointerUp"]
+assert (a[0]["x"], a[0]["y"], a[0]["duration"]) == (x1, y1, 0)
+assert (a[2]["x"], a[2]["y"]) == (x2, y2) and a[3]["duration"] >= 150
+assert (a[4]["x"], a[4]["y"]) == (x2, y2) and a[4]["duration"] >= 20
+PY
+}
+PY3=/usr/bin/python3
+
+helper_case scroll-helper-far
+: > "$case_dir/adb/running"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hlist A)"
+helper_screen "$case_dir/adb/helper-2.xml" "$(hlist B)"
+helper_screen "$case_dir/adb/helper-3.xml" "$(hlist C Target 1100)"
+flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target" }'
+run_helper flow "$case_dir/flow.json"
+begin "scroll: with the helper a search swipes a screen at a time, with a finger that stops before it lifts"
+status_is 0; file_absent adb/dumps; gestures_are 2; count_is adb/http-log "/actions" 2
+gesture_line 1 540 1900 540 300; gesture_line 2 540 1900 540 300
+lacks adb/log "input swipe"; count_is out.txt "· swipe helper" 2; has out.txt "· search 2 swipes"
+verdict; helper_done
+
+helper_case scroll-helper-up
+: > "$case_dir/adb/running"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hlist A)"
+helper_screen "$case_dir/adb/helper-2.xml" "$(hlist B Target 1100)"
+flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target", "direction": "up" }'
+run_helper flow "$case_dir/flow.json"
+begin "scroll: going up, the screen-long swipe runs the other way"
+status_is 0; gestures_are 1; gesture_line 1 540 500 540 2100
+verdict; helper_done
+
+helper_case scroll-helper-clear
+: > "$case_dir/adb/running"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hlist A Target 1900)"
+helper_screen "$case_dir/adb/helper-2.xml" "$(hlist B Target 1100)"
+flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target", "edges": "clear" }'
+run_helper flow "$case_dir/flow.json"
+begin "scroll: an element in view is brought into the band by two fifths, not flown past it"
+status_is 0; gestures_are 1; gesture_line 1 540 1500 540 700
+verdict; helper_done
+
+helper_case scroll-helper-taptext
+: > "$case_dir/adb/running"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hlist A)"
+helper_screen "$case_dir/adb/helper-2.xml" "$(hlist B Target 1100)"
+flow_file "$case_dir/flow.json" '{ "do": "tapText", "value": "Target" }'
+run_helper flow "$case_dir/flow.json"
+begin "scroll: tapText searches with the same gesture and taps through adb"
+status_is 0; gestures_are 1; lacks adb/log "input swipe"; has adb/log "input tap 540 1100"
+verdict; helper_done
+
+helper_case scroll-helper-step
+: > "$case_dir/adb/running"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hlist A)"
+flow_file "$case_dir/flow.json" '{ "do": "scroll", "value": "down" }'
+run_helper flow "$case_dir/flow.json"
+begin "scroll: the scroll step keeps its own swipe through adb"
+status_is 0; gestures_are 0; has adb/log "input swipe"
+verdict; helper_done
+
+# Known, and measured on a device rather than here: a read that catches the list
+# before its rows are drawn sees no rows, and the search swipes on. On a device
+# the rows it skipped may have held the element; here the next screen holds it.
+helper_case scroll-helper-undrawn
+: > "$case_dir/adb/running"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hlist A)"
+helper_screen "$case_dir/adb/helper-2.xml" '<android.widget.ScrollView index="0" package="com.example" class="android.widget.ScrollView" text="" resource-id="com.example:id/list" scrollable="true" bounds="[0,200][1080,2200]" displayed="true" />'
+helper_screen "$case_dir/adb/helper-3.xml" "$(hlist C Target 1100)"
+flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target" }'
+run_helper flow "$case_dir/flow.json"
+begin "scroll: a list read before its rows are drawn is swiped past (known, see the comment)"
+status_is 0; gestures_are 2; count_is adb/http-log "/source" 3
+verdict; helper_done
+
+# A row of tiles 200 wide from x 8, centres at 108, 324 ... 972; the
+# screen-long swipe starts on the last tile, 90% of the way, and goes 80%.
+htiles(){ local p="$1" t="${2:-}" k x lab
+  printf '<android.widget.HorizontalScrollView index="0" package="com.example" class="android.widget.HorizontalScrollView" text="" resource-id="com.example:id/row" scrollable="true" bounds="[0,800][1080,1100]" displayed="true">'
+  for k in 1 2 3 4 5; do x=$(( 8 + (k - 1) * 216 )); lab="$p $k"; [ "$k" = 3 ] && [ -n "$t" ] && lab="$t"
+    printf '<android.widget.TextView index="0" package="com.example" class="android.widget.TextView" text="%s" resource-id="" scrollable="false" bounds="[%d,900][%d,1000]" displayed="true" />' "$lab" "$x" $(( x + 200 )); done
+  printf '</android.widget.HorizontalScrollView>'; }
+helper_case scroll-helper-right
+: > "$case_dir/adb/running"
+helper_screen "$case_dir/adb/helper-1.xml" "$(htiles A)"
+helper_screen "$case_dir/adb/helper-2.xml" "$(htiles B Target)"
+flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target", "direction": "right" }'
+run_helper flow "$case_dir/flow.json"
+begin "scroll: sideways, the screen-long swipe runs along the row at its height"
+status_is 0; gestures_are 1; gesture_line 1 972 950 108 950
+verdict; helper_done
+
+dev_case scroll-dump
+screen "$case_dir/adb/dump-1.xml" "$(dlist A)"
+screen "$case_dir/adb/dump-2.xml" "$(dlist B)"
+screen "$case_dir/adb/dump-3.xml" "$(dlist C Target 1100)"
+flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target" }'
+run_flow "$case_dir/flow.json"
+begin "scroll: without the helper a search swipes two fifths through adb, as before"
+status_is 0; count_is adb/log "input swipe 540 1500 540 700 600" 2; count_is out.txt "· swipe adb" 2
+verdict
+
+helper_case scroll-helper-gone
+: > "$case_dir/adb/running"; echo gone > "$case_dir/adb/actions-mode"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hlist A)"
+screen "$case_dir/adb/dump-1.xml" "$(dlist B)"
+screen "$case_dir/adb/dump-2.xml" "$(dlist C Target 1100)"
+flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target" }'
+run_helper flow "$case_dir/flow.json"
+begin "scroll: a helper gone during a gesture is given up on, that line goes through adb at half the length, the rest of the step too"
+status_is 0; gestures_are 1; has out.txt "it did not answer a swipe"
+has adb/log "input swipe 540 1900 540 1100 600"; has adb/log "input swipe 540 1500 540 700 600"
+has out.txt "· swipe adb"; has out.txt "(helper: rc 2)"
+verdict; helper_done
+
+# Two refusals leave the list where it was, so the second read looks like the
+# end of the list: the search waits there for it to grow, and the control swipe
+# of that wait - on adb by then - is what moves it.
+helper_case scroll-helper-refuses
+: > "$case_dir/adb/running"; echo fail > "$case_dir/adb/actions-mode"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hlist A)"
+helper_screen "$case_dir/adb/helper-4.xml" "$(hlist B Target 1100)"
+flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target" }'
+run_helper flow "$case_dir/flow.json"
+begin "scroll: a refused gesture is not repeated on adb, and after two refusals the run swipes through adb"
+status_is 0; gestures_are 2; count_is out.txt "(helper: rc 5)" 2; count_is adb/log "input swipe" 1
+has out.txt "· search 1 swipes"
+file_absent adb/dumps
+verdict; helper_done
+
+helper_case scroll-helper-hang
+: > "$case_dir/adb/running"; echo hang > "$case_dir/adb/actions-mode"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hlist A)"
+screen "$case_dir/adb/dump-1.xml" "$(dlist A)"
+screen "$case_dir/adb/dump-2.xml" "$(dlist B Target 1100)"
+flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target" }'
+run_helper flow "$case_dir/flow.json" -- YUKTI_HELPER_TIMEOUT=1
+begin "scroll: a gesture with no answer in time is not swiped again, and the helper is given up on"
+status_is 0; gestures_are 1; has out.txt "(helper: rc 4)"; has out.txt "it did not answer a swipe"
+count_is adb/log "input swipe" 1
+verdict; helper_done
+
+helper_case scroll-budget
+: > "$case_dir/adb/running"
+for k in $(seq 1 80); do helper_screen "$case_dir/adb/helper-$k.xml" "$(hlist "Page$k")"; done
+flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target" }'
+run_helper flow "$case_dir/flow.json" -- YUKTI_SCROLL_BUDGET=2
+begin "scroll: a list that keeps moving stops the search after its time, not after a count"
+status_is 1; has out.txt "still moving after 2s of swiping down, 'Target' not found"
+grep -q "· search [1-9][0-9]* swipes" "$case_dir/out.txt" || no "no search line with swipes"
+verdict; helper_done
+
+dev_case scroll-blind
+screen "$case_dir/adb/dump-1.xml" "$(node TextView title Today)"
+flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target" }'
+run_flow "$case_dir/flow.json"
+begin "scroll: a screen with no list still gets eight swipes down the middle"
+status_is 1; has out.txt "searched 8 swipes down"; count_is adb/log "input swipe" 8; has out.txt "· search 8 swipes"
+verdict
+
+ios_case scroll-ios
+tree "$case_dir/idb/desc-1.json" '{"type":"ScrollView","role_description":"scroll view","AXLabel":"","frame":{"x":0,"y":100,"width":402,"height":700}}' \
+  '{"type":"StaticText","role_description":"text","AXLabel":"Row 1","frame":{"x":20,"y":200,"width":300,"height":40}}' \
+  '{"type":"StaticText","role_description":"text","AXLabel":"Row 2","frame":{"x":20,"y":600,"width":300,"height":40}}'
+tree "$case_dir/idb/desc-2.json" '{"type":"ScrollView","role_description":"scroll view","AXLabel":"","frame":{"x":0,"y":100,"width":402,"height":700}}' \
+  '{"type":"StaticText","role_description":"text","AXLabel":"Target","frame":{"x":20,"y":400,"width":300,"height":40}}'
+flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target" }'
+run_ios "$case_dir/flow.json"
+begin "scroll: on iOS a search keeps the idb swipe of two fifths"
+status_is 0; count_is idb/log "ui swipe" 1; has out.txt "· swipe idb"
+verdict
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
