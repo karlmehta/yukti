@@ -228,9 +228,11 @@ keep_tree(){ [ -z "${YUKTI_STEP_ERR:-}" ] || rm -f "$YUKTI_STEP_ERR.kind" 2>/dev
 # (#105). It is two APKs from the project's GitHub release, pinned by version
 # and sha256; nothing else of Appium is involved.
 #
-# The helper is a READER only: aui() asks it first and falls back to the dump
-# exactly as before when it cannot answer. Taps, typing and scrolling stay on
-# adb. There is one UiAutomation per device: while the helper lives, a dump -
+# The helper is a READER first: aui() asks it first and falls back to the dump
+# exactly as before when it cannot answer. Taps, typing and the `scroll` step
+# stay on adb; the one thing it does besides reading is the swipe of a search
+# (scrollToText, tapText - see swipe_pts), which needs a finger that stops before
+# it lifts, and adb has none (#107). There is one UiAutomation per device: while the helper lives, a dump -
 # ours, or anybody else's - is killed on the spot. So the fallback stops the
 # helper before it dumps, and the helper does not outlive the run that started
 # it unless the caller asks for that (YUKTI_HELPER_KEEP=1, which a suite runner
@@ -2084,14 +2086,19 @@ scale_xy(){ local x="${1:?x}" y="${2:?y}" w h nx ny
   nx=$(( x * w / BASIS_W )); ny=$(( y * h / BASIS_H ))
   say "scaled $x,$y -> $nx,$ny (recorded ${BASIS_W}x${BASIS_H}, screen ${w}x${h})" >&2
   printf '%s %s' "$nx" "$ny"; }
-# The most swipes a search makes. A safety net, not the boundary of the search:
-# a search on a list stops where the list ends (see scroll_to), and this number
-# is reached only by a list that is still moving. Eight used to be the boundary, and
-# eight swipes covered a few screens: a row further down failed as "not on
-# screen" while it was there. Thirty swipes of two fifths of the list travel
-# at least twelve times its height, and still bound a step that will never find its element.
-# Read twice: by the loop, and by the message that reports the miss.
-SCROLL_TRIES=30
+# How long a search may swipe, in seconds. A safety net, not the boundary of the
+# search: a search on a list stops where the list ends (see scroll_to), and this
+# is reached only by a list that is still moving. Eight swipes used to be the
+# boundary, and eight swipes covered a few screens: a row further down failed as
+# "not on screen" while it was there. Then thirty swipes - and a count is a
+# different distance on every reader: a swipe with the screen helper costs about
+# 1.5 s, with uiautomator dump or on iOS about 4 s. The limit is time now (#107),
+# set so that the slowest reader still makes the thirty swipes it used to; with
+# the helper, which also swipes a screen at a time, that is many times the
+# distance. The wait at the end of a list for it to grow has its own time and is
+# not counted here. YUKTI_SCROLL_BUDGET sets it, for the tests.
+SCROLL_BUDGET=120
+scroll_budget(){ case "${YUKTI_SCROLL_BUDGET:-}" in ''|*[!0-9]*|0) printf '%s' "$SCROLL_BUDGET";; *) printf '%s' "$YUKTI_SCROLL_BUDGET";; esac; }
 # A screen whose dump shows no list keeps the old boundary. There is no end to
 # find there, and swipes past the eighth learn nothing a flow is waiting for.
 SCROLL_TRIES_BLIND=8
@@ -2156,6 +2163,7 @@ import xml.etree.ElementTree as ET
 d=sys.argv[1]; near=sys.argv[2].split(); W=int(sys.argv[3]); H=int(sys.argv[4])
 top=H*int(sys.argv[5])//int(sys.argv[7]); bot=H*int(sys.argv[6])//int(sys.argv[7])
 android=sys.argv[8]=="android"
+far=sys.argv[9]=="far"
 vert=d in ("up","down")
 raw=sys.stdin.read().strip()
 if not raw: sys.exit(1)   # the tree never arrived; the reader has said why
@@ -2294,16 +2302,23 @@ def pick(starts,travel,crosses,skip=None):
 # The edges of the list are in the grid too: a chart or a card rarely reaches
 # the side of the screen, and a finger there is on the list itself.
 crosses=[50,30,70,20,80,10,90]
-main=anchor(70,40,20); mc=None
-if main is None: main,mc=pick([70,60,75],40,crosses)
-if main is None: main,mc=line(70 if fwd else 30,40,50),50
+# A far swipe covers a screen less a fifth: it starts near the end it leaves
+# and stops a fifth short of the other, so the rows at that end are read twice.
+if far:
+    main=anchor(88,80,40); mc=None
+    if main is None: main,mc=pick([88,85,90],80,crosses)
+    if main is None: main,mc=line(88 if fwd else 12,80,50),50
+else:
+    main=anchor(70,40,20); mc=None
+    if main is None: main,mc=pick([70,60,75],40,crosses)
+    if main is None: main,mc=line(70 if fwd else 30,40,50),50
 ctl=anchor(60,25,15,away=main[1] if vert else main[0])
 if ctl is None: ctl,_=pick([62,72],25,crosses,skip=mc)
 if ctl is None: ctl=line(62 if fwd else 38,25,30 if mc!=30 else 70)
 dist=abs(main[3]-main[1]) if vert else abs(main[2]-main[0])
 dur=max(200,dist*3//4) if vert else 300
 print(rid,fp,lp,*main,dur,*ctl,dur*2)
-' "$1" "${2:-}" "$3" "$4" "$BAND_TOP" "$BAND_BOTTOM" "$BASIS_H" "$YUKTI_PLATFORM"; }
+' "$1" "${2:-}" "$3" "$4" "$BAND_TOP" "$BAND_BOTTOM" "$BASIS_H" "$YUKTI_PLATFORM" "${5:-}"; }
 # The answers:
 #   0 + coordinates - it is there, and where it has to be
 #   4 + coordinates - in the band, never clear of its edges while the list still
@@ -2353,7 +2368,13 @@ print(rid,fp,lp,*main,dur,*ctl,dur*2)
 # moves the list again - and the search goes on from them. Nothing within the
 # budget is the end, as before. Rows added below the screen do not show in a
 # read, which is why the wait swipes as well: only a swipe that moves can tell.
-scroll_to(){ local lbl="$1" dir="${2:-down}" clear="${3:-}" verb="${4:-scrollToText}" grow="${5:-$SCROLL_GROW_WAIT}" i=0 xy c lo hi blo bhi m w h seen="" nudge st probe prev="" ctl=0 ended="" flat="" kb="" end0=""
+# One line on stderr per search: how many swipes it took and how long, for the
+# same reason as the line per read.
+scroll_to(){ local t0 st=0; t0="$(now)"; SCROLL_N=0; SWIPED_BY=adb
+  scroll_search "$@" || st=$?
+  printf '  · search %s swipes %d ms\n' "$SCROLL_N" $(( ($(us_of "$(now)") - $(us_of "$t0")) / 1000 )) >&2
+  return "$st"; }
+scroll_search(){ local lbl="$1" dir="${2:-down}" clear="${3:-}" verb="${4:-scrollToText}" grow="${5:-$SCROLL_GROW_WAIT}" i=0 xy c lo hi blo bhi m w h seen="" nudge st probe prev="" ctl=0 ended="" flat="" kb="" end0="" far t1 tn waited=0 tw="" budget
   case "$dir" in up|down|left|right) ;; *) die "scrollToText: '$dir' is not a direction - use up, down, left or right";; esac
   set -- $(screen_wh); w="${1:-$BASIS_W}"; h="${2:-$BASIS_H}"
   case "$dir" in
@@ -2365,7 +2386,12 @@ scroll_to(){ local lbl="$1" dir="${2:-down}" clear="${3:-}" verb="${4:-scrollToT
   if [ "$clear" = clear ]; then
     m=$(( (bhi - blo) * CLEAR_PCT / 100 )); lo=$(( blo + m )); hi=$(( bhi - m ))
   fi
-  while [ "$i" -lt "$SCROLL_TRIES" ]; do i=$(( i + 1 ))
+  budget=$(( $(scroll_budget) * 1000000 )); t1="$(us_of "$(now)")"
+  while :; do
+    # The time spent waiting at the end of the list is not the search's.
+    tn="$(us_of "$(now)")"; [ -z "$tw" ] || waited=$(( waited + tn - tw )); tw=""
+    [ $(( tn - t1 - waited )) -lt "$budget" ] || break
+    i=$(( i + 1 ))
     # One read per swipe. The lookup and the list both come from it: two reads
     # would cost a second dump, and could disagree about a screen that did not
     # change in between. Emptied before the swipe, as in dismiss.
@@ -2393,14 +2419,19 @@ scroll_to(){ local lbl="$1" dir="${2:-down}" clear="${3:-}" verb="${4:-scrollToT
       kb_before_swipe "$verb" >&2 || st=$?
       [ "$st" -eq 10 ] && { i=$(( i - 1 )); continue; }
     fi
-    st=0; probe="$(list_probe "$nudge" "$xy" "$w" "$h")" || st=$?; HELD_TREE=""
+    # A screen at a time only while the element is not on the screen, and only
+    # with the helper's gesture, which leaves the list where the finger left it.
+    # An element in view is brought into the band by the usual two fifths: a
+    # screen-long swipe would carry it from one edge past the other and back.
+    far=""; [ -z "$xy" ] && helper_swipes && far=far
+    st=0; probe="$(list_probe "$nudge" "$xy" "$w" "$h" "$far")" || st=$?; HELD_TREE=""
     [ "$st" -eq 0 ] || lookup_die "$st"
     if [ -z "$probe" ]; then
       # To stderr: scroll_to runs inside a command substitution, and a line on
       # stdout would arrive inside the coordinates it returns. A sideways search
       # has its own line for this, printed by scroll.
       case "$dir" in up|down) [ -n "$flat" ] || warn "no vertically scrollable list in the dump - swiping down the middle of the screen, where the end of the list cannot be told from the end of the swipes" >&2;; esac
-      flat=$(( ${flat:-0} + 1 )); prev=""; ctl=0
+      flat=$(( ${flat:-0} + 1 )); prev=""; ctl=0; SCROLL_N=$(( SCROLL_N + 1 ))
       scroll "$nudge"; sleep 0.6
       [ "$flat" -ge "$SCROLL_TRIES_BLIND" ] && break
       continue
@@ -2418,13 +2449,13 @@ scroll_to(){ local lbl="$1" dir="${2:-down}" clear="${3:-}" verb="${4:-scrollToT
         [ -n "$end0" ] || end0=$SECONDS
         # SECONDS counts whole seconds, so -gt: the wait is at least `grow`.
         [ $(( SECONDS - end0 )) -gt "$grow" ] && { ended=1; break; }
-        i=$(( i - 1 )); sleep 1
+        i=$(( i - 1 )); tw="$tn"; sleep 1
       fi
-      ctl=1; swipe_pts "$9" "${10}" "${11}" "${12}" "${13}"
+      ctl=1; SCROLL_N=$(( SCROLL_N + 1 )); swipe_pts "$9" "${10}" "${11}" "${12}" "${13}"
     else
-      ctl=0; end0=""; prev="$1 $2 $3"; swipe_pts "$4" "$5" "$6" "$7" "$8"
+      ctl=0; end0=""; prev="$1 $2 $3"; SCROLL_N=$(( SCROLL_N + 1 )); swipe_pts "$4" "$5" "$6" "$7" "$8"
     fi
-    sleep 0.6; done
+    [ "$SWIPED_BY" = helper ] || sleep 0.6; done
   if [ -n "$ended" ]; then
     # The read that saw the end is also the last lookup: the element in it is
     # where it is going to stay.
@@ -2461,13 +2492,70 @@ same_rows(){ local a b; set -- $1 $2
   [ "${a#-}" -le 8 ] && [ "${b#-}" -le 8 ]; }
 # A swipe between two points the dump has chosen. `scroll` aims by itself and
 # stays as it is: a bare scroll step has no list to aim into.
-swipe_pts(){ if is_android; then apaths; adb shell input swipe "$1" "$2" "$3" "$4" "$5"
+#
+# On Android, while the screen helper serves this run, the swipe of a search is
+# one gesture sent to it (#107): the finger goes down at the start, moves to the
+# end in 300 ms, stays there 160 ms, moves once more to the same point and only
+# then comes up. Android takes the speed of a finger from its last movements,
+# and drops what it saw before a gap of more than 40 ms; the last movement here
+# comes after such a gap and goes nowhere, so the finger leaves at speed zero
+# and the list stops where the finger stopped. That is what lets a search swipe
+# a screen at a time (see list_probe): `input swipe` lets go at the speed it
+# moved, the list runs on, and a long swipe would carry rows past unread.
+# The helper's server drops a movement of 0 ms, so the last one is 20 ms - the
+# shortest it keeps. The first movement only places the finger.
+# Which way each swipe went is left in SWIPED_BY: the helper's gesture leaves a
+# still list, and the search does not pause after it.
+SWIPE_ACTIONS='{"actions":[{"type":"pointer","id":"finger","parameters":{"pointerType":"touch"},"actions":[
+{"type":"pointerMove","duration":0,"origin":"viewport","x":%d,"y":%d},
+{"type":"pointerDown","button":0},
+{"type":"pointerMove","duration":300,"origin":"viewport","x":%d,"y":%d},
+{"type":"pause","duration":160},
+{"type":"pointerMove","duration":20,"origin":"viewport","x":%d,"y":%d},
+{"type":"pointerUp","button":0}]}]}'
+# The helper takes this swipe: it answers reads in this run, has not been given
+# up on, and has not refused the gesture twice in a row. It is asked again before
+# every swipe - a helper that fell over halfway through a step leaves the rest of
+# the step on adb.
+helper_swipes(){ local d; d="$(run_dir)"
+  is_android && [ "${YUKTI_HELPER:-1}" != 0 ] && [ -n "$d" ] && [ ! -e "$d/helper-off" ] \
+    && [ ! -e "$d/gesture-off" ] \
+    && [ -s "$d/helper-session" ] && [ -s "$d/helper-port" ]; }
+swipe_note(){ printf '  · swipe %s %d ms%s\n' "$1" $(( ($(us_of "$(now)") - $(us_of "$2")) / 1000 )) "${3:-}" >&2; }
+swipe_pts(){ local t0 rc=0 why=""; t0="$(now)"; SWIPED_BY=adb
+  if is_android; then
+    if helper_swipes; then
+      # As long as a read may take: the gesture lasts half a second, and the
+      # server answers only once it has been played. An answer that came too
+      # late may still have moved the list - the swipe below then moves it a
+      # second time, which can skip rows and fail the step, never pass it.
+      helper_http POST "/session/$(cat "$(run_dir)/helper-session")/actions" "$(helper_read_timeout)" \
+        "$(printf "$SWIPE_ACTIONS" "$1" "$2" "$3" "$4" "$3" "$4")" >/dev/null || rc=$?
+      if [ "$rc" -eq 0 ]; then rm -f "$(run_dir)/gesture-refused"; SWIPED_BY=helper; swipe_note helper "$t0"; return 0; fi
+      why=" (helper: rc $rc)"
+      # Nothing answered (2), or nothing in time (4): the helper is gone or hung,
+      # and a read would wait for it three times over. Given up on now, for the
+      # run. No session (3) leaves it to the reads.
+      case "$rc" in 2|4) HELPER_WHY="it did not answer a swipe"; helper_give_up;; esac
+      # A gesture that timed out (4) or came back as an error (5) may still
+      # have been played: the server injects every event before it answers. The
+      # same line on adb would move the list twice, so nothing more is sent -
+      # the next read sees where the list is. A helper that refuses the gesture
+      # twice in a row is not offered it again in this run: each refusal would
+      # cost a gesture, a read and a pause for nothing.
+      if [ "$rc" -eq 4 ] || [ "$rc" -eq 5 ]; then
+        if [ "$rc" -eq 5 ]; then printf 'x' >> "$(run_dir)/gesture-refused"
+          [ "$(wc -c < "$(run_dir)/gesture-refused")" -lt 2 ] || : > "$(run_dir)/gesture-off"; fi
+        SWIPED_BY=none; swipe_note none "$t0" "$why"; return 0
+      fi
+    fi
+    apaths; adb shell input swipe "$1" "$2" "$3" "$4" "$5"; swipe_note adb "$t0" "$why"
   # The duration is left to idb, as in scroll. Written, not measured - no Mac.
-  else paths; idb ui swipe --udid "$(U)" "$1" "$2" "$3" "$4"; fi; }
+  else paths; idb ui swipe --udid "$(U)" "$1" "$2" "$3" "$4"; swipe_note idb "$t0"; fi; }
 # The words for a miss that never saw the element, for the two verbs that search.
 scroll_miss(){ case "$1" in
     6) printf "reached the end of the list going %s and it did not grow for %ss, '%s' is not in it" "$3" "${4:-$SCROLL_GROW_WAIT}" "$2";;
-    7) printf "still moving after %s swipes %s, '%s' not found" "$SCROLL_TRIES" "$3" "$2";;
+    7) printf "still moving after %ss of swiping %s, '%s' not found" "$(scroll_budget)" "$3" "$2";;
     8) printf "no scrollable list on screen - searched %s swipes %s, '%s' not found" "$SCROLL_TRIES_BLIND" "$3" "$2";;
   esac; }
 # scroll_to is a locator and stays one: it is also the first half of tapText,
@@ -2488,7 +2576,7 @@ scroll_to_step(){ local lbl="${1:-}" dir="${2:-down}" clear="${3:-}" grow="${4:-
   # swipes follow its position, not the direction the search came from.
   case "$st" in
     0) ;;
-    4) die "scrollToText: '$lbl' came into view but never landed clear of the band edges after $SCROLL_TRIES swipes - it is at $xy";;
+    4) die "scrollToText: '$lbl' came into view but never landed clear of the band edges in $(scroll_budget)s of swiping - it is at $xy";;
     5) die "scrollToText: '$lbl' came into view at $xy and the swipes took it out of view again - it is not on the screen now";;
     6|7|8) die "scrollToText: $(scroll_miss "$st" "$lbl" "$dir" "$grow")";;
     9) die "scrollToText: '$lbl' is at the end of the list and cannot be moved clear of the band edge - it is at $xy; content may be hidden under a fixed bar";;

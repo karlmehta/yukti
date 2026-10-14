@@ -51,7 +51,7 @@ elif ops[:2] == ["ui", "text"]:
     write("typed", read("typed") + q)
 elif ops[:2] == ["ui", "key"]:
     if ops[2:] == ["42"]: write("typed", read("typed")[:-1])
-elif ops[:2] == ["ui", "tap"] or ops[:1] == ["connect"]:
+elif ops[:2] in (["ui", "tap"], ["ui", "swipe"]) or ops[:1] == ["connect"]:
     pass
 else:
     sys.exit(1)

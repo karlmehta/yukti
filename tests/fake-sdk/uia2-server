@@ -16,6 +16,10 @@
 #                  source answers after 3 s; "die": the next source stops the
 #                  helper and is not answered
 #   http-log       every request, one per line
+#   actions        the body of every gesture (POST .../actions), one per line
+#   actions-mode   "fail": every gesture answers 500; "hang": every gesture
+#                  answers after 3 s; "gone": the next gesture is not answered
+#                  and the helper stops
 import json, os, sys, time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -53,6 +57,15 @@ class H(BaseHTTPRequestHandler):
             return self.answer(404, {"error": "invalid session id"})
         if parts[2:] == ["appium", "settings"] and method == "POST":
             write("settings", body); return self.answer(200, None, sid)
+        if parts[2:] == ["actions"] and method == "POST":
+            with open(path("actions"), "a") as fh: fh.write(json.dumps(json.loads(body)) + "\n")
+            mode = read("actions-mode").strip()
+            if mode == "gone":
+                os.remove(path("actions-mode")); os.remove(path("running"))
+                self.close_connection = True; return
+            if mode == "hang": time.sleep(3)
+            if mode == "fail": return self.answer(500, {"error": "unknown error"}, sid)
+            return self.answer(200, None, sid)
         if parts[2:] == ["source"]:
             k = int(read("sources", "0") or 0) + 1; write("sources", str(k))
             mode = read("source-mode").strip()
