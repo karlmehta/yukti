@@ -450,7 +450,7 @@ read twice. The helper plays the gesture with a finger that stops before it
 lifts, so the list stops where the finger stopped and no row goes by unread.
 Without the helper, and on iOS, a swipe lets go at the speed it moved and the
 list runs on a little, so the swipe stays at 40%. Each swipe prints how it went
-and what it cost (`· swipe helper 480 ms`, `· swipe adb 830 ms`), and each
+and what it cost (`· swipe helper 1300 ms`, `· swipe adb 830 ms`), and each
 search its total (`· search 4 swipes 5120 ms`). A search stops after two
 minutes of swiping, which on the slowest reader is the thirty swipes it used
 to be allowed.
@@ -480,13 +480,13 @@ moves the list again, ends the wait and the search goes on. Nothing within the
 wait is the end. A real end costs the wait once per step; an element already on
 the screen at the end, or one the swipes already took out of view, is not
 waited for. `tapText` searches the same way and takes the same `"timeout"`.
-30 swipes is the safety net for a list that is still moving. A screen with no
+Two minutes of swiping is the safety net for a list that is still moving. A screen with no
 list in its dump keeps the old eight swipes down the middle. On iOS all of this
 is written, not measured - no Mac.
 
 A miss reads as one of these. Never seen, the list ended: `reached the end of the
 list going down and it did not grow for 5s, '<label>' is not in it` - in that
-direction, from where the search started, after the wait for a late lower part. Never seen, still moving: `still moving after 30 swipes down,
+direction, from where the search started, after the wait for a late lower part. Never seen, still moving: `still moving after 120s of swiping down,
 '<label>' not found`. Never seen, no list in the dump: `no scrollable list on
 screen - searched 8 swipes down, '<label>' not found`, after a warning that the
 swipes go down the middle. Seen and swiped away: `came into view at 540 1879 and
