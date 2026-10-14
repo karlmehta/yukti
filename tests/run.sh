@@ -969,6 +969,20 @@ begin "scroll: the scroll step keeps its own swipe through adb"
 status_is 0; gestures_are 0; has adb/log "input swipe"
 verdict; helper_done
 
+# Known, and measured on a device rather than here: a read that catches the list
+# before its rows are drawn sees no rows, and the search swipes on. On a device
+# the rows it skipped may have held the element; here the next screen holds it.
+helper_case scroll-helper-undrawn
+: > "$case_dir/adb/running"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hlist A)"
+helper_screen "$case_dir/adb/helper-2.xml" '<android.widget.ScrollView index="0" package="com.example" class="android.widget.ScrollView" text="" resource-id="com.example:id/list" scrollable="true" bounds="[0,200][1080,2200]" displayed="true" />'
+helper_screen "$case_dir/adb/helper-3.xml" "$(hlist C Target 1100)"
+flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target" }'
+run_helper flow "$case_dir/flow.json"
+begin "scroll: a list read before its rows are drawn is swiped past (known, see the comment)"
+status_is 0; gestures_are 2; count_is adb/http-log "/source" 3
+verdict; helper_done
+
 dev_case scroll-dump
 screen "$case_dir/adb/dump-1.xml" "$(dlist A)"
 screen "$case_dir/adb/dump-2.xml" "$(dlist B)"
