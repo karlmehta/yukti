@@ -983,6 +983,23 @@ begin "scroll: a list read before its rows are drawn is swiped past (known, see 
 status_is 0; gestures_are 2; count_is adb/http-log "/source" 3
 verdict; helper_done
 
+# A row of tiles 200 wide from x 8, centres at 108, 324 ... 972; the
+# screen-long swipe starts on the last tile, 90% of the way, and goes 80%.
+htiles(){ local p="$1" t="${2:-}" k x lab
+  printf '<android.widget.HorizontalScrollView index="0" package="com.example" class="android.widget.HorizontalScrollView" text="" resource-id="com.example:id/row" scrollable="true" bounds="[0,800][1080,1100]" displayed="true">'
+  for k in 1 2 3 4 5; do x=$(( 8 + (k - 1) * 216 )); lab="$p $k"; [ "$k" = 3 ] && [ -n "$t" ] && lab="$t"
+    printf '<android.widget.TextView index="0" package="com.example" class="android.widget.TextView" text="%s" resource-id="" scrollable="false" bounds="[%d,900][%d,1000]" displayed="true" />' "$lab" "$x" $(( x + 200 )); done
+  printf '</android.widget.HorizontalScrollView>'; }
+helper_case scroll-helper-right
+: > "$case_dir/adb/running"
+helper_screen "$case_dir/adb/helper-1.xml" "$(htiles A)"
+helper_screen "$case_dir/adb/helper-2.xml" "$(htiles B Target)"
+flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target", "direction": "right" }'
+run_helper flow "$case_dir/flow.json"
+begin "scroll: sideways, the screen-long swipe runs along the row at its height"
+status_is 0; gestures_are 1; gesture_line 1 972 950 108 950
+verdict; helper_done
+
 dev_case scroll-dump
 screen "$case_dir/adb/dump-1.xml" "$(dlist A)"
 screen "$case_dir/adb/dump-2.xml" "$(dlist B)"
@@ -1000,12 +1017,15 @@ screen "$case_dir/adb/dump-1.xml" "$(dlist B)"
 screen "$case_dir/adb/dump-2.xml" "$(dlist C Target 1100)"
 flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target" }'
 run_helper flow "$case_dir/flow.json"
-begin "scroll: a helper gone during a gesture is given up on, that line goes through adb, the rest of the step too"
+begin "scroll: a helper gone during a gesture is given up on, that line goes through adb at half the length, the rest of the step too"
 status_is 0; gestures_are 1; has out.txt "it did not answer a swipe"
-has adb/log "input swipe 540 1900 540 300 1200"; has adb/log "input swipe 540 1500 540 700 600"
+has adb/log "input swipe 540 1900 540 1100 600"; has adb/log "input swipe 540 1500 540 700 600"
 has out.txt "· swipe adb"; has out.txt "(helper: rc 2)"
 verdict; helper_done
 
+# Two refusals leave the list where it was, so the second read looks like the
+# end of the list: the search waits there for it to grow, and the control swipe
+# of that wait - on adb by then - is what moves it.
 helper_case scroll-helper-refuses
 : > "$case_dir/adb/running"; echo fail > "$case_dir/adb/actions-mode"
 helper_screen "$case_dir/adb/helper-1.xml" "$(hlist A)"
@@ -1014,6 +1034,7 @@ flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target" }'
 run_helper flow "$case_dir/flow.json"
 begin "scroll: a refused gesture is not repeated on adb, and after two refusals the run swipes through adb"
 status_is 0; gestures_are 2; count_is out.txt "(helper: rc 5)" 2; count_is adb/log "input swipe" 1
+has out.txt "· search 1 swipes"
 file_absent adb/dumps
 verdict; helper_done
 
