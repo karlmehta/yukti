@@ -131,7 +131,8 @@ A flow is `{ "name": "...", "steps": [ ... ] }`. Common step verbs:
 | `{"do":"assertNotId","value":"paywall"}` | verify no element with this id is on the screen as it is now |
 | `{"do":"screenshot","value":"x.png"}` | capture for review |
 | `{"do":"waitFor","value":"Weight History","timeout":15}` | poll until the text is on screen, fail on timeout (seconds, default 10; no scrolling). Matches like `assertText`, `"match":"contains"` included |
-| `{"do":"waitForId","value":"weight_card"}` | the same wait, matching the id exactly |
+| `{"do":"waitForId","value":"weight_card"}` | the same wait, matching the id exactly; on timeout it says whether the id is not in the tree, is there at zero size, or is outside the screen |
+| `{"do":"waitForId","value":"chat-button","timeout":20,"optional":true}` | the same wait, but a timeout skips the step instead of failing the flow, with the same words |
 | `{"do":"scroll","value":"down"}` | one swipe: `up`, `down`, `left` or `right` |
 | `{"do":"wait","value":3}` / `{"do":"dismiss"}` | sleep a fixed time (prefer `waitFor`) / dismiss a modal |
 | `{"do":"tap","x":201,"y":812}` | tap raw coordinates (last resort — brittle) |
@@ -179,9 +180,11 @@ stronger test.
 on Android; their iOS halves are written and have not been run on a simulator, so
 treat an iOS failure in them as a bug in the tool before doubting the app.
 
-A step that fails now fails the flow, and the message names the step. Two
+A step that fails now fails the flow, and the message names the step. Three
 exceptions stay, and they are narrow: `dismiss` and `optionalTapText` tolerate a
-label that is not on screen, but not a device that refuses the tap. An unknown
+label that is not on screen, but not a device that refuses the tap, and a
+`waitForId` with `"optional": true` tolerates a timeout, but not a screen that
+cannot be read. An unknown
 verb, an unknown `"match"` value, a `"match"` on a step that does not take one,
 a non-numeric `wait`, and a `scrollToText` whose label never comes into view stop
 the flow as well. A flow file that is not valid JSON, one with no steps in it, and
@@ -240,8 +243,8 @@ certain. `"when"` says under which of them a step runs.
   "when": { "notVisible": "Today" } }
 ```
 
-The conditions are `visible`, `notVisible`, `visibleId`, `notVisibleId` and
-`platform`. Several in one `"when"` all have to hold. On an `include` the
+The conditions are `visible`, `notVisible`, `visibleId`, `notVisibleId`,
+`zeroSizeId` and `platform`. Several in one `"when"` all have to hold. On an `include` the
 condition is answered once and covers the whole block - never half of it, which
 is what asking again at every step of the block would give you the moment the
 first step changes the screen.
@@ -268,6 +271,13 @@ satisfied by markup changes the course of a flow - and it is why a skip is never
 silent: the line in the console and the `skipped` entry are how a condition that
 is too strict shows up.
 
+`zeroSizeId` holds when an element with this id is in the tree at zero size -
+the case of a control that grows in with an animation and sometimes stays at its
+starting point - and no element with the same id can be tapped instead. It does
+not matter whether the point lies on the screen. `notVisibleId` holds in that
+case too, and also when the id is not there at all; `zeroSizeId` is the one that
+tells the two apart.
+
 `platform` is `ios` or `android`, compared against the platform of the run, and
 the skip line names that platform - `skipped: platform 'android' (this run: ios)`
 - so a run that resolved its platform differently than you expected says so.
@@ -285,6 +295,19 @@ the flow file, with the label spelled out instead of hidden in the engine:
 
 ```json
 { "do": "tapText", "value": "Skip", "when": { "visible": "Skip" } }
+```
+
+A wait that may end without its element is `"optional": true` on `waitForId`.
+On timeout the step is skipped - a `~` line and a `skipped` testcase whose
+message starts with `optional wait ended, the flow went on:` and names the case -
+and the flow goes on. With `zeroSizeId` it makes a recovery path that costs
+nothing when the element behaves:
+
+```json
+{ "do": "waitForId", "value": "chat-button", "timeout": 20, "optional": true },
+{ "do": "include", "value": "blocks/remount.json", "when": { "zeroSizeId": "chat-button" } },
+{ "do": "waitForId", "value": "chat-button", "timeout": 40 },
+{ "do": "tapId", "value": "chat-button" }
 ```
 
 ### Reaching something that is not below
