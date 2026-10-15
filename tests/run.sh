@@ -1080,5 +1080,222 @@ begin "scroll: on iOS a search keeps the idb swipe of two fifths"
 status_is 0; count_is idb/log "ui swipe" 1; has out.txt "· swipe idb"
 verdict
 
+# ── an element at zero size, and a wait that may end without it (#111, #112) ─
+# The root node comes first: the engine takes the first bounds of a dump as the
+# screen. The button is the case these were made for - in the tree, at a point.
+ROOT_NODE='<node index="0" text="" resource-id="" class="android.widget.FrameLayout" package="com.example" content-desc="" bounds="[0,0][1080,2400]" />'
+ZERO_BTN='<node index="0" text="" resource-id="com.example:id/btn" class="android.view.ViewGroup" package="com.example" content-desc="Ask" clickable="true" bounds="[174,60][174,60]" />'
+SIZED_BTN='<node index="0" text="" resource-id="com.example:id/btn" class="android.view.ViewGroup" package="com.example" content-desc="Ask" clickable="true" bounds="[100,40][250,90]" />'
+BELOW_BTN='<node index="0" text="" resource-id="com.example:id/btn" class="android.view.ViewGroup" package="com.example" content-desc="Ask" clickable="true" bounds="[100,2500][250,2550]" />'
+# A guarded step that leaves a trace when it runs: a wait of nothing, titled.
+RAN='{ "do": "wait", "value": "0", "title": "guarded step", "when": { "zeroSizeId": "btn" } }'
+
+dev_case zero-wait-names-zero
+screen "$case_dir/adb/dump-1.xml" "$ROOT_NODE" "$ZERO_BTN"
+flow_file "$case_dir/flow.json" '{ "do": "waitForId", "value": "btn", "timeout": 1 }'
+run_flow "$case_dir/flow.json"
+begin "waitForId: a timeout on a zero-size element says so, with its corners"
+status_is 1; fake_used
+has out.txt "'btn' not on screen after 1s - at zero size [174,60][174,60]"
+has res/flow.xml "at zero size [174,60][174,60]"; red_is failure StepFailed 1 0
+verdict
+
+dev_case zero-wait-names-missing
+screen "$case_dir/adb/dump-1.xml" "$ROOT_NODE" "$(node TextView title Today)"
+flow_file "$case_dir/flow.json" '{ "do": "waitForId", "value": "btn", "timeout": 1 }'
+run_flow "$case_dir/flow.json"
+begin "waitForId: a timeout on an id that is not in the tree says so"
+status_is 1; fake_used; has out.txt "'btn' not on screen after 1s - not in the tree"
+verdict
+
+dev_case zero-wait-names-outside
+screen "$case_dir/adb/dump-1.xml" "$ROOT_NODE" "$BELOW_BTN"
+flow_file "$case_dir/flow.json" '{ "do": "waitForId", "value": "btn", "timeout": 1 }'
+run_flow "$case_dir/flow.json"
+begin "waitForId: a timeout on an element below the screen says so"
+status_is 1; fake_used; has out.txt "'btn' not on screen after 1s - outside the screen at [100,2500][250,2550]"
+verdict
+
+dev_case zero-wait-unreadable
+printf 'not a dump' > "$case_dir/adb/dump-1.xml"
+flow_file "$case_dir/flow.json" '{ "do": "waitForId", "value": "btn", "timeout": 1 }'
+run_flow "$case_dir/flow.json"
+begin "waitForId: a screen that cannot be read is not called any of the three"
+status_is 1; fake_used; red_is error DeviceError 0 1
+lacks out.txt "not in the tree"; lacks out.txt "at zero size"
+verdict
+
+dev_case optional-goes-on
+screen "$case_dir/adb/dump-1.xml" "$ROOT_NODE" "$ZERO_BTN"
+flow_file "$case_dir/flow.json" '{ "do": "waitForId", "value": "btn", "timeout": 1, "optional": true }' \
+  '{ "do": "wait", "value": "0", "title": "the step after" }'
+run_flow "$case_dir/flow.json"
+begin "optional: a wait that ends without its element is skipped, and the flow goes on"
+status_is 0; fake_used
+has out.txt "'btn' not on screen after 1s - at zero size [174,60][174,60] - optional, the flow goes on"
+has out.txt 'step 2 '"'"'wait'"'"' "the step after"'
+has res/flow.xml 'skipped="1"'
+has res/flow.xml "optional wait ended, the flow went on: 'btn' not on screen after 1s - at zero size [174,60][174,60]"
+lacks res/flow.xml "condition not met"; lacks res/flow.xml "<failure"
+verdict
+
+dev_case optional-found
+screen "$case_dir/adb/dump-1.xml" "$ROOT_NODE" "$SIZED_BTN"
+flow_file "$case_dir/flow.json" '{ "do": "waitForId", "value": "btn", "timeout": 1, "optional": true }'
+run_flow "$case_dir/flow.json"
+begin "optional: an element that is there is waited for as always"
+status_is 0; fake_used; has out.txt "'btn' on screen at 175 65"
+has res/flow.xml 'skipped="0"'
+verdict
+
+dev_case optional-false
+screen "$case_dir/adb/dump-1.xml" "$ROOT_NODE" "$ZERO_BTN"
+flow_file "$case_dir/flow.json" '{ "do": "waitForId", "value": "btn", "timeout": 1, "optional": false }'
+run_flow "$case_dir/flow.json"
+begin "optional: false is the ordinary wait, and fails"
+status_is 1; fake_used; red_is failure StepFailed 1 0
+verdict
+
+dev_case optional-unreadable
+printf 'not a dump' > "$case_dir/adb/dump-1.xml"
+flow_file "$case_dir/flow.json" '{ "do": "waitForId", "value": "btn", "timeout": 1, "optional": true }' \
+  '{ "do": "wait", "value": "0", "title": "the step after" }'
+run_flow "$case_dir/flow.json"
+begin "optional: a screen that cannot be read still stops the flow"
+status_is 1; fake_used; red_is error DeviceError 0 1; lacks out.txt "the step after"
+verdict
+
+dev_case zero-when-holds
+screen "$case_dir/adb/dump-1.xml" "$ROOT_NODE" "$ZERO_BTN"
+flow_file "$case_dir/flow.json" "$RAN"
+run_flow "$case_dir/flow.json"
+begin "zeroSizeId: an element in the tree at zero size holds"
+status_is 0; fake_used; has out.txt '"guarded step"'; lacks out.txt "skipped"
+verdict
+
+dev_case zero-when-missing
+screen "$case_dir/adb/dump-1.xml" "$ROOT_NODE" "$(node TextView title Today)"
+flow_file "$case_dir/flow.json" "$RAN"
+run_flow "$case_dir/flow.json"
+begin "zeroSizeId: an id that is not in the tree does not hold"
+status_is 0; fake_used; has out.txt "skipped: zeroSizeId 'btn'"
+has res/flow.xml "condition not met: zeroSizeId 'btn'"
+verdict
+
+dev_case zero-when-sized
+screen "$case_dir/adb/dump-1.xml" "$ROOT_NODE" "$SIZED_BTN"
+flow_file "$case_dir/flow.json" "$RAN"
+run_flow "$case_dir/flow.json"
+begin "zeroSizeId: an element of a real size does not hold"
+status_is 0; fake_used; has out.txt "skipped: zeroSizeId 'btn'"
+verdict
+
+dev_case zero-when-namesake
+screen "$case_dir/adb/dump-1.xml" "$ROOT_NODE" "$ZERO_BTN" "$SIZED_BTN"
+flow_file "$case_dir/flow.json" "$RAN"
+run_flow "$case_dir/flow.json"
+begin "zeroSizeId: a zero-size node with a namesake that can be tapped does not hold"
+status_is 0; fake_used; has out.txt "skipped: zeroSizeId 'btn'"
+verdict
+
+dev_case zero-when-unreadable
+printf 'not a dump' > "$case_dir/adb/dump-1.xml"
+flow_file "$case_dir/flow.json" "$RAN"
+run_flow "$case_dir/flow.json"
+begin "zeroSizeId: a screen that cannot be read stops the flow"
+status_is 1; fake_used; has out.txt "when (zeroSizeId 'btn')"; has res/flow.xml 'name="00 flow"'
+verdict
+
+# iOS: the same states in an idb tree. The window comes first, as the engine
+# takes it for the screen.
+IAPP='{"type":"Application","role_description":"application","AXLabel":"App","frame":{"x":0,"y":0,"width":402,"height":874}}'
+IZERO='{"type":"Button","role_description":"button","AXUniqueId":"btn","AXLabel":"Ask","frame":{"x":174,"y":60,"width":0,"height":0}}'
+ISIZED='{"type":"Button","role_description":"button","AXUniqueId":"btn","AXLabel":"Ask","frame":{"x":100,"y":40,"width":150,"height":50}}'
+
+ios_case ios-zero-wait
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$IZERO"
+flow_file "$case_dir/flow.json" '{ "do": "waitForId", "value": "btn", "timeout": 1 }'
+run_ios "$case_dir/flow.json"
+begin "waitForId on iOS: a timeout on a zero-size element says so, with its corners"
+status_is 1; has out.txt "'btn' not on screen after 1s - at zero size [174,60][174,60]"
+verdict
+
+ios_case ios-zero-wait-missing
+tree "$case_dir/idb/desc-1.json" "$IAPP"
+flow_file "$case_dir/flow.json" '{ "do": "waitForId", "value": "btn", "timeout": 1 }'
+run_ios "$case_dir/flow.json"
+begin "waitForId on iOS: a timeout on an id that is not in the tree says so"
+status_is 1; has out.txt "'btn' not on screen after 1s - not in the tree"
+verdict
+
+ios_case ios-optional-goes-on
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$IZERO"
+flow_file "$case_dir/flow.json" '{ "do": "waitForId", "value": "btn", "timeout": 1, "optional": true }' \
+  '{ "do": "wait", "value": "0", "title": "the step after" }'
+run_ios "$case_dir/flow.json"
+begin "optional on iOS: a wait that ends without its element is skipped, and the flow goes on"
+status_is 0; has out.txt "at zero size [174,60][174,60] - optional, the flow goes on"
+has out.txt '"the step after"'; has res/flow.xml "optional wait ended, the flow went on"
+verdict
+
+ios_case ios-zero-when-holds
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$IZERO"
+flow_file "$case_dir/flow.json" "$RAN"
+run_ios "$case_dir/flow.json"
+begin "zeroSizeId on iOS: an element in the tree at zero size holds"
+status_is 0; has out.txt '"guarded step"'; lacks out.txt "skipped"
+verdict
+
+ios_case ios-zero-when-missing
+tree "$case_dir/idb/desc-1.json" "$IAPP"
+flow_file "$case_dir/flow.json" "$RAN"
+run_ios "$case_dir/flow.json"
+begin "zeroSizeId on iOS: an id that is not in the tree does not hold"
+status_is 0; has out.txt "skipped: zeroSizeId 'btn'"
+verdict
+
+ios_case ios-zero-when-sized
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$ISIZED"
+flow_file "$case_dir/flow.json" "$RAN"
+run_ios "$case_dir/flow.json"
+begin "zeroSizeId on iOS: an element of a real size does not hold"
+status_is 0; has out.txt "skipped: zeroSizeId 'btn'"
+verdict
+
+ios_case ios-zero-when-unreadable
+printf 'not a tree' > "$case_dir/idb/desc-1.json"
+flow_file "$case_dir/flow.json" "$RAN"
+run_ios "$case_dir/flow.json"
+begin "zeroSizeId on iOS: a screen that cannot be read stops the flow"
+status_is 1; has out.txt "when (zeroSizeId 'btn')"
+verdict
+
+# The builder: what a file says is checked before anything runs.
+new_case optional-check
+flow_file "$case_dir/flow.json" '{ "do": "waitForId", "value": "btn", "timeout": 20, "optional": true }' \
+  '{ "do": "tapId", "value": "bell", "when": { "zeroSizeId": "btn" } }'
+expect "check: optional and zeroSizeId build" 0 " - 2 steps" check "$case_dir/flow.json"
+
+new_case optional-not-bool
+flow_file "$case_dir/flow.json" '{ "do": "waitForId", "value": "btn", "optional": "yes" }'
+expect "check: optional that is not a boolean is refused" 1 \
+  "step 1 'waitForId': \"optional\" is true or false, got \"yes\"" check "$case_dir/flow.json"
+
+new_case optional-wrong-step
+flow_file "$case_dir/flow.json" '{ "do": "waitFor", "value": "Ask", "optional": true }'
+expect "check: optional on a step that does not take it is refused" 1 \
+  "step 1 'waitFor': step 'waitFor' does not take \"optional\" - only waitForId does" check "$case_dir/flow.json"
+
+new_case optional-on-include
+flow_file "$case_dir/flow.json" '{ "do": "include", "value": "b1.json", "optional": true }'
+flow_file "$case_dir/b1.json" '{ "do": "wait", "value": "0" }'
+expect "check: optional on an include is refused" 1 \
+  "'optional' is not a key an include takes" check "$case_dir/flow.json"
+
+new_case zero-when-not-text
+flow_file "$case_dir/flow.json" '{ "do": "wait", "value": "0", "when": { "zeroSizeId": { "id": "btn" } } }'
+expect "check: a zeroSizeId that is not text is refused" 1 \
+  "condition 'zeroSizeId' must be text or a number" check "$case_dir/flow.json"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

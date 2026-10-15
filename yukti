@@ -551,7 +551,10 @@ match=(sys.argv[3] if len(sys.argv)>3 else "exact")
 # What to print for the winner. The centre is the tap point and the default;
 # "box" asks for the corners the filters below already read, plus the screen
 # rect they are judged against, so that a caller can ask for a share of the
-# screen without reading the screen a second time.
+# screen without reading the screen a second time. "why" answers in words what
+# an empty answer leaves open: "on cx cy" for the winner, else "zero x1 y1 x2 y2"
+# for a match of zero area, else "off x1 y1 x2 y2" for one outside the screen,
+# else nothing - not in the tree. The iOS path answers the same.
 out=(sys.argv[4] if len(sys.argv)>4 else "centre")
 xml=sys.stdin.read()
 # Nothing arrived: the dump failed and said so on its own line. Status 1 is "the
@@ -576,7 +579,7 @@ if _m: SX1,SY1,SX2,SY2=map(int,_m.groups())
 # negative assertion or a `when` condition PASSES on that answer. The screen that
 # cannot be judged has to say so in a way the caller can read.
 if mode in ("assert","id") and not (SX2>SX1 and SY2>SY1): sys.exit(3)
-best=None; best_box=None; best_score=0
+best=None; best_box=None; best_score=0; zero=None; off=None
 # Corners (x1,y1,x2,y2): a lies entirely inside b and is not b itself. The iOS
 # path defines the same function; keep the two identical. A tap match scores at
 # least 2 and best_score starts below that, so a tie never meets an empty winner.
@@ -629,9 +632,13 @@ for m in re.finditer(r"<node\b[^>]*>", xml):
     b=re.search(r"bounds=\"\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]\"",tag)
     if not b: continue
     x1,y1,x2,y2=map(int,b.groups())
-    if not (x2>x1 and y2>y1): continue   # zero-area node: in the tree, not on the screen
+    if not (x2>x1 and y2>y1):   # zero-area node: in the tree, not on the screen
+        if zero is None: zero=(x1,y1,x2,y2)
+        continue
     cx,cy=(x1+x2)//2,(y1+y2)//2
-    if SX2>SX1 and SY2>SY1 and not (SX1<=cx<SX2 and SY1<=cy<SY2): continue  # off-screen
+    if SX2>SX1 and SY2>SY1 and not (SX1<=cx<SX2 and SY1<=cy<SY2):   # off-screen
+        if off is None: off=(x1,y1,x2,y2)
+        continue
     # A tie goes to the candidate that lies inside the current winner. A dialog
     # whose whole window carries the label of the button at its bottom ranks both
     # the same, and the window, coming first, took every tap: the centre of the
@@ -643,7 +650,11 @@ for m in re.finditer(r"<node\b[^>]*>", xml):
     best=(cx,cy); best_box=(x1,y1,x2,y2); best_score=score
 if best:
     if out=="box": print(best_box[0],best_box[1],best_box[2],best_box[3],SX1,SY1,SX2,SY2)
+    elif out=="why": print("on",best[0],best[1])
     else: print(best[0],best[1])
+elif out=="why":
+    if zero: print("zero",*zero)
+    elif off: print("off",*off)
 ' "$1" "${2:-text}" "${3:-exact}" "${4:-centre}"; }
 # Where a horizontal swipe should land, from the dump. A swipe across the middle
 # of the screen lands on whatever is there, and an element that does not claim
@@ -1246,7 +1257,8 @@ q_raw=norm(sys.argv[1]); q=q_raw.lower()
 mode=(sys.argv[2] if len(sys.argv)>2 else "text")
 match=(sys.argv[3] if len(sys.argv)>3 else "exact")
 # The centre is the tap point and the default; "box" asks for the frame of the
-# winner and the window it is judged against. Same contract as the Android path.
+# winner and the window it is judged against; "why" says why there is no
+# winner. Same contract as the Android path.
 out=(sys.argv[4] if len(sys.argv)>4 else "centre")
 raw=sys.stdin.read().strip()
 if not raw: sys.exit(1)   # 1 = the tree never arrived; ui() has already said why
@@ -1302,8 +1314,9 @@ def emit(e,xy):
     # size in points is compared with a minimum written in points.
     if out=="box":
         x,y,w,h=frame(e); print(int(x),int(y),int(x+w),int(y+h),int(SX),int(SY),int(SX+SW),int(SY+SH))
+    elif out=="why": print("on",xy[0],xy[1])
     else: print(xy[0],xy[1])
-best=None; best_el=None; best_score=-1
+best=None; best_el=None; best_score=-1; zero=None; off=None
 # Corners (x1,y1,x2,y2): a lies entirely inside b and is not b itself. The
 # Android path defines the same function; keep the two identical. A tap match
 # scores at least 2 and best_score starts below that, so a tie never meets an
@@ -1323,7 +1336,12 @@ for e in els:
         # or misspelled key, and that must not resolve to the first element around.
         if not q or q!=ident: continue
         xy=centre(e)
-        if xy is None: continue   # keep looking: a sized namesake may follow
+        if xy is None:   # keep looking: a sized namesake may follow
+            x,y,w,h=frame(e); bx=(int(x),int(y),int(x+w),int(y+h))
+            if not (w>0 and h>0):
+                if zero is None: zero=bx
+            elif off is None: off=bx
+            continue
         emit(e,xy); sys.exit(0)
     if mode=="assert":
         # See the Android path: an assertion matches perceivable text only, on an
@@ -1361,6 +1379,9 @@ for e in els:
         if not inside((x,y,x+w,y+h),(bx,by,bx+bw,by+bh)): continue
     best=(int(x+w/2),int(y+h/2)); best_el=e; best_score=score
 if best: emit(best_el,best)
+elif out=="why":
+    if zero: print("zero",*zero)
+    elif off: print("off",*off)
 ' "$1" "${2:-text}" "${3:-exact}" "${4:-centre}"; }
 tap(){ is_android && { atap "$1" "$2"; return; }; paths; idb ui tap --udid "$(U)" "${1:?x}" "${2:?y}"; }
 # A lookup has three outcomes, not two: coordinates, "no such element", and
@@ -1882,7 +1903,18 @@ wait_s(){ sleep "${1:-2}"; }
 # An unreadable screen is not "not there yet". The poll keeps going while the
 # screen cannot be read, and the timeout then says which of the two happened -
 # the distinction the lookup verbs already make.
-wait_for(){ local q="${1:-}" t="${2:-10}" m="${3:-exact}" mode="${4:-assert}" xy readable=1 lst=1 t0 el label
+#
+# By id, "not on screen" is three different states, and the timeout names the
+# one it ended in, from one more read: the id is not in the tree, it is there at
+# zero size (an element that grows in with an animation and stayed at its start),
+# or it is there outside the screen. The words "not on screen after Ns" stay at
+# the front, so a reader that looked for them still finds them.
+#
+# `optional` (waitForId only, the builder enforces it) turns that timeout into a
+# skip: a `~` line, the step lands in the report as skipped with the same words,
+# and the flow goes on. The words travel to the record in FLOW_OPT_MISS. An
+# unreadable screen still stops the flow: it is not an answer either way.
+wait_for(){ local q="${1:-}" t="${2:-10}" m="${3:-exact}" mode="${4:-assert}" opt="${5:-}" xy readable=1 lst=1 t0 el label why="" msg
   [ -n "$q" ] || die "waitFor needs a non-empty value"
   case "$t" in ''|*[!0-9]*|0) die "waitFor: timeout must be a whole number of seconds greater than zero, got '$t'";; esac
   case "$m" in exact|contains) ;; *) die "waitFor: unknown match '$m' - use exact or contains";; esac
@@ -1897,7 +1929,22 @@ wait_for(){ local q="${1:-}" t="${2:-10}" m="${3:-exact}" mode="${4:-assert}" xy
     sleep 0.5
   done
   [ "$readable" = 1 ] || die "$label FAILED after ${t}s waiting for '$q': $(lookup_err "$lst")"
-  die "$label FAILED: '$q' not on screen after ${t}s"; }
+  if [ "$mode" = id ]; then
+    if xy="$(find_el "$q" id exact why)"; then
+      case "$xy" in
+        # It arrived between the last poll and this read: it is on the screen.
+        on\ *)   el=$((SECONDS - t0)); ok "$label: '$q' on screen at ${xy#on } after ${el}s"; return 0;;
+        zero\ *) set -- $xy; why="at zero size [$2,$3][$4,$5]";;
+        off\ *)  set -- $xy; why="outside the screen at [$2,$3][$4,$5]";;
+        *)       why="not in the tree";;
+      esac
+    else lst=$?; die "$label FAILED after ${t}s waiting for '$q': $(lookup_err "$lst")"; fi
+  fi
+  msg="'$q' not on screen after ${t}s${why:+ - $why}"
+  if [ "$opt" = optional ]; then
+    FLOW_OPT_MISS="$msg"; skipped "$label: $msg - optional, the flow goes on"; return 0
+  fi
+  die "$label FAILED: $msg"; }
 # A direction reveals what lies that way: `down` shows what is further down the
 # content, which means the finger travels up. Same for `left` and `right`.
 #
@@ -2644,14 +2691,16 @@ for line in read(rec).split("\n"):
     i, verb, value, s0, s1, art = parts[:6]
     # The seventh field is the condition that switched the step off, empty for a
     # step that ran. The eighth is the block the step was written in, empty for
-    # the flow file itself. The ninth is the step's title. Older records have
-    # six, seven or eight fields.
+    # the flow file itself. The ninth is the step's title. The tenth is
+    # "optional" when the seventh is not a condition but what an optional wait
+    # found when it ended. Older records have six to nine fields.
     skip = parts[6] if len(parts) > 6 else ""
     src = parts[7] if len(parts) > 7 else ""
     title = parts[8] if len(parts) > 8 else ""
+    kind = parts[9] if len(parts) > 9 else ""
     steps.append({"i": int(num(i)), "verb": verb, "value": value,
                   "t": max(0.0, num(s1) - num(s0)), "art": art, "skip": skip, "src": src,
-                  "title": title})
+                  "title": title, "kind": kind})
 
 failing = None
 if int(num(st)) != 0:
@@ -2825,12 +2874,14 @@ for step in steps:
     if step["skip"]:
         # A step that did not run is not a step that passed. Reported as skipped,
         # with the condition in the message: a reader of the file can see which
-        # part of the flow was switched off and by what.
+        # part of the flow was switched off and by what. An optional wait that
+        # ended without its element did run, and says so in other words.
+        why = ("optional wait ended, the flow went on: " if step.get("kind") == "optional"
+               else "condition not met: ") + step["skip"]
         cases.append('    <testcase classname=%s name=%s time="%.3f">\n'
                      '      <skipped message=%s/>\n'
                      '    </testcase>'
-                     % (quoteattr(stem), quoteattr(shown(step)), step["t"],
-                        quoteattr("condition not met: " + step["skip"])))
+                     % (quoteattr(stem), quoteattr(shown(step)), step["t"], quoteattr(why)))
     else:
         cases.append('    <testcase classname=%s name=%s time="%.3f"/>'
                      % (quoteattr(stem), quoteattr(shown(step)), step["t"]))
@@ -2899,7 +2950,8 @@ PY
 #            scroll|scrollToText[direction,edges,timeout]|dismiss|assertText[match]|assertId|assertNotText[match]|assertNotId|
 #            assertBox[box]|assertBoxId[box]
 #            any step, and an include, may carry "when": {visible|notVisible|
-#            visibleId|notVisibleId|platform} - all of them have to hold
+#            visibleId|notVisibleId|zeroSizeId|platform} - all of them have to hold;
+#            waitForId may carry "optional": true - a timeout skips it instead
 #
 # The same names the dispatcher inside flow() knows, as a list a check can read.
 # The dispatcher cannot answer "do you know this name?" without running the
@@ -2957,6 +3009,14 @@ cond_holds(){ local spec="$1" pair kind val xy st
           visible|visibleId)       [ -n "$xy" ] || return 1;;
           notVisible|notVisibleId) [ -z "$xy" ] || return 1;;
         esac;;
+      # In the tree at zero area, where it is on the screen or not, and no
+      # namesake of a real size to tap instead. `notVisibleId` holds here too,
+      # and also when the id is not in the tree at all - this is the one that
+      # tells the two apart.
+      zeroSizeId)
+        st=0; xy="$(find_el "$val" id exact why)" || st=$?
+        [ "$st" -eq 0 ] || die "when ($kind '$val'): $(lookup_err "$st")"
+        case "$xy" in zero\ *) ;; *) return 1;; esac;;
       # The builder refuses an unknown condition before the run starts. This arm
       # is the backstop for a record that reached the loop some other way.
       *) die "when: '$kind' is not a condition this version knows";;
@@ -2980,9 +3040,9 @@ FLOW_VERBS="launch stopApp clearState openUrl wait waitFor waitForId screenshot 
 # after it - they say so on the console, and they land in the report as `skipped`
 # with the condition that switched them off. A nested guard inside the group is
 # not a step and takes no number: it is skipped together with its group.
-flow_skip(){ local n="${1:-1}" why="$2" i=0 d v xx yy mm tt dd ee ss si wc ws bx tl t
+flow_skip(){ local n="${1:-1}" why="$2" i=0 d v xx yy mm tt dd ee ss si wc ws bx tl op t
   why="${why//[$'\n\r']/ }"
-  while [ "$i" -lt "$n" ] && IFS=$'\x1f' read -r -d '' d v xx yy mm tt dd ee ss si wc ws bx tl <&3; do
+  while [ "$i" -lt "$n" ] && IFS=$'\x1f' read -r -d '' d v xx yy mm tt dd ee ss si wc ws bx tl op <&3; do
     i=$((i+1))
     if [ "$d" = "__when" ]; then continue; fi
     FLOW_IDX=$((FLOW_IDX+1)); t="$(now)"
@@ -3050,7 +3110,7 @@ SEP, END = "\x1f", "\0"
 KEYS = ("do", "value", "x", "y", "match", "timeout", "direction", "edges")
 # A step may also carry a condition. It is not one of the fields above: it is
 # answered while the run goes on, and its answer decides whether the step runs.
-WHEN_KINDS = ("notVisible", "notVisibleId", "platform", "visible", "visibleId")
+WHEN_KINDS = ("notVisible", "notVisibleId", "platform", "visible", "visibleId", "zeroSizeId")
 # The box of an element, asserted by assertBox and assertBoxId. Like "when",
 # this is a structured key: several constraints belong to one step, and they
 # travel in one field rather than eight.
@@ -3058,7 +3118,9 @@ BOX_KINDS = ("maxHeight", "maxWidth", "maxX", "maxY",
              "minHeight", "minWidth", "minX", "minY")
 # A title says what a step is for, in the author's words. It is for the reader
 # of a run and nothing else: the step runs the same with it or without it.
-STEP_KEYS = set(KEYS) | {"when", "box", "title"}
+# "optional" lets a waitForId time out without failing the flow; no other step
+# takes it.
+STEP_KEYS = set(KEYS) | {"when", "box", "title", "optional"}
 INCLUDE_KEYS = {"do", "value", "with", "when"}
 # One condition is a kind and a value; several in one `when` all have to hold.
 # These two characters separate them inside the single field that carries them.
@@ -3141,6 +3203,20 @@ def title_of(step, at):
         fail('%s: "title" is empty - say what the step is for or drop the key' % at)
     return t
 
+def optional_of(step, at):
+    if "optional" not in step: return ""
+    verb = step.get("do", "")
+    # Only the wait by id: that is the case it was made for, and a key a step
+    # ignored would be a line of the file that does not do what it says.
+    if verb != "waitForId":
+        fail('%s: step \'%s\' does not take "optional" - only waitForId does' % (at, verb))
+    o = step["optional"]
+    # A boolean and nothing else: "false" as text is truthy everywhere it could
+    # be read, and a wait that was meant to fail the flow would quietly not.
+    if not isinstance(o, bool):
+        fail('%s: "optional" is true or false, got %s' % (at, json.dumps(o)))
+    return "1" if o else ""
+
 def box_spec(step, at, scope, src):
     verb = step.get("do", "")
     if "box" not in step:
@@ -3201,7 +3277,7 @@ def guard(cond, span, src, idx):
     # the screen cannot change halfway through it, which is exactly what
     # happens if the condition is re-asked at every step of the block: the
     # first step dismisses the dialog, and the rest of the block is skipped.
-    return SEP.join(["__when"] + [""] * (len(KEYS) - 1) + [src, str(idx), cond, str(span), "", ""])
+    return SEP.join(["__when"] + [""] * (len(KEYS) - 1) + [src, str(idx), cond, str(span), "", "", ""])
 
 def fill(v, scope, at, inside):
     missing = []
@@ -3284,6 +3360,7 @@ def build(path, shown, src, scope, chain, depth, pre=""):
         fields.append("")
         fields.append(box_spec(step, at, scope, src))
         fields.append(title_of(step, at))
+        fields.append(optional_of(step, at))
         if cond: recs.append(guard(cond, 1, src, idx))
         recs.append(SEP.join(fields))
 
@@ -3350,7 +3427,7 @@ PY
   # still reported PASS). Reading `<&3` also keeps the loop in THIS shell (not a
   # pipe subshell), so a step's `die` (exit 1) aborts the whole flow with a
   # non-zero status instead of being lost.
-  while IFS=$'\x1f' read -r -d '' do_ val x y mtch tmo dir edg src sidx wcond wspan bspec ttl <&3; do
+  while IFS=$'\x1f' read -r -d '' do_ val x y mtch tmo dir edg src sidx wcond wspan bspec ttl opt <&3; do
       # A guard is not a step: it takes no number of its own, and when it holds
       # the run says nothing about it - the steps that follow simply run. When it
       # does not hold, its whole group is read off the stream and every step in it
@@ -3409,13 +3486,14 @@ PY
       # A step with a title says so before it runs: the lines the step prints
       # itself name what it touched, the title names what it was for.
       [ -z "$ttl" ] || say "step $FLOW_IDX '$do_' \"$ttl\""
+      FLOW_OPT_MISS=""
       set +e   # a step must not abort the loop by itself: the status is read
                # right after the dispatcher, so the failure is attributed to
                # THIS step and the flow stops with a message.
       case "$do_" in
         wait)        wait_s "${val:-2}";;
         waitFor)     wait_for "$val" "${tmo:-10}" "${mtch:-exact}" assert;;
-        waitForId)   wait_for "$val" "${tmo:-10}" exact id;;
+        waitForId)   wait_for "$val" "${tmo:-10}" exact id "${opt:+optional}";;
         # shot runs in a substitution, so its own die kills only that subshell:
         # the step used to report PASS with an empty path, whether the name was
         # refused or screencap itself failed. The status has to be checked here,
@@ -3465,9 +3543,11 @@ PY
       case "$do_" in dismiss|optionalTapText) st=0;; esac
       [ "$st" -eq 0 ] || die "step $FLOW_IDX '$do_'${ttl:+ \"$ttl\"} failed (exit $st)"
       # The eighth field is the block the step was written in, empty for the flow
-      # file itself; the seventh stays empty, because this step ran. The ninth is
-      # the step's title, empty when it has none.
-      printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f\x1f%s\x1f%s\n' "$FLOW_IDX" "$do_" "${val//[$'\n\r']/ }" "$FLOW_S0" "$(now)" "$FLOW_ART" "${src//[$'\n\r']/ }" "$ttl" >> "$FLOW_REC"
+      # file itself; the seventh stays empty, because this step ran - unless it
+      # was an optional wait that ended without its element: then the seventh
+      # holds what the wait found and the tenth says it was that kind of skip.
+      # The ninth is the step's title, empty when it has none.
+      printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' "$FLOW_IDX" "$do_" "${val//[$'\n\r']/ }" "$FLOW_S0" "$(now)" "$FLOW_ART" "${FLOW_OPT_MISS//[$'\n\r']/ }" "${src//[$'\n\r']/ }" "$ttl" "${FLOW_OPT_MISS:+optional}" >> "$FLOW_REC"
   done
   exec 3<&-
   export YUKTI_STEP_SRC=""
@@ -3564,12 +3644,14 @@ ${B}yukti v$YUKTI_VERSION${R} — YUKTI — smart mobile-app QA automation for R
               not route still answers ok, and the app navigates after the step returns, so the step after it is
               waitFor / waitForId, not an assert
               assertText matches the whole label as written; "match":"contains" asks for a substring
-              waitFor polls for an element and fails on timeout ("timeout": seconds, default 10); it never scrolls
+              waitFor polls for an element and fails on timeout ("timeout": seconds, default 10); it never scrolls.
+              waitForId names on timeout which case it ended in: not in the tree, at zero size, or outside the screen;
+              "optional": true on it skips the step on timeout instead of failing the flow, with those words
               scroll takes up, down, left or right as its "value"; scrollToText takes the same four as "direction"
               (default down) and "edges":"clear" to land the element away from the band edges, failing if it cannot;
               at the end of the list it waits for the list to grow ("timeout": seconds, default 5) before it fails
               assertNotText / assertNotId state that something is NOT on the screen as it is now; they never scroll
-              any step, and an include, may carry "when": {"visible"|"notVisible"|"visibleId"|"notVisibleId"|"platform"} -
+              any step, and an include, may carry "when": {"visible"|"notVisible"|"visibleId"|"notVisibleId"|"zeroSizeId"|"platform"} -
               all the conditions in one "when" have to hold; the step is skipped when they do not, and the run stops when
               they cannot be answered (unreadable screen, unknown platform). A skipped step is in the report as skipped
               include runs another flow file here as a block, path relative to the including file; "with" passes values into it,

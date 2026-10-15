@@ -369,6 +369,8 @@ quoted a string the flow file did not contain.
 `dismiss` and `optionalTapText` keep their exception, and it is narrow: a label
 that is not on screen is the state those two exist to tolerate. A device that
 refuses the tap is not that state, and it fails the flow like any other step.
+The third exception is a `waitForId` with `"optional": true` (see `waitFor`
+below): it tolerates a timeout and nothing else.
 
 `dismiss` reads the screen once per round rather than once per label. It knows
 nine interstitial labels, and it used to ask the device for the screen for each
@@ -562,6 +564,30 @@ still loading it scrolls the content away instead of waiting for it.
 A screen that cannot be read is not the same as an element that has not arrived.
 The poll keeps going while the screen is unreadable, and the message on timeout
 says which of the two happened.
+
+By id, "not on screen" is three states, and a `waitForId` timeout names the one
+it ended in, from one more read of the screen:
+
+```
+waitFor id FAILED: 'chat-button' not on screen after 20s - not in the tree
+waitFor id FAILED: 'chat-button' not on screen after 20s - at zero size [174,60][174,60]
+waitFor id FAILED: 'chat-button' not on screen after 20s - outside the screen at [100,2500][250,2550]
+```
+
+The front of the message is what it always was, so a reader that looks for
+`not on screen after` still finds it. Zero size is the control that grows in
+with an animation and sometimes stays at its starting point: it is in the tree,
+and nothing can tap it. If that last read finds the element after all, the step
+passes.
+
+`"optional": true` on `waitForId` turns the timeout into a skip: a `~` line with
+the same words and `- optional, the flow goes on`, a `skipped` testcase whose
+message starts with `optional wait ended, the flow went on:` - not the
+`condition not met:` of a `when` - and the next step runs. A screen that cannot
+be read still stops the flow. Only `waitForId` takes the key, and only `true` or
+`false`; anything else is refused before the run, `--check` included. This is
+the wait a fixed `wait` plus a condition used to stand in for: it costs nothing
+when the element arrives early, and it waits long enough when it arrives late.
 
 The step sees only what outlives one poll - the sleep plus the lookup itself,
 about a second on a device. Wait for a state that stays, not for something that
@@ -796,8 +822,8 @@ pictures as you treat the screenshots a flow takes itself.
 {"do":"include","value":"blocks/consent.json","when":{"notVisible":"Today"}}
 ```
 
-`visible`, `notVisible`, `visibleId`, `notVisibleId`, `platform`; several in one
-`"when"` all have to hold. On an `include` the condition is answered once, before
+`visible`, `notVisible`, `visibleId`, `notVisibleId`, `zeroSizeId`, `platform`;
+several in one `"when"` all have to hold. On an `include` the condition is answered once, before
 the block starts, and covers all of it: asking again at each step of the block
 would run half of it as soon as its first step changed the screen - the dialog is
 dismissed, so the rest of the block is skipped.
@@ -816,6 +842,17 @@ switches parts of itself off and stays green.
 text, whole label, case as written - and `visibleId` / `notVisibleId` the exact
 id. That is stricter than `tapText`, so a condition can skip a step `tapText`
 would have found; the `~` line and the `skipped` entry are how you see it happen.
+
+`zeroSizeId` holds when an element with this id is in the tree at zero area,
+on the screen or not, and no element with the same id can be tapped instead.
+`notVisibleId` cannot tell that apart from an id that is not there at all; this
+can, so a flow can run a recovery step for exactly that case:
+
+```json
+{"do":"waitForId","value":"chat-button","timeout":20,"optional":true},
+{"do":"include","value":"blocks/remount.json","when":{"zeroSizeId":"chat-button"}},
+{"do":"waitForId","value":"chat-button","timeout":40}
+```
 
 `platform` is `ios` or `android` against the platform of the run, and the skip
 line names that platform: `skipped: platform 'android' (this run: ios)`. The run
