@@ -11,6 +11,8 @@
 #                  ="@TYPED@" in it becomes the text typed so far, quoted the
 #                  way uiautomator quotes it: in ' when the text holds a "
 #   dumps          how many dumps were taken - a case counts the reads with it
+#   dump-delay     seconds every dump takes: a dump longer than a wait's timeout
+#                  makes the poll a single one, whatever the clock does
 #   typed          the text in the field; a case may write it first
 #   hint           what the field shows while it is empty, as Android reports it
 #   lossy          present: every burst of typed text loses its last character;
@@ -51,6 +53,7 @@ if "uiautomator dump" in line:
     write("dumps", str(n))
     # One UiAutomation per device: a live helper kills the dump on the spot.
     if has("running") or has("foreign"): sys.exit(0)
+    if has("dump-delay"): time.sleep(float(read("dump-delay")))
     while n > 1 and not has("dump-%d.xml" % n): n -= 1
     # quoteattr quotes as uiautomator does on a device (measured on an API 34
     # emulator): "..." as a rule, '...' around a value that holds a ".

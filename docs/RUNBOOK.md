@@ -578,7 +578,11 @@ The front of the message is what it always was, so a reader that looks for
 `not on screen after` still finds it. Zero size is the control that grows in
 with an animation and sometimes stays at its starting point: it is in the tree,
 and nothing can tap it. If that last read finds the element after all, the step
-passes.
+passes. An element with no bounds (Android) or no frame (iOS) has no place at
+all and counts as not in the tree. When the id is on a zero-size element and
+also on one of real size outside the screen, zero size wins: the timeout says
+`at zero size` and `zeroSizeId` holds, though a scroll is what would bring the
+other one in.
 
 `"optional": true` on `waitForId` turns the timeout into a skip: a `~` line with
 the same words and `- optional, the flow goes on`, a `skipped` testcase whose

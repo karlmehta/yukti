@@ -1337,6 +1337,9 @@ for e in els:
         if not q or q!=ident: continue
         xy=centre(e)
         if xy is None:   # keep looking: a sized namesake may follow
+            # No frame at all is no place at all, not a place of zero size: the
+            # Android path drops a node without bounds, and the two must agree.
+            if not e.get("frame"): continue
             x,y,w,h=frame(e); bx=(int(x),int(y),int(x+w),int(y+h))
             if not (w>0 and h>0):
                 if zero is None: zero=bx

@@ -1125,6 +1125,20 @@ status_is 1; fake_used; red_is error DeviceError 0 1
 lacks out.txt "not in the tree"; lacks out.txt "at zero size"
 verdict
 
+# The read that names the state can find the element after all. A dump slower
+# than the timeout makes the poll a single one, so the second dump is that last
+# read, whatever the clock does.
+dev_case zero-wait-last-read-finds
+screen "$case_dir/adb/dump-1.xml" "$ROOT_NODE" "$ZERO_BTN"
+screen "$case_dir/adb/dump-2.xml" "$ROOT_NODE" "$SIZED_BTN"
+printf '1.2' > "$case_dir/adb/dump-delay"
+flow_file "$case_dir/flow.json" '{ "do": "waitForId", "value": "btn", "timeout": 1 }'
+run_flow "$case_dir/flow.json"
+begin "waitForId: an element the last read finds after the timeout passes the step"
+status_is 0; fake_used; reads_are 2; has out.txt "'btn' on screen at 175 65 after"
+lacks out.txt "not on screen"
+verdict
+
 dev_case optional-goes-on
 screen "$case_dir/adb/dump-1.xml" "$ROOT_NODE" "$ZERO_BTN"
 flow_file "$case_dir/flow.json" '{ "do": "waitForId", "value": "btn", "timeout": 1, "optional": true }' \
@@ -1226,6 +1240,34 @@ flow_file "$case_dir/flow.json" '{ "do": "waitForId", "value": "btn", "timeout":
 run_ios "$case_dir/flow.json"
 begin "waitForId on iOS: a timeout on an id that is not in the tree says so"
 status_is 1; has out.txt "'btn' not on screen after 1s - not in the tree"
+verdict
+
+IOFF='{"type":"Button","role_description":"button","AXUniqueId":"btn","AXLabel":"Ask","frame":{"x":100,"y":2000,"width":150,"height":50}}'
+ios_case ios-zero-wait-outside
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$IOFF"
+flow_file "$case_dir/flow.json" '{ "do": "waitForId", "value": "btn", "timeout": 1 }'
+run_ios "$case_dir/flow.json"
+begin "waitForId on iOS: a timeout on an element below the screen says so"
+status_is 1; has out.txt "'btn' not on screen after 1s - outside the screen at [100,2000][250,2050]"
+verdict
+
+# An element with no frame has no place: not in the tree, as a node without
+# bounds is on Android - not zero size.
+INOFRAME='{"type":"Button","role_description":"button","AXUniqueId":"btn","AXLabel":"Ask"}'
+ios_case ios-zero-wait-noframe
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$INOFRAME"
+flow_file "$case_dir/flow.json" '{ "do": "waitForId", "value": "btn", "timeout": 1 }'
+run_ios "$case_dir/flow.json"
+begin "waitForId on iOS: an element with no frame is not in the tree"
+status_is 1; has out.txt "'btn' not on screen after 1s - not in the tree"
+verdict
+
+ios_case ios-zero-when-noframe
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$INOFRAME"
+flow_file "$case_dir/flow.json" "$RAN"
+run_ios "$case_dir/flow.json"
+begin "zeroSizeId on iOS: an element with no frame does not hold"
+status_is 0; has out.txt "skipped: zeroSizeId 'btn'"
 verdict
 
 ios_case ios-optional-goes-on
