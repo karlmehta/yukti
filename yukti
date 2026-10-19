@@ -2502,7 +2502,9 @@ scroll_search(){ local lbl="$1" dir="${2:-down}" clear="${3:-}" verb="${4:-scrol
     # helper played is checked against this read; on the way back the seam that
     # was lost is checked instead, read after read, until it is on the screen
     # again. Either answer changes the direction, and the swipe is then drawn
-    # anew from the same held tree - no second read.
+    # anew from the same held tree - no second read. (The start of the list,
+    # met on the way back, is the one turn that reads the screen once more:
+    # it is told by two reads, below.)
     st=0; probe="$(list_probe "$nudge" "$xy" "$w" "$h" "$far" "${lost:-$exp}")" || st=$?
     if [ "$st" -eq 0 ] && [ -n "$probe" ]; then
       set -- $probe
@@ -2530,6 +2532,8 @@ scroll_search(){ local lbl="$1" dir="${2:-down}" clear="${3:-}" verb="${4:-scrol
       # stdout would arrive inside the coordinates it returns. A sideways search
       # has its own line for this, printed by scroll.
       case "$dir" in up|down) [ -n "$flat" ] || warn "no vertically scrollable list in the dump - swiping down the middle of the screen, where the end of the list cannot be told from the end of the swipes" >&2;; esac
+      # On the way back the lost seam stays: blind swipes go back as well, and
+      # their eight are the search's last.
       flat=$(( ${flat:-0} + 1 )); prev=""; ctl=0; exp=""; SCROLL_N=$(( SCROLL_N + 1 ))
       scroll "$nudge"; sleep 0.6
       [ "$flat" -ge "$SCROLL_TRIES_BLIND" ] && break

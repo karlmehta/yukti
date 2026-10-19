@@ -1157,7 +1157,7 @@ helper_screen "$case_dir/adb/helper-2.xml" "$(hlist @25)"
 helper_screen "$case_dir/adb/helper-3.xml" "$(hlist @5)"
 helper_screen "$case_dir/adb/helper-4.xml" "$(hlist @41)"
 helper_screen "$case_dir/adb/helper-5.xml" "$(hlist @45 Target 1100)"
-flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target", "timeout": 1 }'
+flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target" }'
 run_helper flow "$case_dir/flow.json"
 begin "scroll: a second overshoot in a step is said, not gone back for"
 status_is 0; gestures_are 4; count_is out.txt "went past the gesture - going back" 1; count_is out.txt "went past the gesture" 2
