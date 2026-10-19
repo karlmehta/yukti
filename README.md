@@ -129,7 +129,8 @@ screen - and the helper waits at most half a second for the screen to settle.
 Nothing else of Appium is used. Taps, typing and the `scroll` step still go
 through adb; the helper also plays the swipes of a search (`scrollToText`,
 `tapText`), with a finger that stops before it lifts, so a search can swipe a
-screen at a time without the list running past what it has not read.
+screen at a time without the list running past what it has not read; a list
+that runs past all the same is noticed and swiped back to where it was read.
 When the helper cannot answer, the run falls back to `uiautomator dump` and
 says so once. Each read prints its source and time,
 and a flow ends with a count: `screen reads: 41 by the helper, 0 by uiautomator dump, 0 fallback(s)`.

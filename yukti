@@ -2176,11 +2176,21 @@ BAND_SIDE_PCT=7
 # exactly the case `"edges":"clear"` exists for.
 #
 # The list a search runs along, read from the held tree. Prints one line:
-#   rows f l   sx sy ex ey dur   cx cy cex cey cdur
+#   rows f l   sx sy ex ey dur   cx cy cex cey cdur   seam over
 # `rows` names the first and last row of the list that are on the screen, and f
 # and l are where they stand on the axis of the search - what two reads compare.
 # Then the swipe for that direction, and the control swipe: shorter, slower, from
 # another point. Prints nothing when the screen has no list on that axis.
+#
+# `seam` and `over` are for a list that travels further than the finger (#117).
+# `seam` names the labelled rows on the screen that the swipe printed here
+# leaves on it: where each will stand once the list has moved the length of that
+# line, inside the visible part with 3% of it to spare. Hashes of their labels,
+# comma-separated, or `-` when there is none. The sixth argument is a seam from
+# an earlier read, and `over` is the answer about it: 1 - this read has
+# labelled rows and none of them is in it, so the list went past the gesture;
+# 0 - one of them is here; `-` - no seam was given, or the read has no labelled
+# row to judge by (a list read before its rows are drawn).
 #
 # Which element is the list: one that scrolls along the axis. On Android that is
 # `scrollable="true"`, and the class names the axis where it can: a
@@ -2367,8 +2377,19 @@ if ctl is None: ctl,_=pick([62,72],25,crosses,skip=mc)
 if ctl is None: ctl=line(62 if fwd else 38,25,30 if mc!=30 else 70)
 dist=abs(main[3]-main[1]) if vert else abs(main[2]-main[0])
 dur=max(200,dist*3//4) if vert else 300
-print(rid,fp,lp,*main,dur,*ctl,dur*2)
-' "$1" "${2:-}" "$3" "$4" "$BAND_TOP" "$BAND_BOTTOM" "$BASIS_H" "$YUKTI_PLATFORM" "${5:-}"; }
+# The seam: rows the main swipe leaves on the screen. A row cut by the edge of
+# the list stands nearer to the edge it leaves through than it really is, so its
+# landing is judged early - the safe side. Two rows with one label count as one:
+# a row of the same name elsewhere can hide a list that went past, never invent
+# one.
+hx=lambda t:hashlib.md5(t.encode()).hexdigest()[:8]
+spare=(a2-a1)*3//100
+seam=sorted({hx(r[1]) for r in seen if r[1] and a1+spare<=(pos(r)-dist if fwd else pos(r)+dist)<=a2-spare})
+chk=[c for c in (sys.argv[10] if len(sys.argv)>10 else "").split(",") if c and c!="-"]
+here={hx(r[1]) for r in seen if r[1]}
+over="-" if not chk or not here else ("0" if here.intersection(chk) else "1")
+print(rid,fp,lp,*main,dur,*ctl,dur*2,",".join(seam) or "-",over)
+' "$1" "${2:-}" "$3" "$4" "$BAND_TOP" "$BAND_BOTTOM" "$BASIS_H" "$YUKTI_PLATFORM" "${5:-}" "${6:-}"; }
 # The answers:
 #   0 + coordinates - it is there, and where it has to be
 #   4 + coordinates - in the band, never clear of its edges while the list still
@@ -2424,8 +2445,9 @@ scroll_to(){ local t0 st=0; t0="$(now)"; SCROLL_N=0; SWIPED_BY=adb; SWIPE_FAR=""
   scroll_search "$@" || st=$?
   printf '  · search %s swipes %d ms\n' "$SCROLL_N" $(( ($(us_of "$(now)") - $(us_of "$t0")) / 1000 )) >&2
   return "$st"; }
-scroll_search(){ local lbl="$1" dir="${2:-down}" clear="${3:-}" verb="${4:-scrollToText}" grow="${5:-$SCROLL_GROW_WAIT}" xy c lo hi blo bhi m w h seen="" nudge st probe prev="" ctl=0 ended="" flat="" kb="" end0="" far t1 tn waited=0 tw="" budget
+scroll_search(){ local lbl="$1" dir="${2:-down}" clear="${3:-}" verb="${4:-scrollToText}" grow="${5:-$SCROLL_GROW_WAIT}" xy c lo hi blo bhi m w h seen="" nudge st probe prev="" ctl=0 ended="" flat="" kb="" end0="" far t1 tn waited=0 tw="" budget exp="" lost="" backed="" nofar="" bdir
   case "$dir" in up|down|left|right) ;; *) die "scrollToText: '$dir' is not a direction - use up, down, left or right";; esac
+  case "$dir" in down) bdir=up;; up) bdir=down;; left) bdir=right;; right) bdir=left;; esac
   set -- $(screen_wh); w="${1:-$BASIS_W}"; h="${2:-$BASIS_H}"
   case "$dir" in
     # The band on y is the measured one, scaled to this screen.
@@ -2446,8 +2468,11 @@ scroll_search(){ local lbl="$1" dir="${2:-down}" clear="${3:-}" verb="${4:-scrol
     # change in between. Emptied before the swipe, as in dismiss.
     HELD_TREE=""; HELD_TREE="$(ui)" || exit 1
     st=0; xy="$(find_el "$lbl")" || st=$?; [ "$st" -eq 0 ] || { HELD_TREE=""; lookup_die "$st"; }
-    nudge="$dir"
+    nudge="$dir"; [ -z "$lost" ] || nudge="$bdir"
     if [ -n "$xy" ]; then
+      # Found on the way back: the way back is over, and where to swipe now is
+      # decided by where the element is, as always.
+      [ -z "$lost" ] || { lost=""; exp=""; prev=""; ctl=0; end0=""; }
       # The coordinate that decides is the one the swipe moves.
       case "$dir" in up|down) c="${xy##* }";; *) c="${xy%% *}";; esac
       seen="$xy"
@@ -2472,15 +2497,40 @@ scroll_search(){ local lbl="$1" dir="${2:-down}" clear="${3:-}" verb="${4:-scrol
     # with the helper's gesture, which leaves the list where the finger left it.
     # An element in view is brought into the band by the usual two fifths: a
     # screen-long swipe would carry it from one edge past the other and back.
-    far=""; [ -z "$xy" ] && helper_swipes && far=far
-    st=0; probe="$(list_probe "$nudge" "$xy" "$w" "$h" "$far")" || st=$?; HELD_TREE=""
+    far=""; [ -z "$xy" ] && [ -z "$nofar" ] && helper_swipes && far=far
+    # A list that went past the gesture (#117). The seam of the last swipe the
+    # helper played is checked against this read; on the way back the seam that
+    # was lost is checked instead, read after read, until it is on the screen
+    # again. Either answer changes the direction, and the swipe is then drawn
+    # anew from the same held tree - no second read.
+    st=0; probe="$(list_probe "$nudge" "$xy" "$w" "$h" "$far" "${lost:-$exp}")" || st=$?
+    if [ "$st" -eq 0 ] && [ -n "$probe" ]; then
+      set -- $probe
+      if [ -n "$lost" ] && [ "${15}" = 0 ]; then
+        lost=""; exp=""; prev=""; ctl=0; end0=""; nudge="$dir"
+        probe="$(list_probe "$nudge" "$xy" "$w" "$h" "" "")" || st=$?
+      # An element on the screen is not searched for: where to swipe is decided
+      # by where it is, whatever the list did to bring it there.
+      elif [ -z "$lost" ] && [ -z "$xy" ] && [ -n "$exp" ] && [ "${15}" = 1 ]; then
+        if [ -z "$backed" ]; then
+          printf '  · swipe went past the gesture - going back\n' >&2
+          backed=1; nofar=1; far=""; lost="$exp"; exp=""; prev=""; ctl=0; end0=""; nudge="$bdir"
+          probe="$(list_probe "$nudge" "$xy" "$w" "$h" "" "")" || st=$?
+        else
+          # Once per step: the swipes are short now, and a second turn back
+          # could only swing between the two.
+          printf '  · swipe went past the gesture\n' >&2
+        fi
+      fi
+    fi
+    HELD_TREE=""
     [ "$st" -eq 0 ] || lookup_die "$st"
     if [ -z "$probe" ]; then
       # To stderr: scroll_to runs inside a command substitution, and a line on
       # stdout would arrive inside the coordinates it returns. A sideways search
       # has its own line for this, printed by scroll.
       case "$dir" in up|down) [ -n "$flat" ] || warn "no vertically scrollable list in the dump - swiping down the middle of the screen, where the end of the list cannot be told from the end of the swipes" >&2;; esac
-      flat=$(( ${flat:-0} + 1 )); prev=""; ctl=0; SCROLL_N=$(( SCROLL_N + 1 ))
+      flat=$(( ${flat:-0} + 1 )); prev=""; ctl=0; exp=""; SCROLL_N=$(( SCROLL_N + 1 ))
       scroll "$nudge"; sleep 0.6
       [ "$flat" -ge "$SCROLL_TRIES_BLIND" ] && break
       continue
@@ -2488,6 +2538,12 @@ scroll_search(){ local lbl="$1" dir="${2:-down}" clear="${3:-}" verb="${4:-scrol
     flat=""
     set -- $probe
     if [ -n "$prev" ] && same_rows "$prev" "$1 $2 $3"; then
+      if [ "$ctl" = 1 ] && [ -n "$lost" ]; then
+        # On the way back the list stopped at its start without the lost seam:
+        # forward again at once. No wait for growth - the start of a list does
+        # not grow - and not the end of the search either.
+        lost=""; exp=""; prev=""; ctl=0; end0=""; continue
+      fi
       if [ "$ctl" = 1 ]; then
         # Two misses in a row: the list stopped moving. With the element on the
         # screen that is the answer, as before - a row at the very end is not
@@ -2500,9 +2556,12 @@ scroll_search(){ local lbl="$1" dir="${2:-down}" clear="${3:-}" verb="${4:-scrol
         [ $(( SECONDS - end0 )) -gt "$grow" ] && { ended=1; break; }
         tw="$tn"; sleep 1
       fi
-      ctl=1; SWIPE_FAR=""; swipe_pts "$9" "${10}" "${11}" "${12}" "${13}"
+      ctl=1; exp=""; SWIPE_FAR=""; swipe_pts "$9" "${10}" "${11}" "${12}" "${13}"
     else
       ctl=0; end0=""; prev="$1 $2 $3"; SWIPE_FAR="$far"; swipe_pts "$4" "$5" "$6" "$7" "$8"
+      # Only the helper's finger stops where the list should: `input swipe` and
+      # idb let go at speed, and a list running on after them is expected.
+      exp=""; [ "$SWIPED_BY" = helper ] && exp="${14}"
     fi
     [ "$SWIPED_BY" = helper ] || sleep 0.6; done
   if [ -n "$ended" ]; then

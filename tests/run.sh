@@ -888,8 +888,12 @@ verdict; helper_done
 # hlist / dlist <prefix> [target-label target-centre] - one such list as the
 # helper writes it / as a dump does, its rows named "<prefix> 1".."<prefix> 10";
 # a target replaces the row whose centre it takes.
+# A prefix @n is a window on one long list instead: rows "R n".."R n+9", so two
+# windows share the rows a swipe leaves on the screen, as a real list does. The
+# screen-long swipe moves it by 8 rows, two fifths by 4 (#117).
 lrows(){ local fmt="$1" p="$2" t="${3:-}" ty="${4:-0}" k y lab
   for k in 1 2 3 4 5 6 7 8 9 10; do y=$(( 100 + k * 200 )); lab="$p $k"
+    case "$p" in @*) lab="R $(( ${p#@} + k - 1 ))";; esac
     [ "$y" = "$ty" ] && lab="$t"
     printf "$fmt" "$lab" $(( y - 50 )) $(( y + 50 )); done; }
 hlist(){ printf '<android.widget.ScrollView index="0" package="com.example" class="android.widget.ScrollView" text="" resource-id="com.example:id/list" scrollable="true" bounds="[0,200][1080,2200]" displayed="true">'
@@ -919,21 +923,22 @@ PY3=/usr/bin/python3
 
 helper_case scroll-helper-far
 : > "$case_dir/adb/running"
-helper_screen "$case_dir/adb/helper-1.xml" "$(hlist A)"
-helper_screen "$case_dir/adb/helper-2.xml" "$(hlist B)"
-helper_screen "$case_dir/adb/helper-3.xml" "$(hlist C Target 1100)"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hlist @1)"
+helper_screen "$case_dir/adb/helper-2.xml" "$(hlist @9)"
+helper_screen "$case_dir/adb/helper-3.xml" "$(hlist @17 Target 1100)"
 flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target" }'
 run_helper flow "$case_dir/flow.json"
 begin "scroll: with the helper a search swipes a screen at a time, with a finger that stops before it lifts"
 status_is 0; file_absent adb/dumps; gestures_are 2; count_is adb/http-log "/actions" 2
 gesture_line 1 540 1900 540 300; gesture_line 2 540 1900 540 300
 lacks adb/log "input swipe"; count_is out.txt "· swipe helper" 2; has out.txt "· search 2 swipes"
+lacks out.txt "went past the gesture"
 verdict; helper_done
 
 helper_case scroll-helper-up
 : > "$case_dir/adb/running"
-helper_screen "$case_dir/adb/helper-1.xml" "$(hlist A)"
-helper_screen "$case_dir/adb/helper-2.xml" "$(hlist B Target 1100)"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hlist @9)"
+helper_screen "$case_dir/adb/helper-2.xml" "$(hlist @1 Target 1100)"
 flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target", "direction": "up" }'
 run_helper flow "$case_dir/flow.json"
 begin "scroll: going up, the screen-long swipe runs the other way"
@@ -942,8 +947,8 @@ verdict; helper_done
 
 helper_case scroll-helper-clear
 : > "$case_dir/adb/running"
-helper_screen "$case_dir/adb/helper-1.xml" "$(hlist A Target 1900)"
-helper_screen "$case_dir/adb/helper-2.xml" "$(hlist B Target 1100)"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hlist @1 Target 1900)"
+helper_screen "$case_dir/adb/helper-2.xml" "$(hlist @5 Target 1100)"
 flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target", "edges": "clear" }'
 run_helper flow "$case_dir/flow.json"
 begin "scroll: an element in view is brought into the band by two fifths, not flown past it"
@@ -952,8 +957,8 @@ verdict; helper_done
 
 helper_case scroll-helper-taptext
 : > "$case_dir/adb/running"
-helper_screen "$case_dir/adb/helper-1.xml" "$(hlist A)"
-helper_screen "$case_dir/adb/helper-2.xml" "$(hlist B Target 1100)"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hlist @1)"
+helper_screen "$case_dir/adb/helper-2.xml" "$(hlist @9 Target 1100)"
 flow_file "$case_dir/flow.json" '{ "do": "tapText", "value": "Target" }'
 run_helper flow "$case_dir/flow.json"
 begin "scroll: tapText searches with the same gesture and taps through adb"
@@ -974,26 +979,30 @@ verdict; helper_done
 # the rows it skipped may have held the element; here the next screen holds it.
 helper_case scroll-helper-undrawn
 : > "$case_dir/adb/running"
-helper_screen "$case_dir/adb/helper-1.xml" "$(hlist A)"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hlist @1)"
 helper_screen "$case_dir/adb/helper-2.xml" '<android.widget.ScrollView index="0" package="com.example" class="android.widget.ScrollView" text="" resource-id="com.example:id/list" scrollable="true" bounds="[0,200][1080,2200]" displayed="true" />'
-helper_screen "$case_dir/adb/helper-3.xml" "$(hlist C Target 1100)"
+helper_screen "$case_dir/adb/helper-3.xml" "$(hlist @17 Target 1100)"
 flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target" }'
 run_helper flow "$case_dir/flow.json"
 begin "scroll: a list read before its rows are drawn is swiped past (known, see the comment)"
-status_is 0; gestures_are 2; count_is adb/http-log "/source" 3
+status_is 0; gestures_are 2; count_is adb/http-log "/source" 3; lacks out.txt "went past the gesture"
 verdict; helper_done
 
 # A row of tiles 200 wide from x 8, centres at 108, 324 ... 972; the
-# screen-long swipe starts on the last tile, 90% of the way, and goes 80%.
+# screen-long swipe starts on the last tile, 90% of the way, and goes 80%. A
+# prefix @n is a window on one long row, tiles "T n".."T n+4"; the screen-long
+# swipe moves it by 4 tiles.
 htiles(){ local p="$1" t="${2:-}" k x lab
   printf '<android.widget.HorizontalScrollView index="0" package="com.example" class="android.widget.HorizontalScrollView" text="" resource-id="com.example:id/row" scrollable="true" bounds="[0,800][1080,1100]" displayed="true">'
-  for k in 1 2 3 4 5; do x=$(( 8 + (k - 1) * 216 )); lab="$p $k"; [ "$k" = 3 ] && [ -n "$t" ] && lab="$t"
+  for k in 1 2 3 4 5; do x=$(( 8 + (k - 1) * 216 )); lab="$p $k"
+    case "$p" in @*) lab="T $(( ${p#@} + k - 1 ))";; esac
+    [ "$k" = 3 ] && [ -n "$t" ] && lab="$t"
     printf '<android.widget.TextView index="0" package="com.example" class="android.widget.TextView" text="%s" resource-id="" scrollable="false" bounds="[%d,900][%d,1000]" displayed="true" />' "$lab" "$x" $(( x + 200 )); done
   printf '</android.widget.HorizontalScrollView>'; }
 helper_case scroll-helper-right
 : > "$case_dir/adb/running"
-helper_screen "$case_dir/adb/helper-1.xml" "$(htiles A)"
-helper_screen "$case_dir/adb/helper-2.xml" "$(htiles B Target)"
+helper_screen "$case_dir/adb/helper-1.xml" "$(htiles @1)"
+helper_screen "$case_dir/adb/helper-2.xml" "$(htiles @5 Target)"
 flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target", "direction": "right" }'
 run_helper flow "$case_dir/flow.json"
 begin "scroll: sideways, the screen-long swipe runs along the row at its height"
@@ -1008,6 +1017,7 @@ flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target" }'
 run_flow "$case_dir/flow.json"
 begin "scroll: without the helper a search swipes two fifths through adb, as before"
 status_is 0; count_is adb/log "input swipe 540 1500 540 700 600" 2; count_is out.txt "· swipe adb" 2
+lacks out.txt "went past the gesture"
 verdict
 
 helper_case scroll-helper-gone
@@ -1052,12 +1062,106 @@ verdict; helper_done
 
 helper_case scroll-budget
 : > "$case_dir/adb/running"
-for k in $(seq 1 80); do helper_screen "$case_dir/adb/helper-$k.xml" "$(hlist "Page$k")"; done
+for k in $(seq 1 80); do helper_screen "$case_dir/adb/helper-$k.xml" "$(hlist "@$(( 8 * k - 7 ))")"; done
 flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target" }'
 run_helper flow "$case_dir/flow.json" -- YUKTI_SCROLL_BUDGET=2
 begin "scroll: a list that keeps moving stops the search after its time, not after a count"
 status_is 1; has out.txt "still moving after 2s of swiping down, 'Target' not found"
 grep -q "· search [1-9][0-9]* swipes" "$case_dir/out.txt" || no "no search line with swipes"
+verdict; helper_done
+
+# ── a list that travels further than the finger (#117) ───────────────────────
+# The screen-long swipe from window @1 leaves rows 9 and 10 on the screen - the
+# seam. A read without them, with rows of its own, is a list that went past the
+# gesture: the search goes back by two fifths until the seam is there again,
+# and on from it by two fifths.
+helper_case scroll-over-back
+: > "$case_dir/adb/running"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hlist @1)"
+helper_screen "$case_dir/adb/helper-2.xml" "$(hlist @25)"
+helper_screen "$case_dir/adb/helper-3.xml" "$(hlist @5)"
+helper_screen "$case_dir/adb/helper-4.xml" "$(hlist @9 Target 1100)"
+flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target" }'
+run_helper flow "$case_dir/flow.json"
+begin "scroll: a list that went past the gesture is swiped back to the seam, then on by two fifths"
+status_is 0; gestures_are 3; count_is out.txt "went past the gesture - going back" 1
+gesture_line 1 540 1900 540 300; gesture_line 2 540 700 540 1500; gesture_line 3 540 1500 540 700
+verdict; helper_done
+
+helper_case scroll-over-found-back
+: > "$case_dir/adb/running"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hlist @1)"
+helper_screen "$case_dir/adb/helper-2.xml" "$(hlist @25)"
+helper_screen "$case_dir/adb/helper-3.xml" "$(hlist @21 Target 1100)"
+flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target" }'
+run_helper flow "$case_dir/flow.json"
+begin "scroll: an element met on the way back is the answer"
+status_is 0; gestures_are 2; gesture_line 2 540 700 540 1500
+verdict; helper_done
+
+# The way back checks the seam that was lost, not the seam of its own swipe: the
+# read after the first swipe back has neither rows 9-10 nor the element, and the
+# search goes back once more.
+helper_case scroll-over-back-twice
+: > "$case_dir/adb/running"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hlist @1)"
+helper_screen "$case_dir/adb/helper-2.xml" "$(hlist @25)"
+helper_screen "$case_dir/adb/helper-3.xml" "$(hlist @21)"
+helper_screen "$case_dir/adb/helper-4.xml" "$(hlist @5)"
+helper_screen "$case_dir/adb/helper-5.xml" "$(hlist @9 Target 1100)"
+flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target" }'
+run_helper flow "$case_dir/flow.json"
+begin "scroll: the way back goes on until the lost seam is on the screen again"
+status_is 0; gestures_are 4
+gesture_line 2 540 700 540 1500; gesture_line 3 540 700 540 1500; gesture_line 4 540 1500 540 700
+verdict; helper_done
+
+# Rows with no label give no seam, and nothing is judged.
+hblank(){ printf '<android.widget.ScrollView index="0" package="com.example" class="android.widget.ScrollView" text="" resource-id="com.example:id/list" scrollable="true" bounds="[0,200][1080,2200]" displayed="true">'
+  lrows '<android.widget.TextView index="0" package="com.example" class="android.widget.TextView" text="" hint="%s" resource-id="" scrollable="false" bounds="[40,%d][1040,%d]" displayed="true" />' X
+  printf '</android.widget.ScrollView>'; }
+helper_case scroll-over-no-seam
+: > "$case_dir/adb/running"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hblank)"
+helper_screen "$case_dir/adb/helper-2.xml" "$(hlist @9)"
+helper_screen "$case_dir/adb/helper-3.xml" "$(hlist @17 Target 1100)"
+flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target" }'
+run_helper flow "$case_dir/flow.json"
+begin "scroll: a swipe over rows with no label leaves no seam to check"
+status_is 0; gestures_are 2; lacks out.txt "went past the gesture"
+verdict; helper_done
+
+# Back to the start of the list without the seam: forward again at once, with
+# no wait for the start to grow: two swipes back, the control swipe at the start,
+# and the fifth gesture is the forward one. The miss at the end is the usual one.
+helper_case scroll-over-start
+: > "$case_dir/adb/running"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hlist @41)"
+helper_screen "$case_dir/adb/helper-2.xml" "$(hlist @65)"
+helper_screen "$case_dir/adb/helper-3.xml" "$(hlist @101)"
+helper_screen "$case_dir/adb/helper-6.xml" "$(hlist @201)"
+flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target", "timeout": 1 }'
+run_helper flow "$case_dir/flow.json"
+begin "scroll: the way back that reaches the start turns forward at once"
+status_is 1; has out.txt "reached the end of the list going down and it did not grow for 1s, 'Target' is not in it"
+count_is out.txt "went past the gesture" 1
+gesture_line 2 540 700 540 1500; gesture_line 3 540 700 540 1500; gesture_line 5 540 1500 540 700
+verdict; helper_done
+
+# One way back per step: a list that goes past again after it is said so, and
+# the search goes on.
+helper_case scroll-over-twice
+: > "$case_dir/adb/running"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hlist @1)"
+helper_screen "$case_dir/adb/helper-2.xml" "$(hlist @25)"
+helper_screen "$case_dir/adb/helper-3.xml" "$(hlist @5)"
+helper_screen "$case_dir/adb/helper-4.xml" "$(hlist @41)"
+helper_screen "$case_dir/adb/helper-5.xml" "$(hlist @45 Target 1100)"
+flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target", "timeout": 1 }'
+run_helper flow "$case_dir/flow.json"
+begin "scroll: a second overshoot in a step is said, not gone back for"
+status_is 0; gestures_are 4; count_is out.txt "went past the gesture - going back" 1; count_is out.txt "went past the gesture" 2
+gesture_line 4 540 1500 540 700
 verdict; helper_done
 
 dev_case scroll-blind
@@ -1077,7 +1181,7 @@ tree "$case_dir/idb/desc-2.json" '{"type":"ScrollView","role_description":"scrol
 flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target" }'
 run_ios "$case_dir/flow.json"
 begin "scroll: on iOS a search keeps the idb swipe of two fifths"
-status_is 0; count_is idb/log "ui swipe" 1; has out.txt "· swipe idb"
+status_is 0; count_is idb/log "ui swipe" 1; has out.txt "· swipe idb"; lacks out.txt "went past the gesture"
 verdict
 
 # ── an element at zero size, and a wait that may end without it (#111, #112) ─

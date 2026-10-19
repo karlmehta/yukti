@@ -450,6 +450,13 @@ On Android with the screen helper up, a search swipes a screen at a time while
 the element is not on the screen: 80% of the visible list, so a fifth of it is
 read twice. The helper plays the gesture with a finger that stops before it
 lifts, so the list stops where the finger stopped and no row goes by unread.
+A busy device can still let a list run on (#117). So each swipe of the helper
+names the rows it should leave on the screen, and the next read looks for them.
+When none of them is there, the search says
+`· swipe went past the gesture - going back`, swipes back by two fifths until
+one of them is on the screen again, or the element, or the start of the list,
+and goes on from there by two fifths for the rest of the step. That happens once
+per step. A list running past again is only said.
 Without the helper, and on iOS, a swipe lets go at the speed it moved and the
 list runs on a little, so the swipe stays at 40%. Each swipe prints how it went
 and what it cost (`· swipe helper 1300 ms`, `· swipe adb 830 ms`), and each
