@@ -138,7 +138,7 @@ node_y(){ local y; y="$(printf '%s' "$1" | cksum | cut -d' ' -f1)"; printf '%d' 
 # run_flow <flow> [VAR=value...] - the flow against the fake, output kept in
 # $case_dir/out and the status in $run_status.
 run_flow(){ local f="$1"; shift
-  env -u ANDROID_SDK_ROOT ANDROID_HOME="$ROOT/tests/fake-sdk" YUKTI_PLATFORM=android YUKTI_HELPER=0 \
+  env -u ANDROID_SDK_ROOT -u YUKTI_VARIANT -u YUKTI_CONFIG ANDROID_HOME="$ROOT/tests/fake-sdk" YUKTI_PLATFORM=android YUKTI_HELPER=0 \
     FAKE_ADB_DIR="$case_dir/adb" YUKTI_RESULTS_DIR="$case_dir/res" TMPDIR="$case_dir/tmp" "$@" \
     "$YUKTI" flow "$f" > "$case_dir/out" 2>&1
   run_status=$?
@@ -491,7 +491,7 @@ tree(){ local f="$1" e sep=""; shift
 itext(){ printf '{"type":"TextField","role_description":"text field","AXUniqueId":"%s","AXLabel":"","AXValue":%s,"frame":{"x":40,"y":%s,"width":300,"height":40}}' \
   "$1" "${3:-\"@TYPED@\"}" "$2"; }
 run_ios(){ local f="$1"; shift
-  env PATH="$ROOT/tests/fake-sdk/idb-bin:$PATH" YUKTI_PLATFORM=ios FAKE_IDB_DIR="$case_dir/idb" \
+  env -u YUKTI_VARIANT -u YUKTI_CONFIG PATH="$ROOT/tests/fake-sdk/idb-bin:$PATH" YUKTI_PLATFORM=ios FAKE_IDB_DIR="$case_dir/idb" \
     YUKTI_RESULTS_DIR="$case_dir/res" TMPDIR="$case_dir/tmp" "$@" \
     "$YUKTI" flow "$f" > "$case_dir/out" 2>&1
   run_status=$?
@@ -1442,6 +1442,179 @@ new_case zero-when-not-text
 flow_file "$case_dir/flow.json" '{ "do": "wait", "value": "0", "when": { "zeroSizeId": { "id": "btn" } } }'
 expect "check: a zeroSizeId that is not text is refused" 1 \
   "condition 'zeroSizeId' must be text or a number" check "$case_dir/flow.json"
+
+# ── a crashed app, not a missing element (#63) ───────────────────────────────
+# After a failed step the engine asks the device whether the app of this run
+# ($YUKTI_VARIANT) is still running and in front, and keeps its crash log. The
+# fake adb answers from app-pid, focus, device-offset and crash.
+app_cfg(){ printf '{ "variants": { "app": { "platform": "%s", "%s": "com.example" } } }\n' \
+  "${1:-android}" "${2:-package}" > "$case_dir/cfg.json"; }
+app_case(){ dev_case "$1"; app_cfg; screen "$case_dir/adb/dump-1.xml" "$(node TextView title Today)" "$(node TextView marker "$MARK")"
+  flow_file "$case_dir/flow.json" '{ "do": "waitForId", "value": "missing", "timeout": 1 }'; }
+run_app(){ run_flow "$case_dir/flow.json" YUKTI_VARIANT=app YUKTI_CONFIG="$case_dir/cfg.json" "$@"; }
+FRONT='  mCurrentFocus=Window{7f3a2c1 u0 com.example/com.example.MainActivity}'
+CRASH='--------- beginning of crash
+10-19 23:40:01.123  4242  4242 E AndroidRuntime: FATAL EXCEPTION: main
+10-19 23:40:01.123  4242  4242 E AndroidRuntime: java.lang.IllegalStateException: bad address beth.synthetic@example.invalid'
+asked(){ grep -qF -- "$1" "$case_dir/adb/log" || no "the device was never asked: $1"; }
+not_asked(){ ! grep -qF -- "$1" "$case_dir/adb/log" 2>/dev/null || no "the device was asked: $1"; }
+
+app_case app-front
+echo 4242 > "$case_dir/adb/app-pid"; printf '%s\n' "$FRONT" > "$case_dir/adb/focus"
+run_app
+begin "app: running and in front - the step's message as before, and a note"
+status_is 1; fake_used; red_is failure StepFailed 1 0
+has res/flow.xml "not on screen"; has res/flow.xml "app: com.example running, in front"
+lacks res/flow.xml "is not running"; has res/flow.xml "crash log: none since the flow started"
+verdict
+
+app_case app-gone
+printf '%s\n' "$CRASH" > "$case_dir/adb/crash"; echo 3600 > "$case_dir/adb/device-offset"
+flow_file "$case_dir/flow.json" '{ "do": "type", "value": "${TEST_EMAIL}" }' \
+  '{ "do": "waitForId", "value": "missing", "timeout": 1 }'
+screen "$case_dir/adb/dump-1.xml" "$(node EditText email @TYPED@ true)" "$(node TextView marker "$MARK")"
+t_before=$(date +%s); run_app TEST_EMAIL='beth.synthetic@example.invalid'; t_after=$(date +%s)
+begin "app: gone - said first, its own type, and the crash log kept masked"
+status_is 1; fake_used; red_is failure AppGone 1 0
+has res/flow.xml 'message="the app com.example is not running: it was gone when the step failed'
+has res/flow.xml "not on screen"; has res/flow.xml "crash log: flow-crash.txt (3 lines)"
+has res/flow.xml "flow-crash.txt</system-out>"; file_full res/flow-crash.txt
+has res/flow-crash.txt "FATAL EXCEPTION"; has res/flow-crash.txt "[typed]"; lacks res/flow-crash.txt "beth.synthetic"
+since="$(grep -oE 'logcat -b crash -d -v threadtime -t [^ ]+' "$case_dir/adb/log" | awk '{print $NF}')"
+printf '%s' "$since" | grep -qE '^[0-9]+\.[0-9]{3}$' || no "logcat -t got '$since', not a time with a fraction"
+awk -v s="$since" -v a="$t_before" -v b="$t_after" 'BEGIN { exit !(s >= a + 3597 && s <= b + 3599) }' \
+  || no "logcat -t $since is not the flow's start on the device clock ($t_before..$t_after + 3600)"
+verdict
+
+app_case app-behind
+echo 4242 > "$case_dir/adb/app-pid"
+printf '%s\n' '  mCurrentFocus=Window{1b2c3d4 u0 com.android.launcher3/com.android.launcher3.uioverride.QuickstepLauncher}' > "$case_dir/adb/focus"
+run_app
+begin "app: running but not in front - the window that is, without its hash"
+status_is 1; red_is failure StepFailed 1 0
+has res/flow.xml 'message="the app com.example is running but not in front: com.android.launcher3/com.android.launcher3.uioverride.QuickstepLauncher'
+lacks res/flow.xml "1b2c3d4"; asked "dumpsys window | grep -E 'mCurrentFocus|mFocusedApp'"
+verdict
+
+app_case app-focus-null
+echo 4242 > "$case_dir/adb/app-pid"; printf '%s\n' '  mCurrentFocus=null' > "$case_dir/adb/focus"
+run_app
+begin "app: no focused window is not read as another app in front"
+status_is 1; red_is failure StepFailed 1 0
+has res/flow.xml "app state not read: no focused window"; lacks res/flow.xml "not in front"
+verdict
+
+app_case app-focus-popup
+echo 4242 > "$case_dir/adb/app-pid"; printf '%s\n' '  mCurrentFocus=Window{9e8f7a6 u0 PopupWindow:3c1d2e5}' > "$case_dir/adb/focus"
+run_app
+begin "app: a focused popup has no package and says so"
+status_is 1; red_is failure StepFailed 1 0
+has res/flow.xml "app state not read: focused window has no package (PopupWindow:3c1d2e5)"; lacks res/flow.xml "not in front"
+verdict
+
+app_case app-no-variant
+run_flow "$case_dir/flow.json" YUKTI_CONFIG="$case_dir/cfg.json"
+begin "app: no variant for the run - not checked, the result still written"
+status_is 1; file_full res/flow.xml; red_is failure StepFailed 1 0
+has res/flow.xml 'app: not checked - no variant for this run ($YUKTI_VARIANT is not set)'; not_asked "pidof com.example"
+verdict
+
+app_case app-no-config
+run_flow "$case_dir/flow.json" YUKTI_VARIANT=app YUKTI_CONFIG="$case_dir/none.json"
+begin "app: a variant with no config - not checked, the result still written"
+status_is 1; file_full res/flow.xml; red_is failure StepFailed 1 0
+has res/flow.xml "app: not checked - no config at"; not_asked "pidof com.example"
+verdict
+
+app_case app-no-package
+app_cfg android bundleId
+run_app
+begin "app: a variant with no package - not checked, the result still written"
+status_is 1; file_full res/flow.xml; red_is failure StepFailed 1 0
+has res/flow.xml "app: not checked - variant 'app' has no 'package' in"; not_asked "pidof com.example"
+verdict
+
+dev_case app-pass
+app_cfg; screen "$case_dir/adb/dump-1.xml" "$(node TextView title Today)"
+flow_file "$case_dir/flow.json" '{ "do": "waitForId", "value": "title", "timeout": 1 }'
+run_app
+"$YUKTI" flow --check "$case_dir/flow.json" > /dev/null 2>&1
+begin "app: a flow that passes asks nothing about the app"
+status_is 0; fake_used; not_asked "pidof com.example"; not_asked "logcat"; file_absent res/flow-crash.txt
+verdict
+
+app_case app-pidof-hangs
+echo hang > "$case_dir/adb/app-pid"
+t0=$SECONDS; run_app; took=$((SECONDS - t0))
+begin "app: a device that does not answer is asked once, within the budget"
+status_is 1; red_is failure StepFailed 1 0
+[ "$took" -lt 40 ] || no "the run took ${took}s"
+has res/flow.xml "app state not read: no answer in 10 s"; has res/flow.xml "crash log not read:"
+not_asked "dumpsys window"; not_asked "logcat"
+verdict
+
+app_case app-screencap-hangs
+echo hang > "$case_dir/adb/screencap"
+run_app
+begin "app: after a screenshot that never answered, the app is not asked about"
+status_is 1; has res/flow.xml "app state not read: the device did not answer the screenshot"
+not_asked "pidof com.example"; not_asked "logcat"
+verdict
+
+app_case app-crash-hangs
+echo 4242 > "$case_dir/adb/app-pid"; printf '%s\n' "$FRONT" > "$case_dir/adb/focus"; echo hang > "$case_dir/adb/crash"
+run_app
+begin "app: a crash log that does not come is not reported as no crash"
+status_is 1; has res/flow.xml "crash log not read: no answer in 10 s"; lacks res/flow.xml "none since the flow started"
+file_absent res/flow-crash.txt
+verdict
+
+app_case app-device-error
+echo 4242 > "$case_dir/adb/app-pid"
+printf 'not a dump' > "$case_dir/adb/dump-1.xml"
+flow_file "$case_dir/flow.json" '{ "do": "waitForId", "value": "title", "timeout": 1 }'
+rm -f "$case_dir/adb/app-pid"
+run_app
+begin "app: a device error stays an error, the app line is added"
+status_is 1; red_is error DeviceError 0 1
+has res/flow.xml "is not running: it was gone when the step failed"
+verdict
+
+app_case app-stopped-by-flow
+flow_file "$case_dir/flow.json" '{ "do": "clearState", "value": "app" }' '{ "do": "waitForId", "value": "missing", "timeout": 1 }'
+run_app
+begin "app: stopped by the flow itself is not a crash"
+status_is 1; red_is failure StepFailed 1 0
+has res/flow.xml "app: com.example not running - stopped by step 1"; lacks res/flow.xml "it was gone"
+verdict
+
+ios_case app-ios-gone
+mkdir -p "$case_dir/xcrun" "$case_dir/reports"; app_cfg ios bundleId
+tree "$case_dir/idb/desc-1.json" "$(itext name 100 '"Ada"')"
+printf 'PID\tStatus\tLabel\n-\t0\tcom.apple.springboard\n' > "$case_dir/xcrun/launchctl"
+printf '{"bundleID":"com.example","exception":"EXC_CRASH"}\n' > "$case_dir/reports/Example-2026-10-19-234001.ips"
+printf '{"bundleID":"com.example","exception":"OLD"}\n' > "$case_dir/reports/Example-old.ips"
+touch -t 202001010000 "$case_dir/reports/Example-old.ips"
+flow_file "$case_dir/flow.json" '{ "do": "waitForId", "value": "missing", "timeout": 1 }'
+run_ios "$case_dir/flow.json" PATH="$ROOT/tests/fake-sdk/xcrun-bin:$ROOT/tests/fake-sdk/idb-bin:$PATH" \
+  FAKE_XCRUN_DIR="$case_dir/xcrun" YUKTI_IOS_CRASH_DIR="$case_dir/reports" YUKTI_VARIANT=app YUKTI_CONFIG="$case_dir/cfg.json"
+begin "app on iOS: gone in launchctl, the newest report of the run kept"
+status_is 1; red_is failure AppGone 1 0
+has res/flow.xml "the app com.example is not running: it was gone when the step failed"
+file_full res/flow-crash.ips; has res/flow-crash.ips "EXC_CRASH"; lacks res/flow-crash.ips "OLD"
+verdict
+
+ios_case app-ios-running
+mkdir -p "$case_dir/xcrun" "$case_dir/reports"; app_cfg ios bundleId
+tree "$case_dir/idb/desc-1.json" "$(itext name 100 '"Ada"')"
+printf 'PID\tStatus\tLabel\n4242\t0\tUIKitApplication:com.example[1a2b][rb-legacy]\n' > "$case_dir/xcrun/launchctl"
+flow_file "$case_dir/flow.json" '{ "do": "waitForId", "value": "missing", "timeout": 1 }'
+run_ios "$case_dir/flow.json" PATH="$ROOT/tests/fake-sdk/xcrun-bin:$ROOT/tests/fake-sdk/idb-bin:$PATH" \
+  FAKE_XCRUN_DIR="$case_dir/xcrun" YUKTI_IOS_CRASH_DIR="$case_dir/reports" YUKTI_VARIANT=app YUKTI_CONFIG="$case_dir/cfg.json"
+begin "app on iOS: running - a note, and no report yet"
+status_is 1; red_is failure StepFailed 1 0
+has res/flow.xml "app: com.example running"; has res/flow.xml "crash log: no crash report yet in DiagnosticReports"
+verdict
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

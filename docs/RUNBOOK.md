@@ -778,13 +778,16 @@ has to parse the message for it:
 | In the file | Means | Examples |
 |---|---|---|
 | `<failure type="StepFailed">` | the app did not do what the step expected | an element not on screen, a text that differs, typed characters that did not arrive |
+| `<failure type="AppGone">` | the app of the run was not running when the step failed, and no step of the flow had stopped it | a crash, a key press that closed the app's only screen |
 | `<failure type="FlowFailed">` on `00 flow` | the flow file itself | a file that is not valid JSON, a variable that is not set |
 | `<error type="DeviceError">` | the device or the engine, on a step | the screen could not be read after the retries, the screenshot was not taken |
 | `<error type="FlowError">` on `00 flow` | the device, before a step was counted | a `when` read the screen and could not |
 
 Only what the engine knows for sure is an error. An element that is not there
 is a failure even when a system dialog hid it: the engine cannot know whose
-dialog it was. A step that polls and misses one read, then reads the screen and
+dialog it was. For the same reason an app that is running but not in front is a
+`StepFailed` with the window that is in front named first: that window may be
+one the flow meant to open. A step that polls and misses one read, then reads the screen and
 does not find the element, is a failure too - it failed on what it saw. A
 screenshot name the engine refuses (`..`) is the flow's mistake, a failure. A
 screenshot that cannot be written where it was named counts as not taken, an
@@ -809,6 +812,44 @@ the screen - leaves:
 Both are named in the failure message of the JUnit file and listed in its
 `system-out`. Neither replaces the message: what could not be captured is one
 more line under it. A flow that passes, or `flow --check`, leaves neither.
+
+The failed flow also asks the device about the app of the run - the variant in
+`$YUKTI_VARIANT`, its `package` or `bundleId` in the config (#63):
+
+- `the app <id> is not running: it was gone when the step failed` - the first
+  line of the message, and the type `AppGone`. When the last step that starts or
+  stops the app (`launch`, `openUrl`, `stopApp`, `clearState`) was a stop, the
+  flow stopped it itself: `app: <id> not running - stopped by step N`, and the
+  type stays `StepFailed`.
+- `the app <id> is running but not in front: <package>/<activity>` - the first
+  line, type `StepFailed`. Android only: iOS gives no cheap answer to which app
+  is in front, so there the check is running or not.
+- `app: <id> running, in front` (iOS: `app: <id> running`) - a line under the
+  message: the check ran and found nothing.
+- `app state not read: <why>` - no answer, no focused window, or a focused
+  window with no package (a popup, a toast); nothing is concluded.
+- `app: not checked - <why>` - no `$YUKTI_VARIANT`, no config, or no
+  `package`/`bundleId` in the variant.
+
+and keeps what the device logged about a crash since the flow started:
+
+- `<flow>-crash.txt` (Android) - `logcat -b crash` from the start of the flow on
+  the device's clock: every crash in that time, not only the app's, the way the
+  device wrote it. `crash log: none since the flow started` when it is empty.
+- `<flow>-crash.ips` (iOS) - the newest crash report in
+  `~/Library/Logs/DiagnosticReports` (or `$YUKTI_IOS_CRASH_DIR`) written since
+  the flow started that names the bundle. The simulator writes it seconds after
+  the crash: `crash log: no crash report yet in DiagnosticReports` may only mean
+  it was not there yet.
+
+The crash log is masked like the tree, by what the flow typed - four characters
+or more, without regard to case - and by nothing else: a message the app built
+from what was on screen or came from a server is kept as the app wrote it.
+`crash log not read: <why>` says that the device did not answer, never that
+there was no crash. All these questions share one budget of 10 seconds; a
+device that did not answer the screenshot is not asked, and one that did not
+answer a question is not asked the next. The iOS half is written and not
+measured.
 
 The tree is masked. A password field shows `[N chars]`. Text the flow typed shows
 `[typed]` wherever it appears - unescaped first, without regard to case - and a

@@ -1,0 +1,20 @@
+#!/usr/bin/env python3
+# A stand-in for xcrun, only for the case of an iOS app that is gone (#63): the
+# other iOS cases run without it, so their screenshot stays "not captured".
+# Answers from files in $FAKE_XCRUN_DIR:
+#   launchctl      what `simctl spawn <udid> launchctl list` prints
+# `simctl io <udid> screenshot <path>` writes a small PNG. Every call is logged.
+import os, sys
+
+d = os.environ["FAKE_XCRUN_DIR"]
+args = sys.argv[1:]
+with open(os.path.join(d, "log"), "a") as fh:
+    fh.write(" ".join(args) + "\n")
+if args[:2] == ["simctl", "io"] and len(args) == 5 and args[3] == "screenshot":
+    with open(args[4], "wb") as fh: fh.write(b"\x89PNG\r\n\x1a\n" + b"\0" * 32)
+elif args[:2] == ["simctl", "spawn"] and args[3:] == ["launchctl", "list"]:
+    try:
+        with open(os.path.join(d, "launchctl")) as fh: sys.stdout.write(fh.read())
+    except OSError: pass
+else:
+    sys.exit(1)
