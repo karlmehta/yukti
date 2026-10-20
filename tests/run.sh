@@ -1301,7 +1301,7 @@ verdict; helper_done
 
 # A slider over the row the screen-long line starts on: the distance swipe
 # starts on the next line of text, the row at 1700, as any line would.
-SLIDER='<android.widget.SeekBar index="0" package="com.example" class="android.widget.SeekBar" text="" resource-id="com.example:id/mood" scrollable="false" bounds="[0,1850][1080,1950]" displayed="true" />'
+SLIDER='<android.widget.SeekBar index="0" package="com.example" class="android.widget.SeekBar" text="" resource-id="com.example:id/slider" scrollable="false" bounds="[0,1850][1080,1950]" displayed="true" />'
 helper_case scroll-dist-finger
 : > "$case_dir/adb/running"
 helper_screen "$case_dir/adb/helper-1.xml" "$(inlist "$(hlist @1)" "$SLIDER")"
@@ -1427,6 +1427,20 @@ status_is 0; value_is adb/sessions 2; value_is "$CACHE/session-emulator-5554" s2
 has adb/settings '"waitForIdleTimeout":500'; lacks adb/settings "allowInvisibleElements"
 gestures_are 1; gesture_line 1 540 1900 540 650; lacks adb/log "input swipe"
 has adb/http-log "GET /session/s2/source"
+verdict; helper_done
+
+# In the full tree on the screen, in the plain read not there: nothing to swipe
+# to by distance, and the line says so - not the same as no rows below the fold.
+helper_case scroll-dist-on-full
+: > "$case_dir/adb/running"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hlist @1)"
+helper_screen "$case_dir/adb/helper-full-1.xml" "$(hlist @1 Target 1100)"
+helper_screen "$case_dir/adb/helper-2.xml" "$(hlist @9 Target 1100)"
+flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target" }'
+run_helper flow "$case_dir/flow.json"
+begin "distance: an element on the screen in the full tree only is said, and the search goes on as before"
+status_is 0; count_is out.txt "· distance scroll: the full tree has the element on the screen" 1
+gestures_are 1; gesture_line 1 540 1900 540 300
 verdict; helper_done
 
 helper_case scroll-dist-two

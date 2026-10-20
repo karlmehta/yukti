@@ -20,7 +20,8 @@
 #                  tree; "nonxml-once": only the next one; "slow": every
 #                  source answers after 3 s; "die": the next source stops the
 #                  helper and is not answered; "nonxml-full", "die-full": the
-#                  same as "nonxml-once" and "die", for the next full source
+#                  same as "nonxml-once" and "die", for the next full source;
+#                  a plain source ignores them and leaves them for it
 #   http-log       every request, one per line; a post of settings with its body
 #   actions        the body of every gesture (POST .../actions), one per line
 #   actions-mode   "fail": every gesture answers 500; "hang": every gesture

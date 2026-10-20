@@ -2634,6 +2634,7 @@ scroll_search(){ local lbl="$1" dir="${2:-down}" clear="${3:-}" verb="${4:-scrol
           case "$r" in below\ *) dt="${r#below }"; dk=t;; esac
           case "$e" in below\ *) dt="${e#below }"; dk=e;; esac
           [ -n "$r" ] || [ "$dmode" != t ] || printf '  · distance scroll lost the target\n' >&2
+          case "$r" in on\ *) printf '  · distance scroll: the full tree has the element on the screen\n' >&2;; esac
         fi
         aim=$(( ( (${16} > lo ? ${16} : lo) + (${17} < hi ? ${17} : hi) ) / 2 ))
         if [ -z "$dk" ] || [ "$aim" -le "$(( ${16} > lo ? ${16} : lo ))" ]; then dmode=off
