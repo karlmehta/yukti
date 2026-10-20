@@ -1512,6 +1512,15 @@ status_is 1; red_is failure StepFailed 1 0
 has res/flow.xml "app state not read: focused window has no package (PopupWindow:3c1d2e5)"; lacks res/flow.xml "not in front"
 verdict
 
+app_case app-crash-dialog
+echo 4242 > "$case_dir/adb/app-pid"; printf '%s\n' '  mCurrentFocus=Window{c7b4574 u0 Application Error: com.example}' \
+  '  mFocusedApp=ActivityRecord{e263aa3 u0 com.example/.Main t45}' > "$case_dir/adb/focus"
+run_app
+begin "app: the system's crash dialog is named, and not taken for the app in front"
+status_is 1; red_is failure StepFailed 1 0
+has res/flow.xml "app state not read: the system shows the crash dialog of com.example"; lacks res/flow.xml "running, in front"
+verdict
+
 app_case app-no-variant
 run_flow "$case_dir/flow.json" YUKTI_CONFIG="$case_dir/cfg.json"
 begin "app: no variant for the run - not checked, the result still written"
@@ -1538,8 +1547,10 @@ dev_case app-pass
 app_cfg; screen "$case_dir/adb/dump-1.xml" "$(node TextView title Today)"
 flow_file "$case_dir/flow.json" '{ "do": "waitForId", "value": "title", "timeout": 1 }'
 run_app
-"$YUKTI" flow --check "$case_dir/flow.json" > /dev/null 2>&1
-begin "app: a flow that passes asks nothing about the app"
+env ANDROID_HOME="$ROOT/tests/fake-sdk" FAKE_ADB_DIR="$case_dir/adb" YUKTI_PLATFORM=android YUKTI_HELPER=0 \
+  YUKTI_VARIANT=app YUKTI_CONFIG="$case_dir/cfg.json" YUKTI_RESULTS_DIR="$case_dir/res" TMPDIR="$case_dir/tmp" \
+  "$YUKTI" flow --check "$case_dir/flow.json" > /dev/null 2>&1
+begin "app: a flow that passes, and --check, ask nothing about the app"
 status_is 0; fake_used; not_asked "pidof com.example"; not_asked "logcat"; file_absent res/flow-crash.txt
 verdict
 

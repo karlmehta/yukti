@@ -2892,13 +2892,14 @@ def app_of():
     if not variant:
         return None, "no variant for this run ($YUKTI_VARIANT is not set)"
     try:
-        with open(config, encoding="utf-8") as fh: val = json.load(fh)["variants"][variant][key]
+        with open(config, encoding="utf-8") as fh: v = json.load(fh)["variants"][variant]
     except OSError:
         return None, "no config at '%s'" % config
     except ValueError:
         return None, "'%s' is not valid JSON" % config
     except (KeyError, TypeError):
-        val = None
+        return None, "no variant '%s' in %s" % (variant, config)
+    val = v.get(key) if isinstance(v, dict) else None
     if not isinstance(val, str) or not val:
         return None, "variant '%s' has no '%s' in %s" % (variant, key, config)
     return val, ""
@@ -2916,7 +2917,7 @@ def ask(cmd):
         r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=left)
     except subprocess.TimeoutExpired:
         DEADLINE[0] = 0
-        return None, "no answer in %d s" % CAPTURE_S
+        return None, "no answer in %d s" % round(left)
     except OSError as e:
         return None, "%s: %s" % (cmd[0], e.strerror or e)
     return r.returncode, r.stdout.decode("utf-8", "replace").replace("\r", "")
@@ -2960,7 +2961,8 @@ def android_state(app):
     import re
     line = next((l for l in out.split("\n") if "mCurrentFocus=" in l), "") \
         or next((l for l in out.split("\n") if "mFocusedApp=" in l), "")
-    val = line.split("=", 1)[1].strip() if line else ""
+    if not line: return "unread", "dumpsys window named no focus"
+    val = line.split("=", 1)[1].strip()
     if not val or val == "null": return "unread", "no focused window"
     # Window{7f3a2c1 u0 com.example/com.example.MainActivity}: the package is
     # only in that form. A popup, a toast or the navigation bar has none, and
@@ -2968,6 +2970,10 @@ def android_state(app):
     m = re.search(r"\bu\d+\s+([A-Za-z0-9_.]+)/([A-Za-z0-9_.$]+)", val)
     if not m:
         name = re.sub(r"^\w+\{\S+\s+(u\d+\s+)?|\}$", "", val)
+        # The activity under the system's crash dialog is still ours, which is
+        # why mFocusedApp is not asked here: it would say "in front".
+        if name == "Application Error: " + app:
+            return "unread", "the system shows the crash dialog of " + app
         return "unread", "focused window has no package (%s)" % name
     return ("front", "") if m.group(1) == app else ("behind", "%s/%s" % (m.group(1), m.group(2)))
 
@@ -3009,7 +3015,7 @@ def ios_crash(app):
     if best is None: notes.append("crash log: no crash report yet in DiagnosticReports"); return
     keep_crash(best[1], "ips")
 
-def app_check(shot_why, failing):
+def app_check(shot_why):
     """The first line of the message when the app is not where the step needed
     it, and the type of the failure; the rest goes to notes."""
     app, why = app_of()
@@ -3020,10 +3026,11 @@ def app_check(shot_why, failing):
         return "", ""
     state, what = android_state(app) if plat == "android" else ios_state(app)
     top = kind = ""
+    by = stopped_by() if state == "gone" else 0
     if state == "unread": notes.append("app state not read: " + what)
     elif state == "front": notes.append("app: %s running%s" % (app, ", in front" if plat == "android" else ""))
     elif state == "behind": top = "the app %s is running but not in front: %s" % (app, what)
-    elif stopped_by(): notes.append("app: %s not running - stopped by step %d" % (app, stopped_by()))
+    elif by: notes.append("app: %s not running - stopped by step %d" % (app, by))
     else: top, kind = "the app %s is not running: it was gone when the step failed" % app, "AppGone"
     android_crash() if plat == "android" else ios_crash(app)
     return top, kind
@@ -3064,7 +3071,7 @@ if failing is not None or (int(num(st)) != 0 and read(cur).strip()):
             if by == 0: line += " (read before step 1)"
             elif failing is None or by != failing["i"]: line += " (read by step %d)" % by
             notes.append(line)
-    top, kind_of_app = app_check(shot_why, failing)
+    top, kind_of_app = app_check(shot_why)
     if top: msg = top + "\n" + msg
     msg = msg + "\n" + "\n".join(notes)
     if top: notes.insert(0, top)

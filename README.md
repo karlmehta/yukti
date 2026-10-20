@@ -102,8 +102,8 @@ password fields and everything the flow typed, escaped, in pieces or with
 characters lost on the way. The screenshot is not - see RUNBOOK.
 When the app of the run (`$YUKTI_VARIANT`) was gone at the failed step, the
 failure says so first and has the type `AppGone`, and the device's crash log
-is kept beside the screenshot, masked the same way (RUNBOOK, "What a failed
-flow leaves").
+is kept beside the screenshot, masked by what the flow typed and nothing else
+(RUNBOOK, "What a failed flow leaves").
 
 ## Commands
 

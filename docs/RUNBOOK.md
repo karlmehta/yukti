@@ -826,8 +826,10 @@ The failed flow also asks the device about the app of the run - the variant in
   is in front, so there the check is running or not.
 - `app: <id> running, in front` (iOS: `app: <id> running`) - a line under the
   message: the check ran and found nothing.
-- `app state not read: <why>` - no answer, no focused window, or a focused
-  window with no package (a popup, a toast); nothing is concluded.
+- `app state not read: <why>` - no answer, no focused window, a focused window
+  with no package (a popup, a toast), or the system's crash dialog of the app
+  (the activity under it is still the app's, so it is not taken for "in
+  front"); nothing is concluded.
 - `app: not checked - <why>` - no `$YUKTI_VARIANT`, no config, or no
   `package`/`bundleId` in the variant.
 
