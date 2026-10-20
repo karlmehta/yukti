@@ -28,7 +28,8 @@
 #   installed      both helper packages are on the device
 #   start-fails    present: `am instrument` exits at once, nothing comes up
 #
-# `dumpsys input_method` always answers that no keyboard is up.
+# `dumpsys input_method` answers that no keyboard is up, unless the file
+# `keyboard` is there; the escape key (111) removes it.
 import os, sys, time
 from xml.sax.saxutils import quoteattr
 
@@ -72,6 +73,7 @@ elif args[:3] == ["shell", "input", "keycombination"]:
 elif args[:3] == ["shell", "input", "keyevent"]:
     typed = read("typed")
     for k in args[3:]:
+        if k == "111" and has("keyboard"): os.remove(path("keyboard"))
         if k == "67":
             # A delete takes the selection when there is one, else a character.
             if has("selected"): typed = ""; os.remove(path("selected"))
@@ -87,8 +89,8 @@ elif args[:2] == ["exec-out", "screencap"]:
     if mode == "hang": time.sleep(120)
     sys.stdout.buffer.write(b"\x89PNG\r\n\x1a\n" + b"\0" * 32)
 elif line == "shell dumpsys input_method":
-    # No keyboard up: a swipe step asks first (kb_before_swipe).
-    print("  mInputShown=false")
+    # A swipe step asks first (kb_before_swipe).
+    print("  mInputShown=%s" % ("true" if has("keyboard") else "false"))
 elif line == "shell wm size":
     print("Physical size: 1080x2400")
 elif line == "shell wm density":
