@@ -1455,7 +1455,7 @@ run_app(){ run_flow "$case_dir/flow.json" YUKTI_VARIANT=app YUKTI_CONFIG="$case_
 FRONT='  mCurrentFocus=Window{7f3a2c1 u0 com.example/com.example.MainActivity}'
 CRASH='--------- beginning of crash
 10-19 23:40:01.123  4242  4242 E AndroidRuntime: FATAL EXCEPTION: main
-10-19 23:40:01.123  4242  4242 E AndroidRuntime: java.lang.IllegalStateException: bad address beth.synthetic@example.invalid'
+10-19 23:40:01.123  4242  4242 E AndroidRuntime: java.lang.IllegalStateException: bad address user.synthetic@example.invalid'
 asked(){ grep -qF -- "$1" "$case_dir/adb/log" || no "the device was never asked: $1"; }
 not_asked(){ ! grep -qF -- "$1" "$case_dir/adb/log" 2>/dev/null || no "the device was asked: $1"; }
 
@@ -1473,13 +1473,13 @@ printf '%s\n' "$CRASH" > "$case_dir/adb/crash"; echo 3600 > "$case_dir/adb/devic
 flow_file "$case_dir/flow.json" '{ "do": "type", "value": "${TEST_EMAIL}" }' \
   '{ "do": "waitForId", "value": "missing", "timeout": 1 }'
 screen "$case_dir/adb/dump-1.xml" "$(node EditText email @TYPED@ true)" "$(node TextView marker "$MARK")"
-t_before=$(date +%s); run_app TEST_EMAIL='beth.synthetic@example.invalid'; t_after=$(date +%s)
+t_before=$(date +%s); run_app TEST_EMAIL='user.synthetic@example.invalid'; t_after=$(date +%s)
 begin "app: gone - said first, its own type, and the crash log kept masked"
 status_is 1; fake_used; red_is failure AppGone 1 0
 has res/flow.xml 'message="the app com.example is not running: it was gone when the step failed'
 has res/flow.xml "not on screen"; has res/flow.xml "crash log: flow-crash.txt (3 lines)"
 has res/flow.xml "flow-crash.txt</system-out>"; file_full res/flow-crash.txt
-has res/flow-crash.txt "FATAL EXCEPTION"; has res/flow-crash.txt "[typed]"; lacks res/flow-crash.txt "beth.synthetic"
+has res/flow-crash.txt "FATAL EXCEPTION"; has res/flow-crash.txt "[typed]"; lacks res/flow-crash.txt "user.synthetic"
 since="$(grep -oE 'logcat -b crash -d -v threadtime -t [^ ]+' "$case_dir/adb/log" | awk '{print $NF}')"
 printf '%s' "$since" | grep -qE '^[0-9]+\.[0-9]{3}$' || no "logcat -t got '$since', not a time with a fraction"
 awk -v s="$since" -v a="$t_before" -v b="$t_after" 'BEGIN { exit !(s >= a + 3597 && s <= b + 3599) }' \

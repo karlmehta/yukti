@@ -2971,7 +2971,8 @@ def android_state(app):
     if not m:
         name = re.sub(r"^\w+\{\S+\s+(u\d+\s+)?|\}$", "", val)
         # The activity under the system's crash dialog is still ours, which is
-        # why mFocusedApp is not asked here: it would say "in front".
+        # why mFocusedApp is not asked here: it would say "in front". The window
+        # name is the one Android 15 shows; another name falls to the line below.
         if name == "Application Error: " + app:
             return "unread", "the system shows the crash dialog of " + app
         return "unread", "focused window has no package (%s)" % name
