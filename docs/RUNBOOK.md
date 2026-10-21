@@ -457,6 +457,27 @@ When none of them is there, the search says
 one of them is on the screen again, or the element, or the start of the list,
 and goes on from there by two fifths for the rest of the step. That happens once
 per step. A list running past again is only said.
+Before its first swipe of a screen at a time, the search reads the whole screen,
+with the helper's `allowInvisibleElements` on for that one read (#116): rows below the
+fold come with their place in the list (`· full tree 412 nodes 196 ms`). Every
+other read keeps the setting off. When the element is below the fold, the search
+swipes by the distance to it, so that it stops in the middle of the part of the
+list the step looks at, and reads the screen as usual. Before each next swipe of
+this kind it reads the whole screen again and corrects the length by how far the
+element really moved. When the element is nowhere in the full tree but rows
+below the fold are, the search swipes by distance to the lowest of them, and then
+goes on as before, with the same end of the list. A lazy list keeps no rows below
+the fold and is searched as before. The search leaves the distance swipes, and
+goes on as before, when a swipe moved nothing; when the element is gone from the
+screen and from the full tree (`· distance scroll lost the target`); when only
+the full tree has it on the screen (`· distance scroll: the full tree has the
+element on the screen`); when the full read failed (`· full tree not read
+(helper: rc N)`); and when the list ran past the swipe, which is caught the same
+way (`... going back (distance)`). An element that moved less than half or more
+than one and a half of the swipe is said (`· distance scroll ratio ... out of
+range - using 1`), the next swipe is not corrected by it, and the distance
+swipes go on.
+Searching up, left or right, without the helper and on iOS is as it was.
 Without the helper, and on iOS, a swipe lets go at the speed it moved and the
 list runs on a little, so the swipe stays at 40%. Each swipe prints how it went
 and what it cost (`· swipe helper 1300 ms`, `· swipe adb 830 ms`), and each

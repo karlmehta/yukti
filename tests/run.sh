@@ -985,7 +985,7 @@ helper_screen "$case_dir/adb/helper-3.xml" "$(hlist @17 Target 1100)"
 flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target" }'
 run_helper flow "$case_dir/flow.json"
 begin "scroll: a list read before its rows are drawn is swiped past (known, see the comment)"
-status_is 0; gestures_are 2; count_is adb/http-log "/source" 3; lacks out.txt "went past the gesture"
+status_is 0; gestures_are 2; value_is adb/sources 3; count_is out.txt "· full tree" 1; lacks out.txt "went past the gesture"
 verdict; helper_done
 
 # A row of tiles 200 wide from x 8, centres at 108, 324 ... 972; the
@@ -1162,6 +1162,334 @@ run_helper flow "$case_dir/flow.json"
 begin "scroll: a second overshoot in a step is said, not gone back for"
 status_is 0; gestures_are 4; count_is out.txt "went past the gesture - going back" 1; count_is out.txt "went past the gesture" 2
 gesture_line 4 540 1500 540 700
+verdict; helper_done
+
+# ── a row below the fold, and a swipe by the distance to it (#116) ──────────
+# With allowInvisibleElements on, the helper keeps the rows below the fold, upside
+# down: the top where the row stands in the content, the bottom pinned to the
+# bottom of the list (2200). On the lists above the visible part is 200-2200 and
+# the band 164-2306, so the top of the element is aimed at 1200, and the
+# screen-long line, 1900 to 300, is the longest a distance swipe goes.
+# below <label:top> - one such row; inlist <list> <element>... - the list with
+# more elements inside it; hfull <list> <label:top>... - with rows below the fold.
+below(){ printf '<android.widget.TextView index="0" package="com.example" class="android.widget.TextView" text="%s" resource-id="" scrollable="false" bounds="[40,%d][1040,2200]" displayed="false" />' "${1%:*}" "${1##*:}"; }
+inlist(){ local l="$1"; shift; printf '%s' "${l%</android.widget.ScrollView>}" "$@" '</android.widget.ScrollView>'; }
+hfull(){ local l="$1" b r=""; shift; for b in "$@"; do r="$r$(below "$b")"; done; inlist "$l" "$r"; }
+# full_reads_are <n> - n full reads, each the setting on, one source, the
+# setting off, with no other request in between: no plain read sees the rows
+# below the fold.
+full_reads_are(){ "$PY3" - "$case_dir/adb/http-log" "$1" <<'PY' || no "http-log does not hold $1 full read(s) of: setting on, one source, setting off"
+import sys
+lines, n, got, i = open(sys.argv[1]).read().splitlines(), int(sys.argv[2]), 0, 0
+while i < len(lines):
+    if '"allowInvisibleElements":true' in lines[i]:
+        assert lines[i + 1].startswith("GET ") and lines[i + 1].endswith("/source")
+        assert '"allowInvisibleElements":false' in lines[i + 2]
+        got += 1; i += 3; continue
+    assert "allowInvisibleElements" not in lines[i]
+    i += 1
+assert got == n
+PY
+}
+
+helper_case scroll-dist
+: > "$case_dir/adb/running"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hlist @1)"
+helper_screen "$case_dir/adb/helper-full-1.xml" "$(hfull "$(hlist @1)" Target:2450)"
+helper_screen "$case_dir/adb/helper-2.xml" "$(hlist @7 Target 1300)"
+flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target" }'
+run_helper flow "$case_dir/flow.json"
+begin "distance: an element below the fold is swiped to by its distance, one swipe, and found by a plain read"
+status_is 0; gestures_are 1; gesture_line 1 540 1900 540 650; full_reads_are 1
+count_is out.txt "· full tree" 1; has out.txt "· search 1 swipes"; value_is adb/sources 2
+lacks out.txt "went past the gesture"
+verdict; helper_done
+
+# The list went 0.8 of the first swipe: 3500 to 2220 on 1600. The second swipe
+# is the distance left divided by it, 1020 / 0.8.
+helper_case scroll-dist-ratio
+: > "$case_dir/adb/running"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hlist @1)"
+helper_screen "$case_dir/adb/helper-full-1.xml" "$(hfull "$(hlist @1)" Target:3500)"
+helper_screen "$case_dir/adb/helper-2.xml" "$(hlist @9)"
+helper_screen "$case_dir/adb/helper-full-2.xml" "$(hfull "$(hlist @9)" Target:2220)"
+helper_screen "$case_dir/adb/helper-3.xml" "$(hlist @15 Target 1300)"
+flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target" }'
+run_helper flow "$case_dir/flow.json"
+begin "distance: the share the element travelled on one swipe sets the length of the next"
+status_is 0; gestures_are 2; gesture_line 1 540 1900 540 300; gesture_line 2 540 1900 540 625
+full_reads_are 2; lacks out.txt "distance scroll ratio"
+verdict; helper_done
+
+helper_case scroll-dist-over
+: > "$case_dir/adb/running"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hlist @1)"
+helper_screen "$case_dir/adb/helper-full-1.xml" "$(hfull "$(hlist @1)" Target:2450)"
+helper_screen "$case_dir/adb/helper-2.xml" "$(hlist @25)"
+helper_screen "$case_dir/adb/helper-3.xml" "$(hlist @5)"
+helper_screen "$case_dir/adb/helper-4.xml" "$(hlist @9 Target 1100)"
+flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target" }'
+run_helper flow "$case_dir/flow.json"
+begin "distance: a list that went past a distance swipe is said so and swiped back, as after any (#117)"
+status_is 0; gestures_are 3; count_is out.txt "went past the gesture - going back (distance)" 1
+gesture_line 1 540 1900 540 650; gesture_line 2 540 700 540 1500; gesture_line 3 540 1500 540 700
+count_is out.txt "· full tree" 1
+verdict; helper_done
+
+helper_case scroll-dist-still
+: > "$case_dir/adb/running"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hlist @1)"
+helper_screen "$case_dir/adb/helper-full-1.xml" "$(hfull "$(hlist @1)" Target:2450)"
+helper_screen "$case_dir/adb/helper-2.xml" "$(hlist @1)"
+helper_screen "$case_dir/adb/helper-3.xml" "$(hlist @3 Target 1100)"
+flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target" }'
+run_helper flow "$case_dir/flow.json"
+begin "distance: a distance swipe that moved nothing ends it, and the control swipe follows"
+status_is 0; gestures_are 2; gesture_line 1 540 1900 540 650; gesture_line 2 540 1300 540 800
+count_is out.txt "· full tree" 1
+verdict; helper_done
+
+# Content above the element grew between the reads: its top went down, 3500 to
+# 3600, and that share is no list moving.
+helper_case scroll-dist-grew
+: > "$case_dir/adb/running"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hlist @1)"
+helper_screen "$case_dir/adb/helper-full-1.xml" "$(hfull "$(hlist @1)" Target:3500)"
+helper_screen "$case_dir/adb/helper-2.xml" "$(hlist @9)"
+helper_screen "$case_dir/adb/helper-full-2.xml" "$(hfull "$(hlist @9)" Target:3600)"
+helper_screen "$case_dir/adb/helper-3.xml" "$(hlist @17 Target 1100)"
+flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target" }'
+run_helper flow "$case_dir/flow.json"
+begin "distance: a share outside 0.5-1.5 is said and taken as 1"
+status_is 0; gestures_are 2; count_is out.txt "· distance scroll ratio -0.06 out of range - using 1" 1
+gesture_line 2 540 1900 540 300
+verdict; helper_done
+
+# No row on the screen - a list read before its rows are drawn, a canvas: same_rows
+# has nothing to tell the list still by, the top of the element has. The swipe
+# starts on the grid, 88% of the way.
+hempty(){ printf '<android.widget.ScrollView index="0" package="com.example" class="android.widget.ScrollView" text="" resource-id="com.example:id/list" scrollable="true" bounds="[0,200][1080,2200]" displayed="true"></android.widget.ScrollView>'; }
+helper_case scroll-dist-unlabelled
+: > "$case_dir/adb/running"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hempty)"
+helper_screen "$case_dir/adb/helper-full-1.xml" "$(hfull "$(hempty)" Target:2450)"
+helper_screen "$case_dir/adb/helper-2.xml" "$(hempty)"
+helper_screen "$case_dir/adb/helper-full-2.xml" "$(hfull "$(hempty)" Target:2450)"
+helper_screen "$case_dir/adb/helper-3.xml" "$(hlist @9 Target 1100)"
+flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target" }'
+run_helper flow "$case_dir/flow.json"
+begin "distance: on a list with no row on the screen, a top that did not move ends it"
+status_is 0; gestures_are 2; gesture_line 1 540 1960 540 710; gesture_line 2 540 1960 540 360
+count_is out.txt "· full tree" 2
+verdict; helper_done
+
+# A short list, 200-640, and the band cleared of its edges, 592-1878: the top
+# is aimed at 616, and an element whose top is at 650 is 34 px away - no swipe
+# is that short. The usual line goes out: the row at 500, 63% of the way.
+SHORT_LIST='<android.widget.ScrollView index="0" package="com.example" class="android.widget.ScrollView" text="" resource-id="com.example:id/list" scrollable="true" bounds="[0,200][1080,640]" displayed="true">'
+srow(){ printf '<android.widget.TextView index="0" package="com.example" class="android.widget.TextView" text="%s" resource-id="" scrollable="false" bounds="[40,%d][1040,%d]" displayed="%s" />' "$@"; }
+helper_case scroll-dist-short
+: > "$case_dir/adb/running"
+helper_screen "$case_dir/adb/helper-1.xml" "$SHORT_LIST$(srow 'A 1' 250 350 true)$(srow 'A 2' 450 550 true)</android.widget.ScrollView>"
+helper_screen "$case_dir/adb/helper-full-1.xml" "$SHORT_LIST$(srow 'A 1' 250 350 true)$(srow 'A 2' 450 550 true)$(srow Target 650 640 false)</android.widget.ScrollView>"
+helper_screen "$case_dir/adb/helper-2.xml" "$SHORT_LIST$(srow 'A 3' 250 350 true)$(srow Target 590 640 true)</android.widget.ScrollView>"
+flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target", "edges": "clear" }'
+run_helper flow "$case_dir/flow.json"
+begin "distance: an element nearer than a swipe can go gets the usual line"
+status_is 0; gestures_are 1; gesture_line 1 540 500 540 223; count_is out.txt "· full tree" 1
+verdict; helper_done
+
+# A slider over the row the screen-long line starts on: the distance swipe
+# starts on the next line of text, the row at 1700, as any line would.
+SLIDER='<android.widget.SeekBar index="0" package="com.example" class="android.widget.SeekBar" text="" resource-id="com.example:id/slider" scrollable="false" bounds="[0,1850][1080,1950]" displayed="true" />'
+helper_case scroll-dist-finger
+: > "$case_dir/adb/running"
+helper_screen "$case_dir/adb/helper-1.xml" "$(inlist "$(hlist @1)" "$SLIDER")"
+helper_screen "$case_dir/adb/helper-full-1.xml" "$(hfull "$(inlist "$(hlist @1)" "$SLIDER")" Target:2450)"
+helper_screen "$case_dir/adb/helper-2.xml" "$(hlist @7 Target 1300)"
+flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target" }'
+run_helper flow "$case_dir/flow.json"
+begin "distance: the finger goes down on text, not on a slider"
+status_is 0; gestures_are 1; gesture_line 1 540 1700 540 450
+verdict; helper_done
+
+# Not in the full tree: the search swipes to the lowest row below the fold by
+# its distance, then goes on as it always did.
+helper_case scroll-dist-end-grows
+: > "$case_dir/adb/running"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hlist @1)"
+helper_screen "$case_dir/adb/helper-full-1.xml" "$(hfull "$(hlist @1)" 'R 11:2250' 'R 15:3050')"
+helper_screen "$case_dir/adb/helper-2.xml" "$(hlist @9)"
+helper_screen "$case_dir/adb/helper-full-2.xml" "$(hlist @9)"
+helper_screen "$case_dir/adb/helper-3.xml" "$(hlist @17 Target 1100)"
+flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target" }'
+run_helper flow "$case_dir/flow.json"
+begin "distance: not in the full tree - to the lowest row below the fold, then the usual search finds rows drawn later"
+status_is 0; gestures_are 2; gesture_line 1 540 1900 540 300; gesture_line 2 540 1900 540 300
+count_is out.txt "· full tree" 2; lacks out.txt "lost the target"
+verdict; helper_done
+
+helper_case scroll-dist-end
+: > "$case_dir/adb/running"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hlist @1)"
+helper_screen "$case_dir/adb/helper-full-1.xml" "$(hfull "$(hlist @1)" 'R 11:2250' 'R 15:3050')"
+helper_screen "$case_dir/adb/helper-2.xml" "$(hlist @9)"
+helper_screen "$case_dir/adb/helper-full-2.xml" "$(hlist @9)"
+flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target", "timeout": 1 }'
+run_helper flow "$case_dir/flow.json"
+begin "distance: not in the full tree and the list ends - the usual miss, after the usual wait"
+status_is 1; has out.txt "reached the end of the list going down and it did not grow for 1s, 'Target' is not in it"
+count_is out.txt "· full tree" 2
+verdict; helper_done
+
+# The lowest row below the fold is another one after the swipe - a list that
+# draws rows past its edge as it goes: 2900, then 2700 of another row. A share
+# taken across two rows would be 0.12 and said; it is not taken.
+helper_case scroll-dist-end-moves
+: > "$case_dir/adb/running"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hlist @1)"
+helper_screen "$case_dir/adb/helper-full-1.xml" "$(hfull "$(hlist @1)" 'R 11:2250' 'R 15:2900')"
+helper_screen "$case_dir/adb/helper-2.xml" "$(hlist @9)"
+helper_screen "$case_dir/adb/helper-full-2.xml" "$(hfull "$(hlist @9)" 'R 19:2300' 'R 22:2700')"
+helper_screen "$case_dir/adb/helper-3.xml" "$(hlist @16)"
+helper_screen "$case_dir/adb/helper-full-3.xml" "$(hlist @16)"
+helper_screen "$case_dir/adb/helper-4.xml" "$(hlist @24 Target 1100)"
+flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target" }'
+run_helper flow "$case_dir/flow.json"
+begin "distance: to the end, each swipe goes by the lowest row of its own read, no share between two rows"
+status_is 0; gestures_are 3; gesture_line 1 540 1900 540 300; gesture_line 2 540 1900 540 400
+gesture_line 3 540 1900 540 300; lacks out.txt "distance scroll ratio"; count_is out.txt "· full tree" 3
+verdict; helper_done
+
+helper_case scroll-dist-lost
+: > "$case_dir/adb/running"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hlist @1)"
+helper_screen "$case_dir/adb/helper-full-1.xml" "$(hfull "$(hlist @1)" Target:2450)"
+helper_screen "$case_dir/adb/helper-2.xml" "$(hlist @7)"
+helper_screen "$case_dir/adb/helper-full-2.xml" "$(hfull "$(hlist @7)" 'R 17:2300')"
+helper_screen "$case_dir/adb/helper-3.xml" "$(hlist @15 Target 1100)"
+flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target" }'
+run_helper flow "$case_dir/flow.json"
+begin "distance: an element neither on the screen nor below the fold any more is said lost, and the usual search goes on"
+status_is 0; count_is out.txt "· distance scroll lost the target" 1; gestures_are 2
+gesture_line 1 540 1900 540 650; gesture_line 2 540 1900 540 300
+verdict; helper_done
+
+# A lazy list holds no row below the fold: the full read changes nothing.
+helper_case scroll-dist-lazy
+: > "$case_dir/adb/running"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hlist @1)"
+helper_screen "$case_dir/adb/helper-2.xml" "$(hlist @9)"
+helper_screen "$case_dir/adb/helper-3.xml" "$(hlist @17 Target 1100)"
+flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target" }'
+run_helper flow "$case_dir/flow.json"
+begin "distance: no rows below the fold - one full read, then the search as before"
+status_is 0; gestures_are 2; gesture_line 1 540 1900 540 300; gesture_line 2 540 1900 540 300
+full_reads_are 1; lacks out.txt "distance"
+verdict; helper_done
+
+helper_case scroll-dist-nonxml
+: > "$case_dir/adb/running"; echo nonxml-full > "$case_dir/adb/source-mode"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hlist @1)"
+helper_screen "$case_dir/adb/helper-full-1.xml" "$(hfull "$(hlist @1)" Target:2450)"
+helper_screen "$case_dir/adb/helper-2.xml" "$(hlist @9 Target 1100)"
+flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target" }'
+run_helper flow "$case_dir/flow.json"
+begin "distance: a full read that is not a tree switches the setting off, and the search goes on as before"
+status_is 0; has out.txt "· full tree not read (helper: rc 5)"; full_reads_are 1
+gestures_are 1; gesture_line 1 540 1900 540 300; value_is adb/sessions 1; file_absent adb/dumps
+verdict; helper_done
+
+helper_case scroll-dist-died
+: > "$case_dir/adb/running"; echo die-full > "$case_dir/adb/source-mode"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hlist @1)"
+helper_screen "$case_dir/adb/helper-2.xml" "$(hlist @9 Target 1100)"
+flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target" }'
+run_helper flow "$case_dir/flow.json"
+begin "distance: a helper that died on the full read is started again, once, and the swipe is its"
+status_is 0; has out.txt "· full tree not read (helper: rc 2)"; count_is adb/log "am instrument" 1
+value_is adb/sessions 2; gestures_are 1; lacks adb/log "input swipe"; file_absent adb/dumps
+verdict; helper_done
+
+# The setting not taken back: the session is forgotten in the run and in the
+# cache - with either left, the next read would go on it, the setting still on
+# - and a new one opened, with the wait and without the setting.
+helper_case scroll-dist-stuck
+: > "$case_dir/adb/running"; echo fail-false > "$case_dir/adb/settings-mode"
+printf 's1' > "$case_dir/adb/session"; printf '1' > "$case_dir/adb/sessions"; printf 's1' > "$case_dir/$CACHE/session-emulator-5554"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hlist @1)"
+helper_screen "$case_dir/adb/helper-full-1.xml" "$(hfull "$(hlist @1)" Target:2450)"
+helper_screen "$case_dir/adb/helper-2.xml" "$(hlist @7 Target 1300)"
+flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target" }'
+run_helper flow "$case_dir/flow.json" -- YUKTI_HELPER_KEEP=1
+begin "distance: a session that did not take the setting back is dropped, here and in the cache, and opened anew"
+status_is 0; value_is adb/sessions 2; value_is "$CACHE/session-emulator-5554" s2
+has adb/settings '"waitForIdleTimeout":500'; lacks adb/settings "allowInvisibleElements"
+gestures_are 1; gesture_line 1 540 1900 540 650; lacks adb/log "input swipe"
+has adb/http-log "GET /session/s2/source"
+verdict; helper_done
+
+# In the full tree on the screen, in the plain read not there: nothing to swipe
+# to by distance, and the line says so - not the same as no rows below the fold.
+helper_case scroll-dist-on-full
+: > "$case_dir/adb/running"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hlist @1)"
+helper_screen "$case_dir/adb/helper-full-1.xml" "$(hlist @1 Target 1100)"
+helper_screen "$case_dir/adb/helper-2.xml" "$(hlist @9 Target 1100)"
+flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target" }'
+run_helper flow "$case_dir/flow.json"
+begin "distance: an element on the screen in the full tree only is said, and the search goes on as before"
+status_is 0; count_is out.txt "· distance scroll: the full tree has the element on the screen" 1
+gestures_are 1; gesture_line 1 540 1900 540 300
+verdict; helper_done
+
+helper_case scroll-dist-two
+: > "$case_dir/adb/running"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hlist @1)"
+helper_screen "$case_dir/adb/helper-full-1.xml" "$(hfull "$(hlist @1)" Target:3000 Target:2450)"
+helper_screen "$case_dir/adb/helper-2.xml" "$(hlist @7 Target 1300)"
+flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target" }'
+run_helper flow "$case_dir/flow.json"
+begin "distance: of two equal matches below the fold, the nearer one"
+status_is 0; gestures_are 1; gesture_line 1 540 1900 540 650
+verdict; helper_done
+
+helper_case scroll-dist-shown
+: > "$case_dir/adb/running"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hlist @1 Target 1100)"
+helper_screen "$case_dir/adb/helper-full-1.xml" "$(hfull "$(hlist @1 Target 1100)" Target:2450)"
+flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target" }'
+run_helper flow "$case_dir/flow.json"
+begin "distance: an element on the screen needs no full read, whatever lies below"
+status_is 0; gestures_are 0; full_reads_are 0; lacks out.txt "full tree"
+verdict; helper_done
+
+helper_case scroll-dist-budget
+: > "$case_dir/adb/running"
+for k in $(seq 1 80); do
+  helper_screen "$case_dir/adb/helper-$k.xml" "$(hlist "@$(( 8 * k - 7 ))")"
+  helper_screen "$case_dir/adb/helper-full-$k.xml" "$(hfull "$(hlist "@$(( 8 * k - 7 ))")" "Z $k:3900")"
+done
+flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target" }'
+run_helper flow "$case_dir/flow.json" -- YUKTI_SCROLL_BUDGET=2
+begin "distance: swipes by distance are within the time of the search, and its miss is the usual one"
+status_is 1; has out.txt "still moving after 2s of swiping down, 'Target' not found"
+[ "$(grep -c '· full tree' "$case_dir/out.txt")" -ge 2 ] || no "fewer than two full reads"
+verdict; helper_done
+
+# The keyboard is closed first, and the screen read again: the full read comes
+# after that read, not before it.
+helper_case scroll-dist-keyboard
+: > "$case_dir/adb/running"; : > "$case_dir/adb/keyboard"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hlist @1)"
+helper_screen "$case_dir/adb/helper-full-1.xml" "$(hfull "$(hlist @1)" Target:2450)"
+helper_screen "$case_dir/adb/helper-3.xml" "$(hlist @7 Target 1300)"
+flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target" }'
+run_helper flow "$case_dir/flow.json"
+begin "distance: the full read comes after the keyboard is closed"
+status_is 0; has out.txt "keyboard closed"; gestures_are 1; full_reads_are 1
+[ "$(awk '/allowInvisibleElements":true/ {print n; exit} /source$/ {n++}' "$case_dir/adb/http-log")" = 2 ] \
+  || no "the full read did not come after the second plain read"
 verdict; helper_done
 
 dev_case scroll-blind

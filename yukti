@@ -475,6 +475,34 @@ helper_tree(){ local d out rc i; d="$(run_dir)"; HELPER_WHY=""
     esac
   done
   HELPER_WHY="three reads in a row gave no tree"; helper_give_up; return 1; }
+# The whole screen, rows below the fold included (#116). The helper leaves out
+# what is not displayed, so a row below the fold is in no read at all, and a
+# search can only swipe until it comes into view. Told to keep such rows
+# (allowInvisibleElements), the helper gives each one its place in the content:
+# the top is where the row stands in the list, the bottom is pinned to the
+# bottom of the list - a box upside down, and the distance to the row. Measured
+# on the app under test: 412 nodes in 196 ms against 156 in 73 ms on a long
+# screen; a lazy list holds no rows below the fold, and gives the same either way.
+#
+# The setting is on for this one read and off again on the same session, so no
+# other read sees rows that are not on the screen. The read goes past aui(): it
+# is not held, not counted among the step's reads and not kept as the tree of a
+# failure. Prints the tree, or returns 1 and the search goes on without it. A
+# session that did not take the setting back is forgotten, here and in the
+# cache, and a new one is opened at once - it starts from the server's defaults,
+# and helper_session sets the wait again; the gesture that follows needs one.
+helper_full_tree(){ local d sid out="" rc=0 t0 n; d="$(run_dir)"; t0="$(now)"
+  sid="$(cat "$d/helper-session" 2>/dev/null || true)"; [ -n "$sid" ] || return 1
+  helper_http POST "/session/$sid/appium/settings" 5 '{"settings":{"allowInvisibleElements":true}}' >/dev/null || rc=$?
+  if [ "$rc" -eq 0 ]; then out="$(helper_http GET "/session/$sid/source" "$(helper_read_timeout)")" || rc=$?; fi
+  if ! helper_http POST "/session/$sid/appium/settings" 5 '{"settings":{"allowInvisibleElements":false}}' >/dev/null; then
+    rm -f "$d/helper-session" "$(helper_cache)/session-$(helper_key "$(helper_serial)")" 2>/dev/null || true
+    helper_connect >/dev/null 2>&1 || true
+  fi
+  if [ "$rc" -ne 0 ]; then printf '  · full tree not read (helper: rc %s)\n' "$rc" >&2; return 1; fi
+  n="$(printf '%s' "$out" | grep -o '<node' | wc -l | tr -d ' ' || true)"
+  printf '  · full tree %s nodes %d ms\n' "$n" $(( ($(us_of "$(now)") - $(us_of "$t0")) / 1000 )) >&2
+  printf '%s' "$out"; }
 # Stop the helper on this device, remove its forwards and forget what a kept
 # helper left in the cache. For a caller who reads the screen with a plain
 # `uiautomator dump` after yukti, and for the end of a suite that kept it.
@@ -580,6 +608,26 @@ if _m: SX1,SY1,SX2,SY2=map(int,_m.groups())
 # cannot be judged has to say so in a way the caller can read.
 if mode in ("assert","id") and not (SX2>SX1 and SY2>SY1): sys.exit(3)
 best=None; best_box=None; best_score=0; zero=None; off=None
+# A tree read with the rows below the fold (#116, helper_full_tree) is asked in
+# two more ways. Such a row comes upside down: its top is where it stands in the
+# content, its bottom is pinned to the bottom of the list. "full" looks for the
+# element as always, and a match upside down counts when its centre on x is
+# inside the list and its top is below the visible part of it (the fifth
+# argument: "x1 x2 top bottom" of that part). Prints "on cx cy" for a match on
+# the screen, else "below T" - the nearest of the best matches below, the
+# search goes down - else nothing. "fullend" asks for no element: "below T" of
+# the lowest row below the fold, or nothing when there is none. Boxes upside
+# down anywhere else stay what they always were - of zero area.
+full=out in ("full","fullend"); low=None
+if full:
+    C1,C2,A1,A2=map(int,sys.argv[5].split())
+    def below(x1,y1,x2,y2): return x2>x1 and y2<y1 and C1<=(x1+x2)//2<C2 and y1>A2
+if out=="fullend":
+    for m in re.finditer(r"<node\b[^>]*>", xml):
+        b=re.search(r"bounds=\"\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]\"",m.group(0))
+        if b and below(*map(int,b.groups())) and (low is None or int(b.group(2))>low): low=int(b.group(2))
+    if low is not None: print("below",low)
+    sys.exit(0)
 # Corners (x1,y1,x2,y2): a lies entirely inside b and is not b itself. The iOS
 # path defines the same function; keep the two identical. A tap match scores at
 # least 2 and best_score starts below that, so a tie never meets an empty winner.
@@ -632,6 +680,9 @@ for m in re.finditer(r"<node\b[^>]*>", xml):
     b=re.search(r"bounds=\"\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]\"",tag)
     if not b: continue
     x1,y1,x2,y2=map(int,b.groups())
+    if full and below(x1,y1,x2,y2):
+        if low is None or score>low[0] or (score==low[0] and y1<low[1]): low=(score,y1)
+        continue
     if not (x2>x1 and y2>y1):   # zero-area node: in the tree, not on the screen
         if zero is None: zero=(x1,y1,x2,y2)
         continue
@@ -648,14 +699,17 @@ for m in re.finditer(r"<node\b[^>]*>", xml):
     # go to the first one. The iOS path runs the same test on the same corners.
     if score==best_score and not (mode not in ("assert","id") and inside((x1,y1,x2,y2),best_box)): continue
     best=(cx,cy); best_box=(x1,y1,x2,y2); best_score=score
-if best:
+if full:
+    if best and (low is None or best_score>=low[0]): print("on",best[0],best[1])
+    elif low: print("below",low[1])
+elif best:
     if out=="box": print(best_box[0],best_box[1],best_box[2],best_box[3],SX1,SY1,SX2,SY2)
     elif out=="why": print("on",best[0],best[1])
     else: print(best[0],best[1])
 elif out=="why":
     if zero: print("zero",*zero)
     elif off: print("off",*off)
-' "$1" "${2:-text}" "${3:-exact}" "${4:-centre}"; }
+' "$1" "${2:-text}" "${3:-exact}" "${4:-centre}" "${5:-}"; }
 # Where a horizontal swipe should land, from the dump. A swipe across the middle
 # of the screen lands on whatever is there, and an element that does not claim
 # the gesture may be pressed instead of scrolled: measured on the app under test,
@@ -2176,7 +2230,7 @@ BAND_SIDE_PCT=7
 # exactly the case `"edges":"clear"` exists for.
 #
 # The list a search runs along, read from the held tree. Prints one line:
-#   rows f l   sx sy ex ey dur   cx cy cex cey cdur   seam over
+#   rows f l   sx sy ex ey dur   cx cy cex cey cdur   seam over   a1 a2 c1 c2
 # `rows` names the first and last row of the list that are on the screen, and f
 # and l are where they stand on the axis of the search - what two reads compare.
 # Then the swipe for that direction, and the control swipe: shorter, slower, from
@@ -2191,6 +2245,12 @@ BAND_SIDE_PCT=7
 # labelled rows and none of them is in it, so the list went past the gesture;
 # 0 - one of them is here; `-` - no seam was given, or the read has no labelled
 # row to judge by (a list read before its rows are drawn).
+#
+# `a1 a2` is the visible part of the list on the axis of the search, `c1 c2`
+# across it: where a row below the fold is judged to be inside the list (#116).
+# The seventh argument is a length in pixels: the swipe is cut to it, from the
+# same start, and its seam is reckoned for the line as cut. Empty - the line
+# as drawn.
 #
 # Which element is the list: one that scrolls along the axis. On Android that is
 # `scrollable="true"`, and the class names the axis where it can: a
@@ -2372,6 +2432,13 @@ else:
     main=anchor(70,40,20); mc=None
     if main is None: main,mc=pick([70,60,75],40,crosses)
     if main is None: main,mc=line(70 if fwd else 30,40,50),50
+# A distance to go (#116): the finger goes down where it would anyway - only
+# the length changes, and never past the length of the line as drawn.
+want=int(sys.argv[11]) if len(sys.argv)>11 and sys.argv[11] else 0
+if want>0:
+    s,e=(main[1],main[3]) if vert else (main[0],main[2])
+    dl=min(want,abs(e-s)); e=s-dl if fwd else s+dl
+    main=(main[0],s,main[2],e) if vert else (s,main[1],e,main[3])
 ctl=anchor(60,25,15,away=main[1] if vert else main[0])
 if ctl is None: ctl,_=pick([62,72],25,crosses,skip=mc)
 if ctl is None: ctl=line(62 if fwd else 38,25,30 if mc!=30 else 70)
@@ -2388,8 +2455,8 @@ seam=sorted({hx(r[1]) for r in seen if r[1] and a1+spare<=(pos(r)-dist if fwd el
 chk=[c for c in (sys.argv[10] if len(sys.argv)>10 else "").split(",") if c and c!="-"]
 here={hx(r[1]) for r in seen if r[1]}
 over="-" if not chk or not here else ("0" if here.intersection(chk) else "1")
-print(rid,fp,lp,*main,dur,*ctl,dur*2,",".join(seam) or "-",over)
-' "$1" "${2:-}" "$3" "$4" "$BAND_TOP" "$BAND_BOTTOM" "$BASIS_H" "$YUKTI_PLATFORM" "${5:-}" "${6:-}"; }
+print(rid,fp,lp,*main,dur,*ctl,dur*2,",".join(seam) or "-",over,a1,a2,c1,c2)
+' "$1" "${2:-}" "$3" "$4" "$BAND_TOP" "$BAND_BOTTOM" "$BASIS_H" "$YUKTI_PLATFORM" "${5:-}" "${6:-}" "${7:-}"; }
 # The answers:
 #   0 + coordinates - it is there, and where it has to be
 #   4 + coordinates - in the band, never clear of its edges while the list still
@@ -2445,7 +2512,7 @@ scroll_to(){ local t0 st=0; t0="$(now)"; SCROLL_N=0; SWIPED_BY=adb; SWIPE_FAR=""
   scroll_search "$@" || st=$?
   printf '  · search %s swipes %d ms\n' "$SCROLL_N" $(( ($(us_of "$(now)") - $(us_of "$t0")) / 1000 )) >&2
   return "$st"; }
-scroll_search(){ local lbl="$1" dir="${2:-down}" clear="${3:-}" verb="${4:-scrollToText}" grow="${5:-$SCROLL_GROW_WAIT}" xy c lo hi blo bhi m w h seen="" nudge st probe prev="" ctl=0 ended="" flat="" kb="" end0="" far t1 tn waited=0 tw="" budget exp="" lost="" backed="" nofar="" bdir
+scroll_search(){ local lbl="$1" dir="${2:-down}" clear="${3:-}" verb="${4:-scrollToText}" grow="${5:-$SCROLL_GROW_WAIT}" xy c lo hi blo bhi m w h seen="" nudge st probe prev="" ctl=0 ended="" flat="" kb="" end0="" far t1 tn waited=0 tw="" budget exp="" lost="" backed="" nofar="" bdir dmode="" dprev="" dlen=0 dlast="" k100=100 full r e aim want dprobe dkeep dt dk
   case "$dir" in up|down|left|right) ;; *) die "scrollToText: '$dir' is not a direction - use up, down, left or right";; esac
   case "$dir" in down) bdir=up;; up) bdir=down;; left) bdir=right;; right) bdir=left;; esac
   set -- $(screen_wh); w="${1:-$BASIS_W}"; h="${2:-$BASIS_H}"
@@ -2473,6 +2540,7 @@ scroll_search(){ local lbl="$1" dir="${2:-down}" clear="${3:-}" verb="${4:-scrol
       # Found on the way back: the way back is over, and where to swipe now is
       # decided by where the element is, as always.
       [ -z "$lost" ] || { lost=""; exp=""; prev=""; ctl=0; end0=""; }
+      dmode=off
       # The coordinate that decides is the one the swipe moves.
       case "$dir" in up|down) c="${xy##* }";; *) c="${xy%% *}";; esac
       seen="$xy"
@@ -2515,13 +2583,78 @@ scroll_search(){ local lbl="$1" dir="${2:-down}" clear="${3:-}" verb="${4:-scrol
       # by where it is, whatever the list did to bring it there.
       elif [ -z "$lost" ] && [ -z "$xy" ] && [ -n "$exp" ] && [ "${15}" = 1 ]; then
         if [ -z "$backed" ]; then
-          printf '  · swipe went past the gesture - going back\n' >&2
-          backed=1; nofar=1; far=""; lost="$exp"; exp=""; prev=""; ctl=0; end0=""; nudge="$bdir"
+          printf '  · swipe went past the gesture - going back%s\n' "${dlast:+ (distance)}" >&2
+          dmode=off; backed=1; nofar=1; far=""; lost="$exp"; exp=""; prev=""; ctl=0; end0=""; nudge="$bdir"
           probe="$(list_probe "$nudge" "$xy" "$w" "$h" "" "")" || st=$?
         else
           # Once per step: the swipes are short now, and a second turn back
           # could only swing between the two.
           printf '  · swipe went past the gesture\n' >&2
+        fi
+      fi
+    fi
+    # A row below the fold (#116). The helper can read the whole screen, rows
+    # below the fold included (helper_full_tree), and such a row says how far
+    # down it is: the search swipes that far, instead of a screen at a time until
+    # the row comes into view. Only going down, with the helper's finger - the
+    # one that stops where the list should - and only while the element is not
+    # on the screen: that is where the far swipe goes out, and where rows below
+    # the fold were measured. Its top is to stand in the middle of the band.
+    #
+    # The list does not travel exactly the length of the finger (measured: 0.8
+    # of it), so each swipe of this kind is followed by a full read, and the
+    # share the ELEMENT travelled on the last swipe divides the next distance.
+    # A share outside 0.5-1.5 is not a list moving - content above the element
+    # grew between the reads - and is taken as 1. A list with no row on the
+    # screen cannot be told still by its rows (same_rows); a top that moved 8 px
+    # or less says it instead.
+    #
+    # Not in the full tree either: the search goes to the lowest row below the
+    # fold the same way, and looks for the element in every full read on the
+    # way. A plain list and a lazy one are both a ScrollView in the tree, and a
+    # lazy one may draw some rows past the edge, so a missing element is not
+    # yet a missing row: the search goes on to the end and its usual end there.
+    # No rows below the fold - a lazy list - and the search is as it was.
+    #
+    # Any doubt ends this for the step, and the search goes on as before: a
+    # swipe that moved nothing (the control swipe follows), a list that went
+    # past the gesture (#117, the way back follows), an element that is gone,
+    # a full read that failed.
+    dlast=""
+    if [ "$st" -eq 0 ] && [ -n "$probe" ] && [ -n "$far" ] && [ "$dir" = down ] && [ -z "$lost" ] && [ "$dmode" != off ]; then
+      set -- $probe
+      if [ -n "$prev" ] && same_rows "$prev" "$1 $2 $3"; then dmode=off
+      else
+        r=""; e=""; dt=""; dk=""
+        if full="$(helper_full_tree)"; then
+          dkeep="$HELD_TREE"; HELD_TREE="$full"
+          r="$(afind "$lbl" text exact full "${18} ${19} ${16} ${17}")" || r=""
+          [ -n "$r" ] || [ "$dmode" = t ] || e="$(afind - text exact fullend "${18} ${19} ${16} ${17}")" || e=""
+          HELD_TREE="$dkeep"
+          case "$r" in below\ *) dt="${r#below }"; dk=t;; esac
+          case "$e" in below\ *) dt="${e#below }"; dk=e;; esac
+          [ -n "$r" ] || [ "$dmode" != t ] || printf '  · distance scroll lost the target\n' >&2
+          case "$r" in on\ *) printf '  · distance scroll: the full tree has the element on the screen\n' >&2;; esac
+        fi
+        aim=$(( ( (${16} > lo ? ${16} : lo) + (${17} < hi ? ${17} : hi) ) / 2 ))
+        if [ -z "$dk" ] || [ "$aim" -le "$(( ${16} > lo ? ${16} : lo ))" ]; then dmode=off
+        elif [ "$1" = none ] && [ "$dk" = "$dmode" ] && [ -n "$dprev" ] && [ "$(( dt - dprev ))" -le 8 ] && [ "$(( dprev - dt ))" -le 8 ]; then dmode=off
+        else
+          k100=100
+          if [ "$dk" = t ] && [ "$dmode" = t ] && [ -n "$dprev" ] && [ "$dlen" -gt 0 ]; then
+            k100=$(( (dprev - dt) * 100 / dlen ))
+            if [ "$k100" -lt 50 ] || [ "$k100" -gt 150 ]; then ratio_note "$k100"; k100=100; fi
+          fi
+          dmode="$dk"; dprev=""; want=$(( (dt - aim) * 100 / k100 ))
+          # Shorter than this is no swipe - the finger would not even be taken
+          # for a drag - and the element is nearly there: the usual line.
+          if [ "$want" -ge 60 ]; then
+            st=0; dprobe="$(list_probe "$nudge" "$xy" "$w" "$h" "$far" "${lost:-$exp}" "$want")" || st=$?
+            if [ "$st" -eq 0 ] && [ -n "$dprobe" ]; then
+              probe="$dprobe"; set -- $probe; dlen=$(( $5 - $7 )); dprev="$dt"; dlast=1
+            fi
+            st=0
+          fi
         fi
       fi
     fi
@@ -2591,6 +2724,10 @@ scroll_search(){ local lbl="$1" dir="${2:-down}" clear="${3:-}" verb="${4:-scrol
   if [ -n "$seen" ]; then printf '%s' "$seen"; return 5; fi
   [ -n "$flat" ] && return 8
   return 7; }
+# The share of a swipe the element travelled, when it is not one a list moves
+# by (#116, scroll_search). Kept in hundredths: bash counts in whole numbers.
+ratio_note(){ local v="$1" s=""; [ "$v" -ge 0 ] || { s=-; v=$(( -v )); }
+  printf '  · distance scroll ratio %s%d.%02d out of range - using 1\n' "$s" $(( v / 100 )) $(( v % 100 )) >&2; }
 # Two reads of one list show the same rows: the first and the last row on the
 # screen carry the same labels, and neither moved more than a few pixels - the
 # rounding of a dump, not a swipe. A list with no row on the screen - one child

@@ -9,13 +9,20 @@
 #   session        the one open session; POST /session replaces it
 #   settings       the last settings posted; a new session removes it (the
 #                  real server resets its settings per session)
+#   settings-mode  "fail-false": a post that switches allowInvisibleElements
+#                  off answers 500 and changes nothing
 #   helper-<n>.xml the tree for the n-th source; past the last one, the last
 #   sources        how many sources were asked for
+#   helper-full-<n>.xml, full-sources - the same for a source asked while the
+#                  last settings switch allowInvisibleElements on (#116); with
+#                  no such file at all, the tree of the last source, uncounted
 #   source-mode    "nonxml": every source answers something that is not a
 #                  tree; "nonxml-once": only the next one; "slow": every
 #                  source answers after 3 s; "die": the next source stops the
-#                  helper and is not answered
-#   http-log       every request, one per line
+#                  helper and is not answered; "nonxml-full", "die-full": the
+#                  same as "nonxml-once" and "die", for the next full source;
+#                  a plain source ignores them and leaves them for it
+#   http-log       every request, one per line; a post of settings with its body
 #   actions        the body of every gesture (POST .../actions), one per line
 #   actions-mode   "fail": every gesture answers 500; "hang": every gesture
 #                  answers after 3 s; "gone": the next gesture is not answered
@@ -33,6 +40,11 @@ def read(n, default=""):
 def write(n, t):
     with open(path(n), "w") as fh: fh.write(t)
 
+# allowInvisibleElements in a body of settings: True, False, or None - not there.
+def invisible(body):
+    try: return json.loads(body or "{}").get("settings", {}).get("allowInvisibleElements")
+    except ValueError: return None
+
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
     def answer(self, code, value, sid=None):
@@ -40,11 +52,12 @@ class H(BaseHTTPRequestHandler):
         self.send_response(code); self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(b))); self.end_headers(); self.wfile.write(b)
     def handle_any(self, method):
-        with open(path("http-log"), "a") as fh: fh.write("%s %s\n" % (method, self.path))
-        if not has("running"):
-            self.close_connection = True; return
         n = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(n).decode() if n else ""
+        with open(path("http-log"), "a") as fh:
+            fh.write("%s %s%s\n" % (method, self.path, " " + body if self.path.endswith("/appium/settings") else ""))
+        if not has("running"):
+            self.close_connection = True; return
         parts = self.path.strip("/").split("/")
         sid = read("session")
         if self.path == "/status": return self.answer(200, {"ready": True})
@@ -56,6 +69,8 @@ class H(BaseHTTPRequestHandler):
         if len(parts) >= 2 and parts[0] == "session" and parts[1] != sid:
             return self.answer(404, {"error": "invalid session id"})
         if parts[2:] == ["appium", "settings"] and method == "POST":
+            if read("settings-mode").strip() == "fail-false" and invisible(body) is False:
+                return self.answer(500, {"error": "unknown error"}, sid)
             write("settings", body); return self.answer(200, None, sid)
         if parts[2:] == ["actions"] and method == "POST":
             with open(path("actions"), "a") as fh: fh.write(json.dumps(json.loads(body)) + "\n")
@@ -66,9 +81,24 @@ class H(BaseHTTPRequestHandler):
             if mode == "hang": time.sleep(3)
             if mode == "fail": return self.answer(500, {"error": "unknown error"}, sid)
             return self.answer(200, None, sid)
+        if parts[2:] == ["source"] and invisible(read("settings")):
+            mode = read("source-mode").strip()
+            if mode == "die-full":
+                os.remove(path("source-mode")); os.remove(path("running"))
+                self.close_connection = True; return
+            if mode == "nonxml-full":
+                os.remove(path("source-mode")); return self.answer(200, "not a tree", sid)
+            k = int(read("sources", "0") or 0)
+            if any(f.startswith("helper-full-") for f in os.listdir(d)):
+                k = int(read("full-sources", "0") or 0) + 1; write("full-sources", str(k))
+                while k > 1 and not has("helper-full-%d.xml" % k): k -= 1
+                return self.answer(200, read("helper-full-%d.xml" % k), sid)
+            while k > 1 and not has("helper-%d.xml" % k): k -= 1
+            return self.answer(200, read("helper-%d.xml" % max(k, 1)), sid)
         if parts[2:] == ["source"]:
             k = int(read("sources", "0") or 0) + 1; write("sources", str(k))
             mode = read("source-mode").strip()
+            if mode.endswith("-full"): mode = ""
             if mode == "die":
                 os.remove(path("source-mode")); os.remove(path("running"))
                 self.close_connection = True; return
