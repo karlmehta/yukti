@@ -2867,11 +2867,11 @@ flow_results(){
   if [ "$st" != 0 ]; then
     if is_android; then apaths; else paths; udid="$(U 2>/dev/null)" || udid=""; fi
   fi
-  out="$("$PY" - "$FLOW_FILE" "$FLOW_REC" "$FLOW_CUR" "$FLOW_ERR" "$FLOW_T0" "$(now)" "$st" "$RESULTS_DIR" "$YUKTI_PLATFORM" "$FLOW_TREE" "$udid" <<'PY'
+  out="$("$PY" - "$FLOW_FILE" "$FLOW_REC" "$FLOW_CUR" "$FLOW_ERR" "$FLOW_T0" "$(now)" "$st" "$RESULTS_DIR" "$YUKTI_PLATFORM" "$FLOW_TREE" "$udid" "$CONFIG" "${YUKTI_VARIANT:-}" <<'PY'
 import os, sys, time
 from xml.sax.saxutils import escape, quoteattr
 
-flow, rec, cur, errf, t0, t1, st, outdir, plat, treef, udid = sys.argv[1:12]
+flow, rec, cur, errf, t0, t1, st, outdir, plat, treef, udid, config, variant = sys.argv[1:14]
 SEP = "\x1f"
 
 def num(v, d=0.0):
@@ -3014,14 +3014,175 @@ def mask_ios(text):
         return out
     return json.dumps(walk(json.loads(text)), indent=1)
 
+# A step that fails on a missing element says the same thing whether the
+# element is not there or the app under test died under it (#63). Once a step
+# has failed, the device is asked which of the two it was, and what it logged
+# about a crash. Nothing here runs when a step passes. The app is the variant of
+# this run ($YUKTI_VARIANT), the one openUrl hands its address to. The config is
+# read here, not through `cfg`: a `die` inside this trap would lose the result.
+# Every question shares one budget of CAPTURE_S, and a device that did not
+# answer once is not asked again - a hung device costs a failed flow the
+# screenshot's 10 seconds and this budget, no more.
+def app_of():
+    import json
+    key = "package" if plat == "android" else "bundleId"
+    if not variant:
+        return None, "no variant for this run ($YUKTI_VARIANT is not set)"
+    try:
+        with open(config, encoding="utf-8") as fh: v = json.load(fh)["variants"][variant]
+    except OSError:
+        return None, "no config at '%s'" % config
+    except ValueError:
+        return None, "'%s' is not valid JSON" % config
+    except (KeyError, TypeError):
+        return None, "no variant '%s' in %s" % (variant, config)
+    val = v.get(key) if isinstance(v, dict) else None
+    if not isinstance(val, str) or not val:
+        return None, "variant '%s' has no '%s' in %s" % (variant, key, config)
+    return val, ""
+
+DEADLINE = [None]
+def ask(cmd):
+    """(status, output) of a command on the device, or (None, why) when it did
+    not answer within what is left of the budget. A device that did not answer
+    is not asked again."""
+    import subprocess
+    if DEADLINE[0] is None: DEADLINE[0] = time.time() + CAPTURE_S
+    left = DEADLINE[0] - time.time()
+    if left <= 0: return None, "the device did not answer an earlier question"
+    try:
+        r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=left)
+    except subprocess.TimeoutExpired:
+        DEADLINE[0] = 0
+        return None, "no answer in %d s" % round(left)
+    except OSError as e:
+        return None, "%s: %s" % (cmd[0], e.strerror or e)
+    return r.returncode, r.stdout.decode("utf-8", "replace").replace("\r", "")
+
+def masked_text(text):
+    # The same rule as the tree, for text that has no fields: every value a
+    # step typed, four characters or more, without case. Nothing else is masked.
+    import re
+    for v in typed:
+        if len(v) >= 4: text = re.sub(re.escape(v), "[typed]", text, flags=re.I)
+    return text
+
+def keep_crash(body, ext):
+    name = os.path.join(outdir, stem + "-crash." + ext)
+    try:
+        with open(name, "w", encoding="utf-8") as fh: fh.write(masked_text(body))
+    except OSError as e:
+        try: os.remove(name)
+        except OSError: pass
+        notes.append("crash log not kept: %s" % (e.strerror or e))
+        return
+    captured.append(name)
+    notes.append("crash log: %s (%d lines)" % (os.path.basename(name), len(body.rstrip("\n").split("\n"))))
+
+def stopped_by():
+    # The flow stopped the app itself when the last step that starts or stops it
+    # was a stop: no crash to look for.
+    last = None
+    for x in steps:
+        if not x["skip"] and x["verb"] in ("launch", "openUrl", "stopApp", "clearState"): last = x
+    return last["i"] if last and last["verb"] in ("stopApp", "clearState") else 0
+
+def android_state(app):
+    st_, out = ask(["adb", "shell", "pidof", app])
+    if st_ is None: return "unread", out
+    # The output decides, not the status: `adb shell` passes the status of the
+    # command on the device only with shell v2.
+    if not out.strip(): return "gone", ""
+    st_, out = ask(["adb", "shell", "dumpsys window | grep -E 'mCurrentFocus|mFocusedApp'"])
+    if st_ is None: return "unread", out
+    import re
+    line = next((l for l in out.split("\n") if "mCurrentFocus=" in l), "") \
+        or next((l for l in out.split("\n") if "mFocusedApp=" in l), "")
+    if not line: return "unread", "dumpsys window named no focus"
+    val = line.split("=", 1)[1].strip()
+    if not val or val == "null": return "unread", "no focused window"
+    # Window{7f3a2c1 u0 com.example/com.example.MainActivity}: the package is
+    # only in that form. A popup, a toast or the navigation bar has none, and
+    # is not proof that another app is in front.
+    m = re.search(r"\bu\d+\s+([A-Za-z0-9_.]+)/([A-Za-z0-9_.$]+)", val)
+    if not m:
+        name = re.sub(r"^\w+\{\S+\s+(u\d+\s+)?|\}$", "", val)
+        # The activity under the system's crash dialog is still ours, which is
+        # why mFocusedApp is not asked here: it would say "in front". The window
+        # name is the one Android 15 shows; another name falls to the line below.
+        if name == "Application Error: " + app:
+            return "unread", "the system shows the crash dialog of " + app
+        return "unread", "focused window has no package (%s)" % name
+    return ("front", "") if m.group(1) == app else ("behind", "%s/%s" % (m.group(1), m.group(2)))
+
+def android_crash():
+    host = time.time()
+    st_, out = ask(["adb", "shell", "date", "+%s"])
+    host = (host + time.time()) / 2
+    if st_ is None: notes.append("crash log not read: " + out); return
+    try: dev = float(out.strip())
+    except ValueError: notes.append("crash log not read: the device did not tell its time"); return
+    # The start of the flow on the device's clock, a second early. logcat reads
+    # -t as a time only with a fraction: digits alone are a number of lines.
+    since = "%.3f" % (num(t0) + (dev - host) - 1)
+    st_, out = ask(["adb", "logcat", "-b", "crash", "-d", "-v", "threadtime", "-t", since])
+    if st_ is None: notes.append("crash log not read: " + out); return
+    if st_ != 0: notes.append("crash log not read: logcat exited with status %d" % st_); return
+    if not out.strip(): notes.append("crash log: none since the flow started"); return
+    keep_crash(out, "txt")
+
+def ios_state(app):
+    st_, out = ask(["xcrun", "simctl", "spawn", udid or "booted", "launchctl", "list"])
+    if st_ is None: return "unread", out
+    if st_ != 0: return "unread", "launchctl list exited with status %d" % st_
+    return ("front", "") if ("UIKitApplication:%s" % app) in out else ("gone", "")
+
+def ios_crash(app):
+    # ReportCrash writes the report on the host, seconds after the crash.
+    d = os.environ.get("YUKTI_IOS_CRASH_DIR") or os.path.expanduser("~/Library/Logs/DiagnosticReports")
+    best = None
+    try: names = os.listdir(d)
+    except OSError as e: notes.append("crash log not read: %s" % (e.strerror or e)); return
+    for n in names:
+        p = os.path.join(d, n)
+        try:
+            if not n.endswith(".ips") or os.path.getmtime(p) < num(t0) - 1: continue
+            with open(p, encoding="utf-8", errors="replace") as fh: body = fh.read()
+        except OSError: continue
+        if app in body and (best is None or os.path.getmtime(p) > best[0]): best = (os.path.getmtime(p), body)
+    if best is None: notes.append("crash log: no crash report yet in DiagnosticReports"); return
+    keep_crash(best[1], "ips")
+
+def app_check(shot_why):
+    """The first line of the message when the app is not where the step needed
+    it, and the type of the failure; the rest goes to notes."""
+    app, why = app_of()
+    if not app: notes.append("app: not checked - " + why); return "", ""
+    if shot_why.startswith("no answer"):
+        notes.append("app state not read: the device did not answer the screenshot")
+        notes.append("crash log not read: the device did not answer the screenshot")
+        return "", ""
+    state, what = android_state(app) if plat == "android" else ios_state(app)
+    top = kind = ""
+    by = stopped_by() if state == "gone" else 0
+    if state == "unread": notes.append("app state not read: " + what)
+    elif state == "front": notes.append("app: %s running%s" % (app, ", in front" if plat == "android" else ""))
+    elif state == "behind": top = "the app %s is running but not in front: %s" % (app, what)
+    elif by: notes.append("app: %s not running - stopped by step %d" % (app, by))
+    else: top, kind = "the app %s is not running: it was gone when the step failed" % app, "AppGone"
+    android_crash() if plat == "android" else ios_crash(app)
+    return top, kind
+
 # A step that started is enough: a `when` that cannot read the screen stops the
 # run before its step is recorded, and that is a failure on "00 flow" - the one
 # where the screen is wanted most. A flow file the builder refused started no
 # step and touched no device, and leaves nothing.
+kind_of_app = ""
 if failing is not None or (int(num(st)) != 0 and read(cur).strip()):
     os.makedirs(outdir, exist_ok=True)
     png = os.path.join(outdir, stem + "-fail.png")
     why = screenshot(png)
+    shot_why = why
     if why:
         try: os.remove(png)
         except OSError: pass
@@ -3048,7 +3209,10 @@ if failing is not None or (int(num(st)) != 0 and read(cur).strip()):
             if by == 0: line += " (read before step 1)"
             elif failing is None or by != failing["i"]: line += " (read by step %d)" % by
             notes.append(line)
+    top, kind_of_app = app_check(shot_why)
+    if top: msg = top + "\n" + msg
     msg = msg + "\n" + "\n".join(notes)
+    if top: notes.insert(0, top)
 
 # A typed string is a credential as often as not - the flow files take
 # ${TEST_PASSWORD} from the environment. The result file records how much was
@@ -3094,7 +3258,9 @@ for step in steps:
 # exit status is the same for both - only the report tells them apart.
 fault = int(num(st)) != 0 and os.path.exists(errf + ".kind")
 if failing is not None:
-    tag, kind = ("error", "DeviceError") if fault else ("failure", "StepFailed")
+    # An app that was gone is the app's failure, not the device's: the tag stays
+    # <failure>, and the type lets a report count crashes without reading text.
+    tag, kind = ("error", "DeviceError") if fault else ("failure", kind_of_app or "StepFailed")
     cases.append('    <testcase classname=%s name=%s time="%.3f">\n'
                  '      <%s message=%s type="%s"/>\n'
                  '    </testcase>'
