@@ -2304,7 +2304,10 @@ BAND_SIDE_PCT=7
 # status bar and the gesture bar, and keeps at least a twentieth of it before
 # the end it travels towards. Across the screen it starts clear of the strips at
 # its sides, where a stack screen takes the touch as the back gesture (#123).
-list_probe(){ ui | "$PY" -c '
+# The strip is asked before the pipe and with no input: `adb shell` reads its
+# standard input, and on the reading side of the pipe it would swallow the tree
+# (measured: the first search of a run on a device failed, the tree never came).
+list_probe(){ local e; e="$(edge_px "$3" </dev/null)"; ui | "$PY" -c '
 import sys,re,json,hashlib
 import xml.etree.ElementTree as ET
 d=sys.argv[1]; near=sys.argv[2].split(); W=int(sys.argv[3]); H=int(sys.argv[4])
@@ -2511,7 +2514,7 @@ chk=[c for c in (sys.argv[10] if len(sys.argv)>10 else "").split(",") if c and c
 here={hx(r[1]) for r in seen if r[1]}
 over="-" if not chk or not here else ("0" if here.intersection(chk) else "1")
 print(rid,fp,lp,*main,dur,*ctl,dur*2,",".join(seam) or "-",over,a1,a2,c1,c2)
-' "$1" "${2:-}" "$3" "$4" "$BAND_TOP" "$BAND_BOTTOM" "$BASIS_H" "$YUKTI_PLATFORM" "${5:-}" "${6:-}" "${7:-}" "$(edge_px "$3")"; }
+' "$1" "${2:-}" "$3" "$4" "$BAND_TOP" "$BAND_BOTTOM" "$BASIS_H" "$YUKTI_PLATFORM" "${5:-}" "${6:-}" "${7:-}" "$e"; }
 # The answers:
 #   0 + coordinates - it is there, and where it has to be
 #   4 + coordinates - in the band, never clear of its edges while the list still

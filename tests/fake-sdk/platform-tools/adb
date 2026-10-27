@@ -20,6 +20,9 @@
 #   tap-fails      present: `input tap` exits 1
 #   screencap      "fail": exit 1; "hang": never answer; absent: a small PNG
 #   no-density     present: `wm density` answers nothing, as a device may
+# `wm density` reads its standard input to the end first, as `adb shell` does on
+# a real device: a call that would swallow a pipe meant for something else
+# swallows it here too.
 #
 # The screen helper (tests/fake-sdk/uia2-server) shares the directory:
 #   running        the helper is up; a dump while it is gets killed (empty)
@@ -103,6 +106,8 @@ elif line == "shell dumpsys input_method":
 elif line == "shell wm size":
     print("Physical size: 1080x2400")
 elif line == "shell wm density":
+    import select
+    if not sys.stdin.isatty() and select.select([sys.stdin], [], [], 0.2)[0]: sys.stdin.read()
     if not has("no-density"): print("Physical density: 420")
 elif args[:1] == ["devices"]:
     print("List of devices attached\nemulator-5554\tdevice\n")
