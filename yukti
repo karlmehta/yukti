@@ -2182,9 +2182,9 @@ screen_h(){ set -- $(screen_wh); printf '%s' "${2:-$BASIS_H}"; }
 # the distance from the edge at which a stack screen takes a touch as the back
 # gesture - and 2 more, since the touch at 50 dp itself is still taken
 # (measured: x 100 px at density 320 moved nothing). iOS is written, not
-# measured - no Mac. Cached for the run like the screen size: scroll_to runs in a command
-# substitution, so a variable would die with it and every search would ask the
-# device again. Without the density the strip is a seventh of the width - 52 dp
+# measured - no Mac. Cached for the run like the screen size: scroll_to runs in
+# a command substitution, so a variable would die with it and every search
+# would ask the device again. Without the density the strip is a seventh of the width - 52 dp
 # of a phone 360 dp wide, the narrowest common one, so wider than needed on any
 # other, two or three times on a tablet - and that answer is not cached, as the
 # screen size fallback is not.
@@ -2415,9 +2415,9 @@ fwd=d in ("down","right")
 # The strips at the sides of the screen (#123). A stack screen takes a touch
 # that starts within 50 dp of its left edge as the back gesture - right edge
 # for a right-to-left layout - and the list under it never gets the drag:
-# measured on the app under test, a swipe down from x 100 px at density 320
-# moved nothing six times out of six, at x 100 too, the same swipe from x 104
-# moved the list. A swipe sideways from there is the back gesture itself. So the
+# measured on the app under test, a swipe down from x 96 px at density 320
+# moved nothing six times out of six, and once at x 100; the same swipe from
+# x 104 moved the list. A swipe sideways from there is the back gesture itself. So the
 # finger goes down at edge or further from either side, edge being 50 dp and a
 # margin of 2 (edge_px); only where it goes down counts, not where it lifts. The
 # right strip is for a right-to-left stack and is not measured. A list too
@@ -2437,7 +2437,7 @@ def line(start,travel,cross):
     if vert: c=off_edge(c)
     else:
         # The whole line moves with its start, and stops at the end of the list.
-        k=off_edge(s)-s; s,e=s+k,min(max(e+k,a1),a2)
+        k=off_edge(s)-s; s,e=s+k,min(max(e+k,a1),a2-1)
     return (c,s,c,e) if vert else (s,c,e,c)
 # First choice: start on a line of text in the list. Text does not hold on to a
 # drag - the list takes it - while a grid point can land on anything, and a

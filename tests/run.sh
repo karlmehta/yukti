@@ -1032,7 +1032,7 @@ helper_screen "$case_dir/adb/helper-2.xml" "$(elist @9 20 200)"
 helper_screen "$case_dir/adb/helper-3.xml" "$(elist @17 20 200 Target)"
 flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target" }'
 run_helper flow "$case_dir/flow.json"
-begin "scroll: a line of text that reaches into the left strip is swiped from its part outside it"
+begin "scroll: a line of text that reaches into the left strip is swiped from its part outside it; asking the density does not take the tree"
 status_is 0; gestures_are 2; gesture_line 1 137 1900 137 300; gesture_line 2 137 1900 137 300
 count_is adb/log "shell wm density" 1; lacks out.txt "density unavailable"
 verdict; helper_done
@@ -1043,7 +1043,7 @@ helper_screen "$case_dir/adb/helper-1.xml" "$(elist @1 10 120)"
 helper_screen "$case_dir/adb/helper-2.xml" "$(elist @8 10 120 Target)"
 flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target" }'
 run_helper flow "$case_dir/flow.json"
-begin "scroll: a line of text all in the left strip is passed over for the next one"
+begin "scroll: a line of text all in the left strip is passed over for another one"
 status_is 0; gestures_are 1; gesture_line 1 540 1700 540 300
 verdict; helper_done
 

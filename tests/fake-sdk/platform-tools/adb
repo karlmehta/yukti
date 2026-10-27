@@ -20,9 +20,9 @@
 #   tap-fails      present: `input tap` exits 1
 #   screencap      "fail": exit 1; "hang": never answer; absent: a small PNG
 #   no-density     present: `wm density` answers nothing, as a device may
-# `wm density` reads its standard input to the end first, as `adb shell` does on
-# a real device: a call that would swallow a pipe meant for something else
-# swallows it here too.
+# `wm density` takes what arrives on its standard input within 0.2 s, as a real
+# `adb shell` forwards its input to the device while the command runs: a call
+# that would swallow a pipe meant for something else swallows it here too.
 #
 # The screen helper (tests/fake-sdk/uia2-server) shares the directory:
 #   running        the helper is up; a dump while it is gets killed (empty)
