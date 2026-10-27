@@ -342,7 +342,10 @@ function refreshScreen(){
   const img=document.getElementById('sim');
   const url='/api/screen?t='+Date.now();
   // fetch to read the device/png headers, then set the blob
+  // A poll already in flight when Inspect turned on must not land a live frame
+  // (and its sizes) under boxes that belong to the snapshot.
   fetch(url).then(r=>{
+    if(INSPECTING) return null;
     const st=r.headers.get('X-Yukti-Screen');
     PNG_W=parseInt(r.headers.get('X-Yukti-Png-W')||'0',10);
     PNG_H=parseInt(r.headers.get('X-Yukti-Png-H')||'0',10);
@@ -353,9 +356,10 @@ function refreshScreen(){
       st==='ok' ? ('sim '+PNG_W+'×'+PNG_H+' px') : 'no simulator — run `yukti up`';
     return r.blob();
   }).then(b=>{
+    if(INSPECTING||!b) return;
     if(img.dataset.url) URL.revokeObjectURL(img.dataset.url);
     const u=URL.createObjectURL(b); img.dataset.url=u; img.src=u;
-  }).catch(e=>{ document.getElementById('simbadge').textContent='screenshot error'; });
+  }).catch(e=>{ if(!INSPECTING) document.getElementById('simbadge').textContent='screenshot error'; });
 }
 
 // ── flows list ──────────────────────────────────────────────────────────
@@ -607,17 +611,19 @@ async function inspectSnap(){
     logLine('! inspect: screen read, no elements');
   } else {
     INSP=a;
-    istatus(a.nodes.length+' elements, boxes in '+(a.units==='pt'?'points':'screen pixels'));
+    istatus(a.nodes.length+' elements, boxes in '+(a.units==='pt'?'points':'screen pixels')
+      +(a.units==='pt'&&!(PT_W&&PT_H)?' - no point basis, boxes not drawn':''));
   }
   renderTree(); renderProps();
 }
 
-// The tree's own units to the picture: px boxes by the PNG, pt boxes by the
-// device's point size (iOS). The PNG's natural size stands in when a header
-// did not say it.
+// The tree's own units to the picture: px boxes by the PNG (its natural size
+// when a header did not say it), pt boxes by the device's point size (iOS). No
+// point size, no boxes - the raster's pixels are not points, the same rule as
+// for a recorded tap.
 function unitsWH(){
   const img=document.getElementById('sim');
-  if(INSP&&INSP.units==='pt') return [PT_W||img.naturalWidth, PT_H||img.naturalHeight];
+  if(INSP&&INSP.units==='pt') return [PT_W, PT_H];
   return [PNG_W||img.naturalWidth, PNG_H||img.naturalHeight];
 }
 
@@ -752,7 +758,9 @@ async function copyId(){
     const n=nodeAtEvent(e);
     if(n) selectNode(n); else { istatus('nothing here'); }
   });
-  window.addEventListener('resize',()=>{ if(INSPECTING&&SEL) drawBox('hlsel',SEL); });
+  // The selected box follows the picture; the hover box is redrawn on the
+  // next mouse move, so it is only hidden here.
+  window.addEventListener('resize',()=>{ if(!INSPECTING) return; drawBox('hlhover',null); if(SEL) drawBox('hlsel',SEL); });
 })();
 
 async function healPrompt(){

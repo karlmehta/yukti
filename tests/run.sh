@@ -2160,6 +2160,20 @@ answer '[n["id"] for n in a["nodes"]] == ["email"]'
 [ -s "$case_dir/idb/log" ] || no "the fake idb was never called"
 verdict
 
+ios_case studio-inspect-ios
+mkdir -p "$case_dir/xcrun"
+tree "$case_dir/idb/desc-1.json" "$(itext email 100 '"ada@example.com"')"
+studio_get /api/inspect YUKTI_PLATFORM=ios PATH="$ROOT/tests/fake-sdk/xcrun-bin:$ROOT/tests/fake-sdk/idb-bin:$PATH" \
+  FAKE_XCRUN_DIR="$case_dir/xcrun"
+begin "studio: /api/inspect on iOS - simulator screenshot, idb tree, boxes in the device's points"
+status_is 0
+answer '__import__("base64").b64decode(a["png"]).startswith(b"\x89PNG")'
+answer 'a["outcome"] == "ok" and a["units"] == "pt" and (a["pt_w"], a["pt_h"]) == (402, 874)'
+answer '[n["id"] for n in a["nodes"]] == ["email"]'
+has xcrun/log "screenshot"
+[ -s "$case_dir/idb/log" ] || no "the fake idb was never called"
+verdict
+
 dev_case studio-ui-not-read
 : > "$case_dir/adb/running"     # a helper holds the device: every dump comes back empty
 studio_get /api/ui YUKTI_PLATFORM=android
