@@ -756,7 +756,9 @@ async function copyId(){
   img.addEventListener('click',e=>{
     if(!INSPECTING) return;
     const n=nodeAtEvent(e);
-    if(n) selectNode(n); else { istatus('nothing here'); }
+    if(n) selectNode(n);
+    // without a basis no point maps to the tree: keep the status that says so
+    else if(unitsWH().every(v=>v)) istatus('nothing here');
   });
   // The selected box follows the picture; the hover box is redrawn on the
   // next mouse move, so it is only hidden here.
