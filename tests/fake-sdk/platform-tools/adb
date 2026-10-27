@@ -19,6 +19,7 @@
 #                  holding a number n: only the first n bursts do
 #   tap-fails      present: `input tap` exits 1
 #   screencap      "fail": exit 1; "hang": never answer; absent: a small PNG
+#   no-density     present: `wm density` answers nothing, as a device may
 #
 # The screen helper (tests/fake-sdk/uia2-server) shares the directory:
 #   running        the helper is up; a dump while it is gets killed (empty)
@@ -102,7 +103,7 @@ elif line == "shell dumpsys input_method":
 elif line == "shell wm size":
     print("Physical size: 1080x2400")
 elif line == "shell wm density":
-    print("Physical density: 420")
+    if not has("no-density"): print("Physical density: 420")
 elif args[:1] == ["devices"]:
     print("List of devices attached\nemulator-5554\tdevice\n")
 elif args == ["get-serialno"]:

@@ -1006,7 +1006,67 @@ helper_screen "$case_dir/adb/helper-2.xml" "$(htiles @5 Target)"
 flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target", "direction": "right" }'
 run_helper flow "$case_dir/flow.json"
 begin "scroll: sideways, the screen-long swipe runs along the row at its height"
-status_is 0; gestures_are 1; gesture_line 1 972 950 108 950
+status_is 0; gestures_are 1; gesture_line 1 942 950 78 950
+verdict; helper_done
+
+# ── the strips at the sides of the screen (#123) ──────────────────────────────
+# On the fake 420 dpi screen a swipe starts 137 px or further from either side:
+# 50 dp, where a stack screen takes the touch as the back gesture, and 2 more.
+# The tile the screen-long swipe takes above is centred at 972, in the right
+# strip, so the swipe starts at 942 on the same tile and keeps its length.
+# elist @n <x1> <x2> [target] - the window of hlist on one long list, with the
+# row the screen-long swipe takes (the 9th, centre 1900) drawn from x1 to x2
+# only; a target takes the row centred at 1100.
+elist(){ local n="${1#@}" a="$2" b="$3" t="${4:-}" k y lab l r
+  printf '<android.widget.ScrollView index="0" package="com.example" class="android.widget.ScrollView" text="" resource-id="com.example:id/list" scrollable="true" bounds="[0,200][1080,2200]" displayed="true">'
+  for k in 1 2 3 4 5 6 7 8 9 10; do y=$(( 100 + k * 200 )); lab="R $(( n + k - 1 ))"; l=40; r=1040
+    [ "$k" = 9 ] && { l="$a"; r="$b"; }
+    [ -n "$t" ] && [ "$y" = 1100 ] && lab="$t"
+    printf '<android.widget.TextView index="0" package="com.example" class="android.widget.TextView" text="%s" resource-id="" scrollable="false" bounds="[%d,%d][%d,%d]" displayed="true" />' "$lab" "$l" $(( y - 50 )) "$r" $(( y + 50 )); done
+  printf '</android.widget.ScrollView>'; }
+
+helper_case scroll-helper-edge-anchor
+: > "$case_dir/adb/running"
+helper_screen "$case_dir/adb/helper-1.xml" "$(elist @1 20 200)"
+helper_screen "$case_dir/adb/helper-2.xml" "$(elist @9 20 200)"
+helper_screen "$case_dir/adb/helper-3.xml" "$(elist @17 20 200 Target)"
+flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target" }'
+run_helper flow "$case_dir/flow.json"
+begin "scroll: a line of text that reaches into the left strip is swiped from its part outside it"
+status_is 0; gestures_are 2; gesture_line 1 137 1900 137 300; gesture_line 2 137 1900 137 300
+count_is adb/log "shell wm density" 1; lacks out.txt "density unavailable"
+verdict; helper_done
+
+helper_case scroll-helper-edge-skip
+: > "$case_dir/adb/running"
+helper_screen "$case_dir/adb/helper-1.xml" "$(elist @1 10 120)"
+helper_screen "$case_dir/adb/helper-2.xml" "$(elist @8 10 120 Target)"
+flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target" }'
+run_helper flow "$case_dir/flow.json"
+begin "scroll: a line of text all in the left strip is passed over for the next one"
+status_is 0; gestures_are 1; gesture_line 1 540 1700 540 300
+verdict; helper_done
+
+helper_case scroll-helper-edge-left
+: > "$case_dir/adb/running"
+helper_screen "$case_dir/adb/helper-1.xml" "$(htiles @5)"
+helper_screen "$case_dir/adb/helper-2.xml" "$(htiles @1 Target)"
+flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target", "direction": "left" }'
+run_helper flow "$case_dir/flow.json"
+begin "scroll: sideways to the left, the swipe does not start in the left strip and run as the back gesture"
+status_is 0; gestures_are 1; gesture_line 1 137 950 1001 950
+verdict; helper_done
+
+helper_case scroll-helper-edge-no-density
+: > "$case_dir/adb/running"; : > "$case_dir/adb/no-density"
+helper_screen "$case_dir/adb/helper-1.xml" "$(elist @1 20 200)"
+helper_screen "$case_dir/adb/helper-2.xml" "$(elist @9 20 200)"
+helper_screen "$case_dir/adb/helper-3.xml" "$(elist @17 20 200 Target)"
+flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target" }'
+run_helper flow "$case_dir/flow.json"
+begin "scroll: without the density the strip is a seventh of the width, and the run says so once"
+status_is 0; gestures_are 2; gesture_line 1 156 1900 156 300; gesture_line 2 156 1900 156 300
+count_is out.txt "screen density unavailable, keeping swipes 156 px off the sides of the screen" 1
 verdict; helper_done
 
 dev_case scroll-dump
