@@ -446,6 +446,14 @@ the search reported the end of a list it had barely begun. Text does not hold on
 to a drag, so a line of text is the first choice, and fixed points in the list
 are the fallback. The swipe travels up to 40% of the visible part of the list.
 
+Across the screen the swipe starts at least 52 dp from either side (52 points
+on iOS). Within 50 dp of its left edge a stack screen takes a touch as the back
+gesture, and the list under it never gets the drag: measured on the app under
+test, a swipe down from x 96 px at density 320 moved nothing six times out of
+six, and once at x 100; the same swipe from x 104 moved the list (#123). A line of text that
+reaches into the strip is used from its part outside it. Without the density
+the strip is a seventh of the screen width, and the run says so once.
+
 On Android with the screen helper up, a search swipes a screen at a time while
 the element is not on the screen: 80% of the visible list, so a fifth of it is
 read twice. The helper plays the gesture with a finger that stops before it

@@ -2177,6 +2177,32 @@ except Exception:
   printf '%s %s' "$BASIS_W" "$BASIS_H"; }
 screen_w(){ set -- $(screen_wh); printf '%s' "${1:-$BASIS_W}"; }
 screen_h(){ set -- $(screen_wh); printf '%s' "${2:-$BASIS_H}"; }
+# The width of the strips at the sides of the screen where a swipe of the search
+# must not start (#123, see list_probe): 50 dp on Android, 50 points on iOS -
+# the distance from the edge at which a stack screen takes a touch as the back
+# gesture - and 2 more, since the touch at 50 dp itself is still taken
+# (measured: x 100 px at density 320 moved nothing). iOS is written, not
+# measured - no Mac. Cached for the run like the screen size: scroll_to runs in
+# a command substitution, so a variable would die with it and every search
+# would ask the device again. Without the density the strip is a seventh of the width - 52 dp
+# of a phone 360 dp wide, the narrowest common one, so wider than needed on any
+# other, two or three times on a tablet - and that answer is not cached, as the
+# screen size fallback is not.
+edge_px(){ local w="$1" d f m out
+  is_android || { printf '52'; return 0; }
+  d="$(run_dir)"; f=''; m=''
+  [ -n "$d" ] && { f="$d/edge-$YUKTI_PLATFORM"; m="$f.fallback"; }
+  [ -n "$f" ] && [ -s "$f" ] && { cat "$f"; return 0; }
+  if out="$(adpi)"; then
+    out=$(( (52 * out + 159) / 160 ))
+    [ -n "$f" ] && { ( printf '%s' "$out" > "$f" ) 2>/dev/null || true; rm -f "$m" 2>/dev/null || true; }
+    printf '%s' "$out"; return 0
+  fi
+  if [ -z "$m" ] || [ ! -f "$m" ]; then
+    warn "screen density unavailable, keeping swipes $(( w * 52 / 360 )) px off the sides of the screen" >&2
+    [ -n "$m" ] && { ( : > "$m" ) 2>/dev/null || true; }
+  fi
+  printf '%s' $(( w * 52 / 360 )); }
 # A recorded step carries a point on the screen it was recorded on. Studio records
 # at BASIS_W x BASIS_H points; replayed on a 720x1600 phone the same pair lands
 # somewhere else. Scale it where a recorded number ENTERS the run - not inside
@@ -2276,8 +2302,12 @@ BAND_SIDE_PCT=7
 # it that scrolls, slides or draws a chart by itself. It starts between 15% and
 # 90% of the visible part of the list, which is already clipped clear of the
 # status bar and the gesture bar, and keeps at least a twentieth of it before
-# the end it travels towards.
-list_probe(){ ui | "$PY" -c '
+# the end it travels towards. Across the screen it starts clear of the strips at
+# its sides, where a stack screen takes the touch as the back gesture (#123).
+# The strip is asked before the pipe and with no input: `adb shell` reads its
+# standard input, and on the reading side of the pipe it would swallow the tree
+# (measured: the first search of a run on a device failed, the tree never came).
+list_probe(){ local e; e="$(edge_px "$3" </dev/null)"; ui | "$PY" -c '
 import sys,re,json,hashlib
 import xml.etree.ElementTree as ET
 d=sys.argv[1]; near=sys.argv[2].split(); W=int(sys.argv[3]); H=int(sys.argv[4])
@@ -2382,9 +2412,32 @@ def free(x,y): return not any(g[0]<=x<g[2] and g[1]<=y<g[3] for g in grabs)
 # down and right reveal what lies further on: the finger travels towards the
 # start of the axis. up and left, the other way.
 fwd=d in ("down","right")
+# The strips at the sides of the screen (#123). A stack screen takes a touch
+# that starts within 50 dp of its left edge as the back gesture - right edge
+# for a right-to-left layout - and the list under it never gets the drag:
+# measured on the app under test, a swipe down from x 96 px at density 320
+# moved nothing six times out of six, and once at x 100; the same swipe from
+# x 104 moved the list. A swipe sideways from there is the back gesture itself. So the
+# finger goes down at edge or further from either side, edge being 50 dp and a
+# margin of 2 (edge_px); only where it goes down counts, not where it lifts. The
+# right strip is for a right-to-left stack and is not measured. A list too
+# narrow for both keeps the left one alone, and a list that lies in it from
+# side to side is swiped where it is.
+edge=int(sys.argv[12]) if len(sys.argv)>12 and sys.argv[12] else 0
+eranges=[r for r in ((max(x1,edge),min(x2,W-edge)-1),(max(x1,edge),x2-1)) if r[0]<=r[1]][:1]
+def off_edge(x,b1=None,b2=None):
+    if not eranges: return x
+    lo,hi=eranges[0]
+    if b1 is not None: lo,hi=max(lo,b1),min(hi,b2-1)
+    if lo>hi: return None
+    return min(max(x,lo),hi)
 def line(start,travel,cross):
     s=a1+(a2-a1)*start//100; e=s-(a2-a1)*travel//100 if fwd else s+(a2-a1)*travel//100
     c=c1+(c2-c1)*cross//100
+    if vert: c=off_edge(c)
+    else:
+        # The whole line moves with its start, and stops at the end of the list.
+        k=off_edge(s)-s; s,e=s+k,min(max(e+k,a1),a2-1)
     return (c,s,c,e) if vert else (s,c,e,c)
 # First choice: start on a line of text in the list. Text does not hold on to a
 # drag - the list takes it - while a grid point can land on anything, and a
@@ -2399,14 +2452,18 @@ def anchor(aim,travel,least,away=None):
     for r in rows:
         if not r[3] or not shown(r): continue
         cx,cy=(r[0][0]+r[0][2])//2,(r[0][1]+r[0][3])//2
-        if not free(cx,cy): continue
-        g=(pos(r)-a1)*100//(a2-a1)
+        # Out of the strips at the sides, along the same line of text; a line
+        # that lies all in a strip is passed over.
+        cx=off_edge(cx,r[0][0],r[0][2])
+        if cx is None or not free(cx,cy): continue
+        p=cy if vert else cx
+        g=(p-a1)*100//(a2-a1)
         if not fwd: g=100-g
         if not (15<=g<=90): continue
         t=min(travel,g-5)
         if t<least: continue
         # Another line than the first swipe took, not merely the next one down.
-        if away is not None and abs(pos(r)-away)<=max(8,(a2-a1)*3//100): continue
+        if away is not None and abs(p-away)<=max(8,(a2-a1)*3//100): continue
         if best is None or abs(g-aim)<best[0]: best=(abs(g-aim),cx,cy,t)
     if best is None: return None
     cx,cy=best[1],best[2]; s=cy if vert else cx; dl=(a2-a1)*best[3]//100
@@ -2420,7 +2477,8 @@ def pick(starts,travel,crosses,skip=None):
             if free(p[0],p[1]): return p,cr
     return None,None
 # The edges of the list are in the grid too: a chart or a card rarely reaches
-# the side of the screen, and a finger there is on the list itself.
+# the side of the screen. A point of the grid in a strip at the side of the
+# screen is moved out of it by line (#123).
 crosses=[50,30,70,20,80,10,90]
 # A far swipe covers a screen less a fifth: it starts near the end it leaves
 # and stops a fifth short of the other, so the rows at that end are read twice.
@@ -2456,7 +2514,7 @@ chk=[c for c in (sys.argv[10] if len(sys.argv)>10 else "").split(",") if c and c
 here={hx(r[1]) for r in seen if r[1]}
 over="-" if not chk or not here else ("0" if here.intersection(chk) else "1")
 print(rid,fp,lp,*main,dur,*ctl,dur*2,",".join(seam) or "-",over,a1,a2,c1,c2)
-' "$1" "${2:-}" "$3" "$4" "$BAND_TOP" "$BAND_BOTTOM" "$BASIS_H" "$YUKTI_PLATFORM" "${5:-}" "${6:-}" "${7:-}"; }
+' "$1" "${2:-}" "$3" "$4" "$BAND_TOP" "$BAND_BOTTOM" "$BASIS_H" "$YUKTI_PLATFORM" "${5:-}" "${6:-}" "${7:-}" "$e"; }
 # The answers:
 #   0 + coordinates - it is there, and where it has to be
 #   4 + coordinates - in the band, never clear of its edges while the list still
