@@ -45,10 +45,23 @@ Environment knobs (all optional):
 - **Left — Test Cases**: every `flows/*.json`, with **Run** and **Edit**.
 - **Center — Simulator**: a live screenshot (polled ~1s via `yukti shot`). In
   **record mode**, clicking the image taps the device. Below it: a run/record log
-  (Run streams live over SSE, showing PASS/FAIL) plus a type box, Refresh, Show
-  Elements (accessibility tree), Dismiss modals, and AI Heal.
+  (Run streams live over SSE, showing PASS/FAIL) plus a type box, Refresh,
+  Inspect, Dismiss modals, and AI Heal.
 - **Right — Flow Editor**: the step list (reorder ↑/↓, delete ✕), quick-add
   buttons, and **Save Flow**.
+
+## Inspect
+
+**Inspect** works like uiautomatorviewer. It takes the screenshot and the
+element tree as one snapshot and freezes the picture (Refresh or **Snapshot
+again** takes a new one). The right column shows the tree and the properties of
+the selected element: id, text, class, bounds. Point at the screen to see the
+box under the cursor; click to select it, or click a row of the tree. **Copy
+id** copies the id that `tapId`, `waitForId` and `assertVisibleId` take - the
+`resource-id` segment on Android, `AXUniqueId` on iOS. A text with no id of
+its own shows the id of the nearest element above it. While recording, Inspect
+is off and a click taps, as before. On iOS idb gives a flat list, so the tree
+has no levels.
 
 ## Record-and-replay
 
@@ -103,7 +116,8 @@ and *act*”) intact — swap agents by changing one env var, no code edits.
 | `GET /api/flow?name=X` | the flow JSON |
 | `POST /api/flow` `{name,steps}` | save/create `flows/<name>.json` |
 | `GET /api/screen` | live PNG (`yukti shot`), no-cache; PNG + device pt sizes in `X-Yukti-*` headers |
-| `GET /api/ui` | parsed accessibility tree (`yukti ui`) |
+| `GET /api/ui` | parsed element tree (`yukti ui`): `outcome` (`ok` / `empty` / `not_read` + `error`), `units` of the boxes (`px` Android, `pt` iOS), `nodes` (id, text, class, bounds, parent, depth); the older `elements` (`label`, `type`, centre `x`,`y`), `raw` and `ok` as before |
+| `GET /api/inspect` | one snapshot for Inspect: the `/api/ui` answer without `raw`, plus `png` (base64), `png_w`/`png_h`, `pt_w`/`pt_h` |
 | `POST /api/run` `{name}` | `yukti flow` streamed over SSE; PASS/FAIL |
 | `POST /api/tap` `{x,y}` | `yukti tap x y` |
 | `POST /api/type` `{text}` | `yukti type "text"` |

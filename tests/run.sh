@@ -2015,5 +2015,180 @@ status_is 1; red_is failure StepFailed 1 0
 has res/flow.xml "app: com.example running"; has res/flow.xml "crash log: no crash report yet in DiagnosticReports"
 verdict
 
+# ── Studio: the screen tree behind Inspect (#125) ───────────────────────────
+# Studio read `yukti ui` only as idb's JSON and swallowed the error on a
+# uiautomator dump, so on Android its element list was always empty. The
+# reader is checked as functions (imported, no server) and through a live
+# Studio on a free port, driving the same fakes the engine cases use.
+
+# studio_py <python> - run python with Studio's module importable as `server`.
+studio_py(){ "$PY3" -c "import sys; sys.path.insert(0, '$ROOT/studio'); import server
+$1" > "$case_dir/out.txt" 2>&1; run_status=$?; }
+
+# studio_get <route> [VAR=value...] - start Studio against this case's fakes,
+# GET the route once, keep the answer in $case_dir/answer.json, stop Studio.
+studio_get(){ local route="$1"; shift
+  env -u ANDROID_SDK_ROOT -u YUKTI_VARIANT -u YUKTI_DEVICE_PT_W -u YUKTI_DEVICE_PT_H \
+    ANDROID_HOME="$ROOT/tests/fake-sdk" YUKTI_HELPER=0 YUKTI_CONFIG="$case_dir/cfg.json" \
+    FAKE_ADB_DIR="$case_dir/adb" FAKE_IDB_DIR="$case_dir/idb" TMPDIR="$case_dir/tmp" "$@" \
+    "$PY3" - "$ROOT/studio/server.py" "$route" > "$case_dir/answer.json" 2> "$case_dir/out.txt" <<'PY'
+import os, socket, subprocess, sys, time, urllib.error, urllib.request
+srv, route = sys.argv[1:3]
+s = socket.socket(); s.bind(("127.0.0.1", 0)); port = s.getsockname()[1]; s.close()
+p = subprocess.Popen([sys.executable, srv], env=dict(os.environ, YUKTI_STUDIO_PORT=str(port)),
+                     stdout=subprocess.DEVNULL)
+try:
+    for _ in range(100):
+        try:
+            body = urllib.request.urlopen("http://127.0.0.1:%d%s" % (port, route), timeout=60).read()
+            break
+        except urllib.error.URLError:
+            time.sleep(0.1)
+    else:
+        sys.exit("Studio did not answer on port %d" % port)
+    sys.stdout.write(body.decode("utf-8"))
+finally:
+    p.terminate(); p.wait()
+PY
+  run_status=$?; }
+
+# answer <python expression over a, the answer> - one claim about the answer.
+answer(){ "$PY3" -c "import json,sys; a=json.load(open(sys.argv[1])); sys.exit(0 if ($1) else 1)" \
+  "$case_dir/answer.json" 2>/dev/null || no "answer is not: $1"; }
+
+# A nested dump: a frame holding a tab with an id, a bare view, and a card with
+# a button inside it. The bare view has neither id nor text and is still a node
+# of the tree, as uiautomatorviewer shows it.
+nested_dump(){ printf '%s' '<?xml version="1.0" encoding="UTF-8" standalone="yes" ?><hierarchy rotation="0">' \
+  '<node index="0" text="" resource-id="" class="android.widget.FrameLayout" content-desc="" clickable="false" enabled="true" scrollable="false" bounds="[0,0][1080,2400]">' \
+  '<node index="0" text="Today" resource-id="com.example:id/today-tab" class="android.widget.TextView" content-desc="" clickable="true" enabled="true" scrollable="false" bounds="[0,2200][540,2400]" />' \
+  '<node index="1" text="" resource-id="" class="android.view.View" content-desc="" clickable="false" enabled="true" scrollable="false" bounds="[540,2200][1080,2400]" />' \
+  '<node index="2" text="" resource-id="com.example:id/card" class="android.view.ViewGroup" content-desc="Water card" clickable="true" enabled="true" scrollable="false" bounds="[40,400][1040,800]">' \
+  '<node index="0" text="Add" resource-id="com.example:id/card-add" class="android.widget.Button" content-desc="" clickable="true" enabled="false" scrollable="false" bounds="[800,600][1000,760]" />' \
+  '</node></node></hierarchy>'; }
+
+new_case studio-tree-dump
+nested_dump > "$case_dir/dump.xml"
+studio_py "
+u, n = server.parse_tree(open('$case_dir/dump.xml').read())
+assert u == 'px', u
+assert len(n) == 5, len(n)
+assert [x['id'] for x in n] == ['', 'today-tab', '', 'card', 'card-add'], [x['id'] for x in n]
+assert n[1]['rid'] == 'com.example:id/today-tab' and n[1]['text'] == 'Today'
+assert [x['parent'] for x in n] == [None, 0, 0, 0, 3] and [x['depth'] for x in n] == [0, 1, 1, 1, 2]
+assert n[4]['bounds'] == [800, 600, 1000, 760] and n[4]['enabled'] is False and n[4]['clickable'] is True
+assert n[3]['desc'] == 'Water card'
+e = server.legacy_elements(n)
+assert [(x['label'], x['x'], x['y']) for x in e] == [('Today', 270, 2300), ('Water card', 540, 600), ('Add', 900, 680)], e
+print('tree ok')"
+begin "studio: a uiautomator dump is a tree with ids, nesting and boxes in px"
+status_is 0; has out.txt "tree ok"
+verdict
+
+new_case studio-tree-idb
+tree "$case_dir/desc.json" "$(itext email 100 '"ada@example.com"')" \
+  '{"type":"Button","AXUniqueId":"","AXLabel":"Sign in","AXValue":null,"enabled":true,"frame":{"x":40.5,"y":200,"width":300,"height":44}}'
+studio_py "
+u, n = server.parse_tree(open('$case_dir/desc.json').read())
+assert u == 'pt', u
+assert [(x['id'], x['text'], x['desc'], x['cls']) for x in n] == [('email', '', 'ada@example.com', 'TextField'), ('', 'Sign in', '', 'Button')], n
+assert n[1]['bounds'] == [40.5, 200, 340.5, 244] and n[1]['enabled'] is True
+assert [x['depth'] for x in n] == [0, 0] and [x['parent'] for x in n] == [None, None]
+# The old list, exactly as before: AXLabel, else AXValue, and the centre.
+assert [(x['label'], x['type'], x['x'], x['y']) for x in server.legacy_elements(n)] == [('ada@example.com', 'TextField', 190, 120), ('Sign in', 'Button', 190, 222)]
+print('idb ok')"
+begin "studio: an idb tree is a flat list with AXUniqueId as the id, boxes in pt"
+status_is 0; has out.txt "idb ok"
+verdict
+
+new_case studio-tree-garbage
+studio_py "
+for raw, word in (('<hierarchy><node', 'does not parse'), ('[{', 'does not parse'), ('{}', 'neither'), ('error: no device', 'neither')):
+    try:
+        server.parse_tree(raw)
+    except ValueError as e:
+        assert word in str(e), (raw, str(e))
+    else:
+        raise AssertionError('parsed: %r' % raw)
+a = server.ui_answer(0, '<hierarchy><node', '')
+assert a['outcome'] == 'not_read' and 'does not parse' in a['error'] and a['elements'] == [], a
+assert server.ui_answer(0, '', '')['outcome'] == 'empty'
+assert server.ui_answer(0, '<hierarchy rotation=\"0\"></hierarchy>', '')['outcome'] == 'empty'
+print('garbage ok')"
+begin "studio: an answer it cannot read is not_read with the reason, never an empty screen"
+status_is 0; has out.txt "garbage ok"
+verdict
+
+new_case studio-pick
+nested_dump > "$case_dir/dump.xml"
+studio_py "
+u, n = server.parse_tree(open('$case_dir/dump.xml').read())
+pick = lambda x, y: (server.pick_at(n, x, y) or {}).get('i')
+assert pick(900, 700) == 4      # the button, not the card or the frame around it
+assert pick(100, 500) == 3      # the card
+assert pick(700, 2300) == 2     # the bare view: no id, no text, still the node there
+assert pick(540, 2300) == 2     # left edge belongs to the box ...
+assert pick(539, 2300) == 1     # ... the right edge does not
+assert pick(1080, 100) is None  # past the right edge of the screen
+z = [dict(n[0], i=0, bounds=[0, 0, 0, 0]), dict(n[0], i=1, depth=1, bounds=[10, 10, 20, 20]), dict(n[0], i=2, depth=2, bounds=[10, 10, 20, 20]), dict(n[0], i=3, depth=2, bounds=[10, 10, 20, 20])]
+assert server.pick_at(z, 0, 0) is None             # an empty box is never picked
+assert server.pick_at(z, 15, 15)['i'] == 3         # a tie: deeper, then later
+print('pick ok')"
+begin "studio: the node under a point is the smallest box holding it"
+status_is 0; has out.txt "pick ok"
+verdict
+
+dev_case studio-ui-android
+nested_dump > "$case_dir/adb/dump-1.xml"
+studio_get /api/ui YUKTI_PLATFORM=android
+begin "studio: /api/ui on Android reads the dump - nodes, units, and the old list"
+status_is 0; fake_used
+answer 'a["outcome"] == "ok" and a["ok"] is True and a["units"] == "px"'
+answer '[n["id"] for n in a["nodes"]] == ["", "today-tab", "", "card", "card-add"]'
+answer '[e["label"] for e in a["elements"]] == ["Today", "Water card", "Add"]'
+answer 'a["raw"].startswith("<?xml")'
+verdict
+
+ios_case studio-ui-ios
+tree "$case_dir/idb/desc-1.json" "$(itext email 100 '"ada@example.com"')"
+studio_get /api/ui YUKTI_PLATFORM=ios PATH="$ROOT/tests/fake-sdk/idb-bin:$PATH"
+begin "studio: /api/ui on iOS - the old list as before, and the id from AXUniqueId"
+status_is 0
+answer 'a["outcome"] == "ok" and a["units"] == "pt"'
+answer 'a["elements"] == [{"label": "ada@example.com", "type": "TextField", "x": 190, "y": 120}]'
+answer '[n["id"] for n in a["nodes"]] == ["email"]'
+[ -s "$case_dir/idb/log" ] || no "the fake idb was never called"
+verdict
+
+dev_case studio-ui-not-read
+: > "$case_dir/adb/running"     # a helper holds the device: every dump comes back empty
+studio_get /api/ui YUKTI_PLATFORM=android
+begin "studio: /api/ui when the screen cannot be read - not_read with the engine's reason"
+status_is 0; fake_used
+answer 'a["outcome"] == "not_read" and a["ok"] is False and a["elements"] == [] and a["nodes"] == []'
+answer '"uiautomator produced no usable dump" in a["error"] and "\x1b" not in a["error"]'
+verdict
+
+dev_case studio-inspect-android
+nested_dump > "$case_dir/adb/dump-1.xml"
+studio_get /api/inspect YUKTI_PLATFORM=android
+begin "studio: /api/inspect - the screenshot and the tree in one answer"
+status_is 0; fake_used
+answer '__import__("base64").b64decode(a["png"]).startswith(b"\x89PNG")'
+answer 'a["outcome"] == "ok" and a["units"] == "px" and len(a["nodes"]) == 5 and "raw" not in a'
+answer 'all(k in a for k in ("png_w", "png_h", "pt_w", "pt_h"))'
+has adb/log "exec-out screencap"
+verdict
+
+dev_case studio-inspect-no-shot
+nested_dump > "$case_dir/adb/dump-1.xml"
+echo fail > "$case_dir/adb/screencap"
+studio_get /api/inspect YUKTI_PLATFORM=android
+begin "studio: /api/inspect without a screenshot - not_read, and no tree read for it"
+status_is 0; fake_used
+answer 'a["outcome"] == "not_read" and a["error"] and "png" not in a'
+lacks adb/log "uiautomator dump"
+verdict
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

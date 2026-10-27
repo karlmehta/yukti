@@ -85,7 +85,7 @@ All JSON unless noted. SSE = `text/event-stream`.
 | `GET /api/flow?name=` | one flow's JSON |
 | `POST /api/flow` | save a flow |
 | `GET /api/screen` | current simulator PNG (base64) |
-| `GET /api/ui` | accessibility tree (JSON, points) |
+| `GET /api/ui` | element tree (JSON); boxes in `units`: px on Android, pt on iOS; `elements` keeps its old form |
 | `POST /api/config` | set test creds + active variant (memory only) |
 | `POST /api/up` *(SSE)* | build+boot+install+launch a variant; body `{variant, gitRef?}` |
 | `POST /api/run` *(SSE)* | run one flow; body `{name}` |

@@ -82,6 +82,25 @@
   .hint{color:var(--dim);font-size:11px;margin-top:6px}
   .namebox{width:100%;margin-bottom:8px;font-weight:600}
   .empty{color:var(--dim);font-size:12px;padding:8px;text-align:center}
+  /* Inspect: boxes over the screenshot, the tree and the properties */
+  .hl{position:absolute;display:none;pointer-events:none;border:2px solid var(--warn);
+    background:rgba(210,153,34,.12);border-radius:2px}
+  .hl.sel{border-color:var(--accent);background:rgba(63,182,255,.14)}
+  #sim.insp{cursor:crosshair}
+  main.inspecting{grid-template-columns:260px 1fr 480px}
+  button.on{border-color:var(--accent);color:var(--accent)}
+  .itree{font:12px/1.5 var(--mono);border:1px solid var(--line);border-radius:6px;
+    background:#0b0f16;max-height:46vh;overflow:auto;padding:4px 0}
+  .itree .row{white-space:nowrap;cursor:pointer;padding:0 6px}
+  .itree .row:hover{background:var(--panel2)}
+  .itree .row.sel{background:#12304a}
+  .itree .tw{display:inline-block;width:14px;color:var(--dim)}
+  .itree .cls{color:var(--dim)} .itree .rid{color:var(--accent)} .itree .txt{color:var(--txt)}
+  .props{width:100%;border-collapse:collapse;font:12px/1.4 var(--mono);margin-top:8px}
+  .props td{border-bottom:1px solid var(--line);padding:4px 6px;vertical-align:top;word-break:break-all}
+  .props td:first-child{color:var(--dim);width:110px;word-break:normal}
+  .istatus{color:var(--dim);font:12px/1.4 var(--mono);margin:6px 0}
+  .istatus.err{color:var(--err)}
 </style>
 </head>
 <body>
@@ -130,14 +149,16 @@
     <div class="stage">
       <div class="simwrap">
         <img id="sim" class="norec" alt="simulator" />
+        <div class="hl" id="hlhover"></div>
+        <div class="hl sel" id="hlsel"></div>
         <div class="simbadge" id="simbadge">simulator</div>
         <div class="recdot" id="recdot"><span class="d"></span>REC</div>
       </div>
 
       <div class="bar">
         <button class="g" id="recbtn" onclick="toggleRecord()">● Start Recording</button>
-        <button onclick="refreshScreen()">Refresh</button>
-        <button onclick="loadUi()">Show Elements</button>
+        <button onclick="INSPECTING?inspectSnap():refreshScreen()">Refresh</button>
+        <button id="inspbtn" onclick="toggleInspect()" title="like uiautomatorviewer: the screen frozen, its element tree and the properties of what you point at">Inspect</button>
         <button onclick="doDismiss()">Dismiss modals</button>
         <span id="runstatus" class="status"></span>
       </div>
@@ -152,8 +173,27 @@
     </div>
   </section>
 
-  <!-- RIGHT: editor / record controls -->
+  <!-- RIGHT: editor / record controls, or the inspector while Inspect is on -->
   <section class="col right">
+    <div id="inspectpane" hidden>
+      <h2>Inspect</h2>
+      <div class="bar">
+        <button class="p" onclick="inspectSnap()">Snapshot again</button>
+        <button onclick="toggleInspect()">Close</button>
+      </div>
+      <div class="istatus" id="istatus"></div>
+      <div class="itree" id="itree"></div>
+      <table class="props" id="iprops"></table>
+      <div class="bar" style="margin-top:8px">
+        <button id="copyid" onclick="copyId()" disabled>Copy id</button>
+        <span class="hint" id="copyhint" style="margin:0"></span>
+      </div>
+      <div class="hint">
+        Point at the screen to find an element, click to select it. The id is what
+        <code>tapId</code>, <code>waitForId</code> and <code>assertVisibleId</code> take.
+      </div>
+    </div>
+    <div id="editorpane">
     <h2>Flow Editor</h2>
     <input class="namebox" id="editname" placeholder="flow name (file: my-flow.json)" />
     <ul class="steps" id="steplist"><li class="empty">no steps — record or add below</li></ul>
@@ -184,6 +224,7 @@
       box appends a <code>type</code> step. Steps write to <code>flows/&lt;name&gt;.json</code>
       — replay with Run.
     </div>
+    </div>
   </section>
 </main>
 
@@ -193,6 +234,7 @@ let RECORDING=false;
 let STEPS=[];
 let PNG_W=0,PNG_H=0,PT_W=0,PT_H=0;
 let pollTimer=null;
+let INSPECTING=false, INSP=null, SEL=null, FOLDED=new Set();
 
 // ── logging ──────────────────────────────────────────────────────────────
 function logLine(text){
@@ -291,9 +333,12 @@ function startPolling(){
   if(pollTimer) clearInterval(pollTimer);
   pollTimer=setInterval(()=>{ if(document.visibilityState==='visible') refreshScreen(); },1000);
 }
+function stopPolling(){ if(pollTimer){ clearInterval(pollTimer); pollTimer=null; } }
 
 // ── screenshot ────────────────────────────────────────────────────────────
 function refreshScreen(){
+  // While Inspect is on, the picture is the snapshot the boxes belong to.
+  if(INSPECTING) return;
   const img=document.getElementById('sim');
   const url='/api/screen?t='+Date.now();
   // fetch to read the device/png headers, then set the blob
@@ -455,7 +500,10 @@ async function saveFlow(){
 
 // ── record / drive ──────────────────────────────────────────────────────────
 function toggleRecord(){
+  // A click either taps (recording) or points (inspecting), never both.
+  if(!RECORDING && INSPECTING) toggleInspect();
   RECORDING=!RECORDING;
+  document.getElementById('inspbtn').disabled=RECORDING;
   const btn=document.getElementById('recbtn'), img=document.getElementById('sim');
   document.getElementById('recdot').classList.toggle('on',RECORDING);
   if(RECORDING){ btn.textContent='■ Stop Recording'; btn.className='d'; img.classList.remove('norec');
@@ -516,12 +564,196 @@ async function doDismiss(){
   refreshScreen();
 }
 
-async function loadUi(){
-  logLine('── accessibility tree ──');
-  const r=await (await fetch('/api/ui')).json();
-  if(!r.elements || !r.elements.length){ logLine('! no elements (sim idle or idb not ready)'); return; }
-  r.elements.slice(0,40).forEach(el=> logLine('  ['+el.x+','+el.y+'] '+el.label));
+// ── inspect ─────────────────────────────────────────────────────────────────
+// uiautomatorviewer in the panel: one snapshot (picture + tree, /api/inspect),
+// frozen while Inspect is on; hover shows the box under the cursor, a click
+// selects it in the tree and lists its properties. Everything read from the
+// screen goes in through textContent - it is the app's text, not ours.
+async function toggleInspect(){
+  INSPECTING=!INSPECTING;
+  document.getElementById('inspbtn').classList.toggle('on',INSPECTING);
+  document.getElementById('inspectpane').hidden=!INSPECTING;
+  document.getElementById('editorpane').hidden=INSPECTING;
+  document.getElementById('sim').classList.toggle('insp',INSPECTING);
+  document.querySelector('main').classList.toggle('inspecting',INSPECTING);
+  if(INSPECTING){ stopPolling(); await inspectSnap(); }
+  else { INSP=null; SEL=null; drawBox('hlhover',null); drawBox('hlsel',null); startPolling(); refreshScreen(); }
 }
+
+function istatus(text,err){ const el=document.getElementById('istatus');
+  el.textContent=text; el.className='istatus'+(err?' err':''); }
+
+async function inspectSnap(){
+  istatus('reading the screen…');
+  let a;
+  try{ a=await (await fetch('/api/inspect')).json(); }
+  catch(e){ istatus('✗ cannot reach server: '+e,true); return; }
+  if(!INSPECTING) return;
+  INSP=null; SEL=null; FOLDED=new Set();
+  drawBox('hlhover',null); drawBox('hlsel',null);
+  if(a.png){
+    const img=document.getElementById('sim');
+    if(img.dataset.url){ URL.revokeObjectURL(img.dataset.url); img.dataset.url=''; }
+    img.src='data:image/png;base64,'+a.png;
+    PNG_W=a.png_w||0; PNG_H=a.png_h||0;
+    if(a.pt_w&&a.pt_h){ PT_W=a.pt_w; PT_H=a.pt_h; setDevPill(); }
+    document.getElementById('simbadge').textContent='snapshot '+(PNG_W+'×'+PNG_H)+' px';
+  }
+  if(a.outcome==='not_read'){
+    istatus('✗ screen not read: '+(a.error||'no reason given'),true);
+    logLine('✗ inspect: screen not read - '+(a.error||'no reason given'));
+  } else if(a.outcome==='empty'){
+    istatus('screen read, no elements');
+    logLine('! inspect: screen read, no elements');
+  } else {
+    INSP=a;
+    istatus(a.nodes.length+' elements, boxes in '+(a.units==='pt'?'points':'screen pixels'));
+  }
+  renderTree(); renderProps();
+}
+
+// The tree's own units to the picture: px boxes by the PNG, pt boxes by the
+// device's point size (iOS). The PNG's natural size stands in when a header
+// did not say it.
+function unitsWH(){
+  const img=document.getElementById('sim');
+  if(INSP&&INSP.units==='pt') return [PT_W||img.naturalWidth, PT_H||img.naturalHeight];
+  return [PNG_W||img.naturalWidth, PNG_H||img.naturalHeight];
+}
+
+// The same rule as server.py pick_at(); change both together.
+function pickAt(nodes,x,y){
+  let best=null, bk=null;
+  for(const n of nodes){
+    const [x0,y0,x1,y1]=n.bounds;
+    if(x1<=x0||y1<=y0||!(x0<=x&&x<x1&&y0<=y&&y<y1)) continue;
+    const k=[(x1-x0)*(y1-y0),-n.depth,-n.i];
+    if(!bk||k[0]<bk[0]||(k[0]===bk[0]&&(k[1]<bk[1]||(k[1]===bk[1]&&k[2]<bk[2])))){ best=n; bk=k; }
+  }
+  return best;
+}
+
+function nodeAtEvent(e){
+  if(!INSP) return null;
+  const img=document.getElementById('sim'), r=img.getBoundingClientRect();
+  const [W,H]=unitsWH(); if(!W||!H||!r.width||!r.height) return null;
+  return pickAt(INSP.nodes,(e.clientX-r.left)*W/r.width,(e.clientY-r.top)*H/r.height);
+}
+
+function drawBox(id,n){
+  const box=document.getElementById(id);
+  const img=document.getElementById('sim');
+  const [W,H]=unitsWH();
+  if(!n||!W||!H){ box.style.display='none'; return; }
+  const r=img.getBoundingClientRect(), pr=img.parentElement.getBoundingClientRect();
+  const [x0,y0,x1,y1]=n.bounds, sx=r.width/W, sy=r.height/H;
+  box.style.left=(r.left-pr.left+x0*sx)+'px'; box.style.top=(r.top-pr.top+y0*sy)+'px';
+  box.style.width=Math.max(1,(x1-x0)*sx)+'px'; box.style.height=Math.max(1,(y1-y0)*sy)+'px';
+  box.style.display='block';
+}
+
+function shortCls(c){ return (c||'').split('.').pop(); }
+
+function renderTree(){
+  const box=document.getElementById('itree'); box.textContent='';
+  if(!INSP){ return; }
+  const nodes=INSP.nodes, kids=new Set(nodes.filter(n=>n.parent!==null).map(n=>n.parent));
+  const hidden=new Set();
+  for(const n of nodes){
+    if(n.parent!==null&&(FOLDED.has(n.parent)||hidden.has(n.parent))){ hidden.add(n.i); continue; }
+    const row=document.createElement('div');
+    row.className='row'+(SEL&&SEL.i===n.i?' sel':''); row.dataset.i=n.i;
+    // An app tree nests 40 levels deep and more: a full step per level pushes
+    // the text out of the column, so the step is small and the indent capped.
+    row.style.paddingLeft=(6+Math.min(n.depth*6,180))+'px';
+    row.title='depth '+n.depth;
+    const tw=document.createElement('span'); tw.className='tw';
+    tw.textContent=kids.has(n.i)?(FOLDED.has(n.i)?'▸':'▾'):'';
+    tw.onclick=ev=>{ ev.stopPropagation(); FOLDED.has(n.i)?FOLDED.delete(n.i):FOLDED.add(n.i); renderTree(); };
+    const cls=document.createElement('span'); cls.className='cls'; cls.textContent=shortCls(n.cls)||'node';
+    row.append(tw,cls);
+    if(n.id){ const s=document.createElement('span'); s.className='rid'; s.textContent=' #'+n.id; row.append(s); }
+    const label=n.text||n.desc;
+    if(label){ const s=document.createElement('span'); s.className='txt';
+      s.textContent=' "'+(label.length>40?label.slice(0,40)+'…':label)+'"'; row.append(s); }
+    row.onclick=()=>selectNode(n);
+    row.onmouseenter=()=>drawBox('hlhover',n);
+    row.onmouseleave=()=>drawBox('hlhover',null);
+    box.appendChild(row);
+  }
+}
+
+function renderProps(){
+  const t=document.getElementById('iprops'); t.textContent='';
+  const copy=document.getElementById('copyid'); document.getElementById('copyhint').textContent='';
+  copy.disabled=true;
+  if(!SEL) return;
+  const n=SEL, b=n.bounds, ios=INSP&&INSP.units==='pt';
+  const rows=ios
+    ? [['id',n.id],['label',n.text],['value',n.desc],['type',n.cls],
+       ['frame',b[0]+','+b[1]+'  '+(b[2]-b[0])+'×'+(b[3]-b[1])+' pt'],['enabled',n.enabled]]
+    : [['id',n.id],['resource-id',n.rid],['text',n.text],['content-desc',n.desc],['class',n.cls],
+       ['bounds','['+b[0]+','+b[1]+']['+b[2]+','+b[3]+']'],
+       ['clickable',n.clickable],['enabled',n.enabled],['scrollable',n.scrollable]];
+  for(const [k,v] of rows){
+    const tr=document.createElement('tr'), a=document.createElement('td'), c=document.createElement('td');
+    a.textContent=k; c.textContent=(v===null||v===undefined||v==='')?'—':String(v);
+    if(k==='id') c.id='selid';
+    tr.append(a,c); t.appendChild(tr);
+  }
+  const up=n.id?null:enclosingId(n);
+  if(up){
+    // The smallest box under a click is often a bare text inside the element
+    // that carries the id - a tab's label inside the tab. Name that id here.
+    const tr=document.createElement('tr'), a=document.createElement('td'), c=document.createElement('td');
+    a.textContent='enclosing id'; c.textContent=up.id;
+    c.title=shortCls(up.cls)+', '+(n.depth-up.depth)+' level(s) up';
+    tr.append(a,c); t.insertBefore(tr,t.children[1]||null);
+  }
+  copy.disabled=!(n.id||up);
+  if(!n.id) document.getElementById('copyhint').textContent=up?'copies the enclosing id':'no id here or above - find it by text';
+}
+
+function enclosingId(n){
+  for(let p=n.parent; p!==null&&p!==undefined; p=INSP.nodes[p].parent){
+    if(INSP.nodes[p].id) return INSP.nodes[p];
+  }
+  return null;
+}
+
+function selectNode(n){
+  SEL=n;
+  // open every folded ancestor, so the selected row is in the tree
+  for(let p=n.parent; p!==null&&p!==undefined; p=INSP.nodes[p].parent) FOLDED.delete(p);
+  renderTree(); renderProps(); drawBox('hlsel',n);
+  const row=document.querySelector('#itree .row.sel'); if(row) row.scrollIntoView({block:'nearest'});
+}
+
+async function copyId(){
+  const src=SEL&&(SEL.id?SEL:enclosingId(SEL));
+  if(!src) return;
+  const hint=document.getElementById('copyhint');
+  try{ await navigator.clipboard.writeText(src.id); hint.textContent='copied: '+src.id; }
+  catch(e){
+    // no clipboard access: select the id, Ctrl+C does the rest
+    const cell=SEL.id?document.getElementById('selid'):document.querySelector('#iprops tr:nth-child(2) td:last-child');
+    if(cell){ const r=document.createRange(); r.selectNodeContents(cell);
+      const s=window.getSelection(); s.removeAllRanges(); s.addRange(r); }
+    hint.textContent='selected - press Ctrl+C';
+  }
+}
+
+(function(){
+  const img=document.getElementById('sim');
+  img.addEventListener('mousemove',e=>{ if(INSPECTING) drawBox('hlhover',nodeAtEvent(e)); });
+  img.addEventListener('mouseleave',()=>drawBox('hlhover',null));
+  img.addEventListener('click',e=>{
+    if(!INSPECTING) return;
+    const n=nodeAtEvent(e);
+    if(n) selectNode(n); else { istatus('nothing here'); }
+  });
+  window.addEventListener('resize',()=>{ if(INSPECTING&&SEL) drawBox('hlsel',SEL); });
+})();
 
 async function healPrompt(){
   const goal=prompt('AI self-heal goal (what should the agent accomplish?)');
