@@ -15,11 +15,14 @@ Everything is stdlib: http.server + socketserver + subprocess + json.
 Never uses shell=True with interpolation — every CLI call is a list argv.
 """
 
+import base64
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
+import xml.etree.ElementTree as ET
 from http.server import BaseHTTPRequestHandler
 from socketserver import ThreadingMixIn
 from http.server import HTTPServer
@@ -195,6 +198,142 @@ def read_png_dimensions(path):
         return None
 
 
+# ── screen tree (Inspect) ────────────────────────────────────────────────────
+# `yukti ui` answers in the platform's own form: the uiautomator dump (XML) on
+# Android, idb's describe-all (a JSON list) on iOS. The panel used to read only
+# the second and swallow the error on the first, so on Android it showed an
+# empty screen and blamed idb. The answer says what it is, so it is read by its
+# form and not by the platform the panel believes it drives.
+BOUNDS_RE = re.compile(r"\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]")
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def parse_tree(raw):
+    """(units, nodes) from what `yukti ui` printed. Units are those of the
+    boxes: "px" for a dump (screen pixels), "pt" for idb (points). Each node:
+    i, parent, depth, id (what tapId compares), rid, text, desc, cls,
+    bounds [x0, y0, x1, y1], clickable, enabled, scrollable. Anything that is
+    neither form raises ValueError - the caller reports it, never drops it."""
+    s = (raw or "").strip()
+    if not s:
+        return "", []
+    if s.startswith("<"):
+        return "px", _dump_nodes(s)
+    if s.startswith("["):
+        return "pt", _idb_nodes(s)
+    raise ValueError("neither a uiautomator dump nor an idb tree: %r" % s[:80])
+
+
+def _dump_nodes(text):
+    # The dump comes from the device under test - our own emulator or phone.
+    # expat resolves no external entities, so the stdlib parser is enough here.
+    try:
+        root = ET.fromstring(text)
+    except ET.ParseError as e:
+        raise ValueError("the uiautomator dump does not parse: %s" % e)
+    nodes = []
+
+    def walk(el, parent, depth):
+        for ch in el:
+            if ch.tag != "node":
+                continue
+            a = ch.attrib
+            rid = a.get("resource-id", "")
+            m = BOUNDS_RE.fullmatch(a.get("bounds", "").strip())
+            i = len(nodes)
+            nodes.append({
+                "i": i, "parent": parent, "depth": depth,
+                # com.app:id/email -> email, the segment tapId compares
+                "id": rid.split("/")[-1], "rid": rid,
+                "text": a.get("text", ""), "desc": a.get("content-desc", ""),
+                "cls": a.get("class", ""),
+                "bounds": [int(v) for v in m.groups()] if m else [0, 0, 0, 0],
+                "clickable": a.get("clickable") == "true",
+                "enabled": a.get("enabled") == "true",
+                "scrollable": a.get("scrollable") == "true",
+            })
+            walk(ch, i, depth + 1)
+
+    walk(root, None, 0)
+    return nodes
+
+
+def _idb_nodes(text):
+    # idb gives a flat list: no nesting to show, every node at depth 0.
+    try:
+        tree = json.loads(text)
+    except ValueError as e:
+        raise ValueError("the idb tree does not parse: %s" % e)
+    if not isinstance(tree, list):
+        raise ValueError("the idb tree is not a list")
+    nodes = []
+    for e in tree:
+        if not isinstance(e, dict):
+            continue
+        f = e.get("frame") or {}
+        x0, y0 = f.get("x", 0) or 0, f.get("y", 0) or 0
+        nodes.append({
+            "i": len(nodes), "parent": None, "depth": 0,
+            "id": str(e.get("AXUniqueId") or ""), "rid": "",
+            "text": str(e.get("AXLabel") or ""), "desc": str(e.get("AXValue") or ""),
+            "cls": str(e.get("type") or ""),
+            "bounds": [x0, y0, x0 + (f.get("width", 0) or 0), y0 + (f.get("height", 0) or 0)],
+            "clickable": None, "enabled": e.get("enabled"), "scrollable": None,
+        })
+    return nodes
+
+
+def legacy_elements(nodes):
+    """The list /api/ui gave before the inspector, kept for whoever reads it
+    (docs/AF-INTEGRATION.md): one entry per node with a label, and its centre.
+    The label is the text, else the content-desc (iOS: AXLabel, else AXValue)."""
+    out = []
+    for n in nodes:
+        label = n["text"] or n["desc"]
+        if not label:
+            continue
+        b = n["bounds"]
+        out.append({"label": label, "type": n["cls"],
+                    "x": int((b[0] + b[2]) / 2), "y": int((b[1] + b[3]) / 2)})
+    return out
+
+
+def pick_at(nodes, x, y):
+    """The node under a point: of the boxes holding it (left/top edge in,
+    right/bottom out, empty boxes never), the smallest; on a tie the deeper,
+    then the later in the dump - the one drawn on top. None when no box holds
+    it. index.html pickAt() is the same rule for hover; change both together."""
+    best = None
+    for n in nodes:
+        x0, y0, x1, y1 = n["bounds"]
+        if x1 <= x0 or y1 <= y0 or not (x0 <= x < x1 and y0 <= y < y1):
+            continue
+        key = ((x1 - x0) * (y1 - y0), -n["depth"], -n["i"])
+        if best is None or key < best[0]:
+            best = (key, n)
+    return best[1] if best else None
+
+
+def ui_answer(rc, out, err):
+    """What /api/ui says about one `yukti ui` call. The old fields (elements,
+    raw, ok) stay; outcome tells apart the three cases the old answer could
+    not: not_read (with the reason), empty, ok."""
+    raw = (out or "").strip()
+    ans = {"raw": raw, "ok": rc == 0, "units": "", "nodes": [], "elements": []}
+    if rc != 0:
+        ans.update(outcome="not_read",
+                   error=ANSI_RE.sub("", err or "").strip() or "yukti ui exited %d" % rc)
+        return ans
+    try:
+        units, nodes = parse_tree(raw)
+    except ValueError as e:
+        ans.update(outcome="not_read", error=str(e))
+        return ans
+    ans.update(units=units, nodes=nodes, elements=legacy_elements(nodes),
+               outcome="ok" if nodes else "empty")
+    return ans
+
+
 # ── flow file helpers ────────────────────────────────────────────────────────
 def safe_flow_path(name):
     """Resolve a flow file name to an absolute path inside FLOWS_DIR only.
@@ -357,6 +496,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._get_screen()
             if route == "/api/ui":
                 return self._get_ui()
+            if route == "/api/inspect":
+                return self._get_inspect()
             return self._json({"error": "not found", "path": route}, 404)
         except Exception as e:
             return self._json({"error": str(e)}, 500)
@@ -473,30 +614,32 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(png)
 
     def _get_ui(self):
-        rc, out, err = run_yukti(["ui"], timeout=45)
-        elements = []
-        raw = out.strip()
-        if raw:
-            try:
-                tree = json.loads(raw)
-                for e in tree:
-                    frame = e.get("frame", {}) or {}
-                    label = e.get("AXLabel") or e.get("AXValue") or ""
-                    if not label:
-                        continue
-                    cx = int(frame.get("x", 0) + frame.get("width", 0) / 2)
-                    cy = int(frame.get("y", 0) + frame.get("height", 0) / 2)
-                    elements.append(
-                        {
-                            "label": str(label),
-                            "type": e.get("type", ""),
-                            "x": cx,
-                            "y": cy,
-                        }
-                    )
-            except Exception:
-                pass
-        return self._json({"elements": elements, "raw": raw, "ok": rc == 0})
+        return self._json(ui_answer(*run_yukti(["ui"], timeout=45)))
+
+    def _get_inspect(self):
+        # The screenshot and the tree as one pair, taken one after the other,
+        # as uiautomatorviewer does: the boxes are drawn over this picture, not
+        # over whatever the 1 s screen poll shows next. Its own file name, so a
+        # poll still in flight cannot overwrite the picture between shot and read.
+        rc, out, err = run_yukti_binary(["shot", "studio-inspect.png"], timeout=45)
+        path = out.decode("utf-8", "replace").strip() if isinstance(out, bytes) else ""
+        if rc != 0 or not path or not os.path.exists(path):
+            return self._json({
+                "outcome": "not_read", "units": "", "nodes": [], "elements": [],
+                "error": ANSI_RE.sub("", err or "").strip()
+                or "no screenshot (yukti shot exited %d)" % rc,
+            })
+        with open(path, "rb") as f:
+            png = f.read()
+        dims = read_png_dimensions(path) or (0, 0)
+        pt = point_basis(dims)
+        global LAST_PT
+        LAST_PT = pt
+        ans = ui_answer(*run_yukti(["ui"], timeout=45))
+        ans.pop("raw", None)
+        ans.update(png=base64.b64encode(png).decode("ascii"),
+                   png_w=dims[0], png_h=dims[1], pt_w=pt[0], pt_h=pt[1])
+        return self._json(ans)
 
     def _run_flow(self):
         """Run `yukti flow <file>` and stream stdout live via SSE."""
