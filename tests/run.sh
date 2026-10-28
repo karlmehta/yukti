@@ -601,6 +601,32 @@ status_is 0; ireads_are 2; ityped_is ""
 has out.txt "field empty at 190,220"
 verdict
 
+# isecure <id> <y> - a secure text field: dots while it holds text, its
+# placeholder (the hint) while it is empty, as a simulator reports one.
+isecure(){ printf '{"type":"TextField","role_description":"secure text field","AXUniqueId":"%s","AXLabel":"","AXValue":"@SECURE@","frame":{"x":40,"y":%s,"width":300,"height":40}}' \
+  "$1" "$2"; }
+
+ios_case ios-clear-secure-empty
+printf 'Password' > "$case_dir/idb/hint"
+tree "$case_dir/idb/desc-1.json" "$(isecure password 200)"
+flow_file "$case_dir/flow.json" '{ "do": "clearTextId", "value": "password" }'
+run_ios "$case_dir/flow.json"
+begin "clearTextId on iOS: an empty secure field's placeholder is not text to delete"
+status_is 0; ityped_is ""
+has out.txt "the field was already empty"
+lacks idb/log "ui key"
+verdict
+
+ios_case ios-clear-secure
+printf 'Password' > "$case_dir/idb/hint"; printf 'old pass' > "$case_dir/idb/typed"
+tree "$case_dir/idb/desc-1.json" "$(isecure password 200)"
+flow_file "$case_dir/flow.json" '{ "do": "clearTextId", "value": "password" }'
+run_ios "$case_dir/flow.json"
+begin "clearTextId on iOS: a secure field is empty once its dots give way to the placeholder"
+status_is 0; ityped_is ""
+has out.txt "field empty at 190,220"
+verdict
+
 # ── the resident screen helper (#105) ────────────────────────────────────────
 # The helper is tests/fake-sdk/uia2-server, one per case on a free port, and
 # the fake adb forwards to it. The cache starts with the pinned pair already

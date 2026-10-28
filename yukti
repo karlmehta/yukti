@@ -1624,6 +1624,9 @@ if best is None: sys.exit(3)
 x,y,w,h=frame(best)
 v=str(best.get("AXValue") or "")
 t=(str(best.get("type") or "")+" "+str(best.get("role_description") or "")).lower()
+# A secure field reports what it holds as dots and, while it is empty, its
+# placeholder: a value without a dot is the placeholder, not text to delete.
+if "secure" in t and "\u2022" not in v: v=""
 sys.stdout.write("%d\x1f%s\x1f%s" % (int(x+w-4), "field" if ("field" in t or "textview" in t) else t or "element", v.replace("\n"," ")))
 ' "$1" "$2"; }
 # iOS has no select-all through idb, so the deletes are counted from what the

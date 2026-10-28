@@ -6,8 +6,10 @@
 #   log            every call, one per line
 #   desc-<n>.json  the tree for the n-th `ui describe-all`; past the last one,
 #                  the last. The string "@TYPED@" in it becomes the text typed
-#                  so far, "@DOTS@" one dot per character of it
-#   hint           what "@TYPED@" shows while nothing is typed: a placeholder
+#                  so far, "@DOTS@" one dot per character of it, "@SECURE@" what
+#                  a secure field reports: the dots, or the hint while it is empty
+#   hint           what "@TYPED@" and "@SECURE@" show while nothing is typed: a
+#                  placeholder
 #   describes      how many trees were read - a case counts the reads with it
 #   typed          the text in the field; a case may write it first
 #   lossy          present: every `ui text` loses its last character (one key
@@ -41,7 +43,8 @@ if ops[:2] == ["ui", "describe-all"]:
     while n > 1 and not has("desc-%d.json" % n): n -= 1
     t = read("typed")
     sys.stdout.write(read("desc-%d.json" % n).replace('"@TYPED@"', json.dumps(t or read("hint")))
-                     .replace('"@DOTS@"', json.dumps("\u2022" * len(t))))
+                     .replace('"@DOTS@"', json.dumps("\u2022" * len(t)))
+                     .replace('"@SECURE@"', json.dumps("\u2022" * len(t) if t else read("hint"))))
 elif ops[:2] == ["ui", "text"]:
     q = ops[2]
     if has("lossy"):
