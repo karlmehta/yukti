@@ -350,6 +350,20 @@ chip field it removes the last chip, in a split OTP input it moves into the
 previous cell. That is true of the delete the verb sends and of the one it sends
 to tell an empty field from a hint.
 
+On iOS an empty field reports its placeholder as its value, and idb names no
+placeholder, so what is left after the deletes is told apart by one digit: it
+replaces a placeholder and is added to text, and it is deleted again before the
+field is judged. A field that acts on every key, such as a search, sees the
+digit come and go. A field that formats what is typed (a phone mask) or takes no
+digits cannot be told apart, and the step fails.
+
+`hideKeyboard` on iOS closes the keyboard with a short drag just above the keys,
+which works on a screen whose scroll view dismisses the keyboard on a drag. A
+swipe step that finds the keyboard up closes it the same way. Neither ever
+presses Return, because Return can submit the form or put a newline into a
+multi-line field. On a screen the drag does not close, the step fails. A flow
+whose form may take Return closes the keyboard with `pressKey enter` instead.
+
 The flow file itself is now read in full before the first step runs, and a file
 the runner cannot turn into steps stops the run there: JSON it cannot parse, no
 `steps` list, a `null` where a value belongs, a variable that is not set, or a

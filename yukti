@@ -1624,12 +1624,15 @@ if best is None: sys.exit(3)
 x,y,w,h=frame(best)
 v=str(best.get("AXValue") or "")
 t=(str(best.get("type") or "")+" "+str(best.get("role_description") or "")).lower()
+# A secure field reports what it holds as dots and, while it is empty, its
+# placeholder: a value without a dot is the placeholder, not text to delete.
+if "secure" in t and "\u2022" not in v: v=""
 sys.stdout.write("%d\x1f%s\x1f%s" % (int(x+w-4), "field" if ("field" in t or "textview" in t) else t or "element", v.replace("\n"," ")))
 ' "$1" "$2"; }
 # iOS has no select-all through idb, so the deletes are counted from what the
 # field actually holds - measured in the dump, not a constant that was right for
 # one form. The read-back after them is the same rule as on Android.
-iclear(){ paths; local x="${1:?x}" y="${2:?y}" vb="${3:-clearText}" u out edge val after i kind
+iclear(){ paths; local x="${1:?x}" y="${2:?y}" vb="${3:-clearText}" u out edge val after probe i kind
   # iOS is written from the idb docs and has not been run - see AF-USER-GUIDE.
   # The field is read before the tap: what it holds and where its edge is are
   # the same either side of it, and clearTextId has already found the field in
@@ -1649,8 +1652,23 @@ iclear(){ paths; local x="${1:?x}" y="${2:?y}" vb="${3:-clearText}" u out edge v
   for i in $(seq 1 ${#val}); do idb ui key --udid "$u" 42 >/dev/null 2>&1 || die "$vb: the simulator refused the delete key"; done
   out="$(ifield_probe "$x" "$y")" || lookup_die $? "$vb: no element at $x,$y any more"
   IFS=$'\x1f' read -r edge kind after <<<"$out"
-  [ -z "$after" ] || die "$vb: the field still holds text after ${#val} deletes"
-  ok "$vb: field empty at $x,$y"; }
+  [ -n "$after" ] || { ok "$vb: field empty at $x,$y"; return 0; }
+  # An empty plain field reports its placeholder as its value too, and idb names
+  # no placeholder: what is left is the placeholder, or text the deletes missed.
+  # One digit tells them apart - it replaces a placeholder and is added to text -
+  # and is deleted again before the field is judged.
+  idb ui text --udid "$u" 1 >/dev/null 2>&1 || die "$vb: the simulator refused a key"
+  sleep .3
+  out="$(ifield_probe "$x" "$y")" || lookup_die $? "$vb: no element at $x,$y any more"
+  IFS=$'\x1f' read -r edge kind probe <<<"$out"
+  [ "$probe" != "$after" ] || die "$vb: the field is not empty after ${#val} deletes, or shows a placeholder and took no digit to tell"
+  idb ui key --udid "$u" 42 >/dev/null 2>&1 || die "$vb: the simulator refused the delete key"
+  [ "$probe" = 1 ] || die "$vb: the field still holds text after ${#val} deletes"
+  sleep .3
+  out="$(ifield_probe "$x" "$y")" || lookup_die $? "$vb: no element at $x,$y any more"
+  IFS=$'\x1f' read -r edge kind probe <<<"$out"
+  [ "$probe" = "$after" ] || die "$vb: the digit typed to tell a placeholder from text is still in the field"
+  ok "$vb: field empty at $x,$y (it shows its placeholder)"; }
 clear_field(){ is_android && { aclear "$1" "$2" "${3:-}"; return; }; iclear "$1" "$2" "${3:-}"; }
 # One key, by name, on either platform. iOS has no Back key at all - saying so is
 # the whole point: a flow that asks for one on iOS is wrong about the platform,
@@ -1674,15 +1692,34 @@ press_key(){ local name="${1:-}" u
   ok "pressKey '$name'"; }
 # Whether a keyboard is up, asked of iOS the only way idb allows: the tree names
 # the keyboard as an element. Same three outcomes as the Android side.
+# A simulator (iOS 26.5, measured) lists no element of type keyboard: only its
+# keys, as plain buttons - a "delete" key and one button per letter or digit.
+# The keyboard is up when the tree holds that "delete" (lower case: an app's
+# own button says "Delete") and at least nine one-character buttons (a number
+# pad has ten). With "geom" it also prints where to drag to close it: the
+# middle of the keys, and the top of their highest row.
 ikb_shown(){ paths; ui | "$PY" -c '
 import json,sys
 try: els=json.loads(sys.stdin.read())
 except ValueError: sys.exit(2)   # an unreadable tree is not "no keyboard"
+def frame(e):
+    b=e.get("frame") or {}
+    g=lambda *k: float(next((b[n] for n in k if n in b), 0) or 0)
+    return g("x","X"), g("y","Y"), g("width","Width"), g("height","Height")
+kb=None; keys=[]; delete=False
 for e in els:
     t=(str(e.get("type") or "")+" "+str(e.get("role_description") or "")).lower()
-    if "keyboard" in t: sys.exit(0)
-sys.exit(1)
-'; }
+    label=str(e.get("AXLabel") or "")
+    if "keyboard" in t: kb=frame(e)
+    if "button" in t and label=="delete": delete=True
+    if "button" in t and len(label)==1: keys.append(frame(e))
+if kb is None and not (delete and len(keys)>=9): sys.exit(1)
+if len(sys.argv)>1:
+    x,y,w,h = kb if kb else (min(k[0] for k in keys), min(k[1] for k in keys),
+                             max(k[0]+k[2] for k in keys)-min(k[0] for k in keys), 0)
+    sys.stdout.write("%d %d" % (int(x+w/2), int(y)))
+sys.exit(0)
+' "$@"; }
 # hideKeyboard is pressKey with a postcondition, which is why it is built on it
 # rather than beside it. The postcondition is the verb: an Android form longer
 # than one field cannot be filled while the keyboard is up, so "the keys were
@@ -1696,12 +1733,12 @@ hide_keyboard(){ local st=0
 # Closing a keyboard that is up, with the check that it closed. `who` opens every
 # line it prints, so a swipe step that closes one says it in its own name.
 kb_close(){ local who="$1" st=0
+  is_android || { ikb_close "$who"; return; }
   press_key escape >/dev/null || die "$who: the device refused the escape key"
   sleep 0.6
   kb_shown || st=$?
   if [ "$st" -eq 2 ]; then device_fault; die "$who: the device did not report its input method state"; fi
   if [ "$st" -eq 1 ]; then ok "$who: keyboard closed"; return 0; fi
-  if ! is_android; then die "$who: the keyboard is still up after escape"; fi
   # Back is the fallback and never the mechanism, and only while the keyboard is
   # still up: the IME consumes it then. Measured on API 35 - with the keyboard
   # already down the same key walked the rig out of the app and, one screen
@@ -1713,6 +1750,27 @@ kb_close(){ local who="$1" st=0
   if [ "$st" -eq 2 ]; then device_fault; die "$who: the device did not report its input method state"; fi
   if [ "$st" -eq 1 ]; then ok "$who: keyboard closed (Back)"; return 0; fi
   die "$who: the keyboard is still up after escape and Back"; }
+# iOS has no key that only closes the keyboard: escape does nothing to it. The
+# way that types and submits nothing, measured on a simulator (iOS 26.5), is a
+# short drag down just above the keys: a scroll view that dismisses on drag
+# closes it. Return closes a single-line field too, but it can also submit the
+# form or put a newline into a multi-line field, so it is never pressed for the
+# flow: a keyboard the drag leaves up stops the step, and a flow whose form may
+# take Return says so with pressKey 'enter'.
+ikb_close(){ local who="$1" u st=0 geo x top
+  paths; u="$(U)"
+  geo="$(ikb_shown geom)" || st=$?
+  if [ "$st" -eq 2 ]; then device_fault; die "$who: the device did not report its input method state"; fi
+  [ "$st" -eq 1 ] && { ok "$who: keyboard closed"; return 0; }
+  read -r x top <<<"$geo"
+  [ "$top" -gt 200 ] || die "$who: the keyboard reaches up to y $top, with no room above it for the drag that closes it - if this form may take Return, close it with pressKey 'enter'"
+  idb ui swipe --udid "$u" "$x" $((top-150)) "$x" $((top-60)) --duration 0.3 >/dev/null 2>&1 \
+    || die "$who: the simulator refused the drag above the keyboard"
+  sleep 0.6
+  st=0; ikb_shown || st=$?
+  if [ "$st" -eq 2 ]; then device_fault; die "$who: the device did not report its input method state"; fi
+  if [ "$st" -eq 1 ]; then ok "$who: keyboard closed (drag)"; return 0; fi
+  die "$who: the keyboard is still up after a drag above it - this screen does not close it on a drag; if this form may take Return, close it with pressKey 'enter'"; }
 # A swipe that starts on a soft keyboard is taken by the keyboard: Gboard reads a
 # drag across its keys as glide typing and types a word into the focused field,
 # and the list behind it does not move. So the first swipe of a step asks first.

@@ -601,6 +601,143 @@ status_is 0; ireads_are 2; ityped_is ""
 has out.txt "field empty at 190,220"
 verdict
 
+# A plain field shows its placeholder as its value while it is empty, as a
+# secure one does. idb names no placeholder, so one digit tells the two apart.
+ios_case ios-clear-placeholder-empty
+printf 'Email' > "$case_dir/idb/hint"
+tree "$case_dir/idb/desc-1.json" "$(itext email 200)"
+flow_file "$case_dir/flow.json" '{ "do": "clearTextId", "value": "email" }'
+run_ios "$case_dir/flow.json"
+begin "clearTextId on iOS: an empty plain field's placeholder is not text left behind"
+status_is 0; ireads_are 4; ityped_is ""
+has out.txt "field empty at 190,220 (it shows its placeholder)"
+has idb/log "ui text --udid FAKE-UDID 1"
+verdict
+
+ios_case ios-clear-placeholder
+printf 'Email' > "$case_dir/idb/hint"; printf 'old text' > "$case_dir/idb/typed"
+tree "$case_dir/idb/desc-1.json" "$(itext email 200)"
+flow_file "$case_dir/flow.json" '{ "do": "clearTextId", "value": "email" }'
+run_ios "$case_dir/flow.json"
+begin "clearTextId on iOS: a plain field is empty once its text gives way to the placeholder"
+status_is 0; ityped_is ""
+has out.txt "field empty at 190,220 (it shows its placeholder)"
+verdict
+
+# deletes_are <n> - how many delete keys reached the fake.
+deletes_are(){ local got; got="$(grep -c 'ui key --udid FAKE-UDID 42' "$case_dir/idb/log" 2>/dev/null)"
+  [ "$got" = "$1" ] || no "$got deletes, wanted $1"; }
+
+ios_case ios-clear-placeholder-text-left
+tree "$case_dir/idb/desc-1.json" "$(itext email 200 '"zqx old"')"
+tree "$case_dir/idb/desc-2.json" "$(itext email 200 '"zqx"')"
+tree "$case_dir/idb/desc-3.json" "$(itext email 200 '"zqx1"')"
+tree "$case_dir/idb/desc-4.json" "$(itext email 200 '"zqx"')"
+flow_file "$case_dir/flow.json" '{ "do": "clearTextId", "value": "email" }'
+run_ios "$case_dir/flow.json"
+begin "clearTextId on iOS: text the deletes missed is not taken for a placeholder, and the digit goes again"
+status_is 1; deletes_are 8
+has out.txt "the field still holds text after 7 deletes"
+lacks out.txt "zqx"
+verdict
+
+ios_case ios-clear-placeholder-no-digit
+tree "$case_dir/idb/desc-1.json" "$(itext email 200 '"Email"')"
+flow_file "$case_dir/flow.json" '{ "do": "clearTextId", "value": "email" }'
+run_ios "$case_dir/flow.json"
+begin "clearTextId on iOS: a value no key changes is not called a placeholder"
+status_is 1; deletes_are 5
+has out.txt "took no digit to tell"
+verdict
+
+ios_case ios-clear-placeholder-digit-stays
+tree "$case_dir/idb/desc-1.json" "$(itext email 200 '"Email"')"
+tree "$case_dir/idb/desc-3.json" "$(itext email 200 '"1"')"
+flow_file "$case_dir/flow.json" '{ "do": "clearTextId", "value": "email" }'
+run_ios "$case_dir/flow.json"
+begin "clearTextId on iOS: a digit its delete did not take back stops the step"
+status_is 1
+has out.txt "the digit typed to tell a placeholder from text is still in the field"
+verdict
+
+# isecure <id> <y> - a secure text field: dots while it holds text, its
+# placeholder (the hint) while it is empty, as a simulator reports one.
+isecure(){ printf '{"type":"TextField","role_description":"secure text field","AXUniqueId":"%s","AXLabel":"","AXValue":"@SECURE@","frame":{"x":40,"y":%s,"width":300,"height":40}}' \
+  "$1" "$2"; }
+
+ios_case ios-clear-secure-empty
+printf 'Password' > "$case_dir/idb/hint"
+tree "$case_dir/idb/desc-1.json" "$(isecure password 200)"
+flow_file "$case_dir/flow.json" '{ "do": "clearTextId", "value": "password" }'
+run_ios "$case_dir/flow.json"
+begin "clearTextId on iOS: an empty secure field's placeholder is not text to delete"
+status_is 0; ityped_is ""
+has out.txt "the field was already empty"
+lacks idb/log "ui key"
+verdict
+
+ios_case ios-clear-secure
+printf 'Password' > "$case_dir/idb/hint"; printf 'old pass' > "$case_dir/idb/typed"
+tree "$case_dir/idb/desc-1.json" "$(isecure password 200)"
+flow_file "$case_dir/flow.json" '{ "do": "clearTextId", "value": "password" }'
+run_ios "$case_dir/flow.json"
+begin "clearTextId on iOS: a secure field is empty once its dots give way to the placeholder"
+status_is 0; ityped_is ""
+has out.txt "field empty at 190,220"
+verdict
+
+# hideKeyboard on iOS. A simulator lists its keyboard as plain buttons, one per
+# key, and no element of type keyboard; escape does not close it.
+ios_case ios-hide-keyboard-drag
+: > "$case_dir/idb/keyboard"; : > "$case_dir/idb/drag-closes"
+tree "$case_dir/idb/desc-1.json" "$(itext email 200 '"a@b.c"')"
+flow_file "$case_dir/flow.json" '{ "do": "hideKeyboard" }'
+run_ios "$case_dir/flow.json"
+begin "hideKeyboard on iOS: keys listed as buttons are a keyboard, and a drag above it closes it"
+status_is 0
+has out.txt "keyboard closed (drag)"
+has idb/log "ui swipe"
+lacks idb/log "ui key"
+verdict
+
+# Return would close this keyboard, and could submit the form with it.
+ios_case ios-hide-keyboard-no-return
+: > "$case_dir/idb/keyboard"; : > "$case_dir/idb/return-closes"
+tree "$case_dir/idb/desc-1.json" "$(itext email 200 '"a@b.c"')"
+flow_file "$case_dir/flow.json" '{ "do": "hideKeyboard" }'
+run_ios "$case_dir/flow.json"
+begin "hideKeyboard on iOS: a keyboard the drag leaves up stops the flow, and Return is never pressed for it"
+status_is 1
+has out.txt "the keyboard is still up after a drag above it"
+has out.txt "close it with pressKey 'enter'"
+has idb/log "ui swipe"; lacks idb/log "ui key"
+verdict
+
+ios_case ios-hide-keyboard-no-room
+printf '150' > "$case_dir/idb/keyboard"; : > "$case_dir/idb/drag-closes"
+tree "$case_dir/idb/desc-1.json" "$(itext email 100 '"a@b.c"')"
+flow_file "$case_dir/flow.json" '{ "do": "hideKeyboard" }'
+run_ios "$case_dir/flow.json"
+begin "hideKeyboard on iOS: a keyboard with no room above it for the drag says that, not that a drag failed"
+status_is 1
+has out.txt "the keyboard reaches up to y 150, with no room above it"
+lacks out.txt "a drag did not"; lacks out.txt "after a drag"
+lacks idb/log "ui swipe"; lacks idb/log "ui key"
+verdict
+
+ios_case ios-hide-keyboard-none
+tree "$case_dir/idb/desc-1.json" "$(itext email 200 '"a@b.c"')" \
+  '{"type":"Button","role_description":"button","AXLabel":"Delete","frame":{"x":40,"y":300,"width":120,"height":40}}' \
+  '{"type":"Button","role_description":"button","AXLabel":"A","frame":{"x":40,"y":360,"width":40,"height":40}}' \
+  '{"type":"Button","role_description":"button","AXLabel":"B","frame":{"x":90,"y":360,"width":40,"height":40}}'
+flow_file "$case_dir/flow.json" '{ "do": "hideKeyboard" }'
+run_ios "$case_dir/flow.json"
+begin "hideKeyboard on iOS: an app's own Delete and letter buttons are not a keyboard"
+status_is 0
+has out.txt "no keyboard was up"
+lacks idb/log "ui swipe"; lacks idb/log "ui key"
+verdict
+
 # ── the resident screen helper (#105) ────────────────────────────────────────
 # The helper is tests/fake-sdk/uia2-server, one per case on a free port, and
 # the fake adb forwards to it. The cache starts with the pinned pair already
