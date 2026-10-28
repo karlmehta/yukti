@@ -627,6 +627,54 @@ status_is 0; ityped_is ""
 has out.txt "field empty at 190,220"
 verdict
 
+# hideKeyboard on iOS. A simulator lists its keyboard as plain buttons, one per
+# key, and no element of type keyboard; escape does not close it.
+ios_case ios-hide-keyboard-drag
+: > "$case_dir/idb/keyboard"; : > "$case_dir/idb/drag-closes"
+tree "$case_dir/idb/desc-1.json" "$(itext email 200 '"a@b.c"')"
+flow_file "$case_dir/flow.json" '{ "do": "hideKeyboard" }'
+run_ios "$case_dir/flow.json"
+begin "hideKeyboard on iOS: keys listed as buttons are a keyboard, and a drag above it closes it"
+status_is 0
+has out.txt "keyboard closed (drag)"
+has idb/log "ui swipe"
+lacks idb/log "ui key"
+verdict
+
+ios_case ios-hide-keyboard-return
+: > "$case_dir/idb/keyboard"; : > "$case_dir/idb/return-closes"
+tree "$case_dir/idb/desc-1.json" "$(itext email 200 '"a@b.c"')"
+flow_file "$case_dir/flow.json" '{ "do": "hideKeyboard" }'
+run_ios "$case_dir/flow.json"
+begin "hideKeyboard on iOS: Return closes a keyboard the drag left up, and the run says so"
+status_is 0
+has out.txt "keyboard closed (Return)"
+has idb/log "ui swipe"; has idb/log "ui key --udid FAKE-UDID 40"
+verdict
+
+ios_case ios-hide-keyboard-stuck
+: > "$case_dir/idb/keyboard"
+tree "$case_dir/idb/desc-1.json" "$(itext email 200 '"a@b.c"')"
+flow_file "$case_dir/flow.json" '{ "do": "hideKeyboard" }'
+run_ios "$case_dir/flow.json"
+begin "hideKeyboard on iOS: a keyboard that neither closes stops the flow"
+status_is 1
+has out.txt "the keyboard is still up after a drag and Return"
+verdict
+
+ios_case ios-hide-keyboard-none
+tree "$case_dir/idb/desc-1.json" "$(itext email 200 '"a@b.c"')" \
+  '{"type":"Button","role_description":"button","AXLabel":"Delete","frame":{"x":40,"y":300,"width":120,"height":40}}' \
+  '{"type":"Button","role_description":"button","AXLabel":"A","frame":{"x":40,"y":360,"width":40,"height":40}}' \
+  '{"type":"Button","role_description":"button","AXLabel":"B","frame":{"x":90,"y":360,"width":40,"height":40}}'
+flow_file "$case_dir/flow.json" '{ "do": "hideKeyboard" }'
+run_ios "$case_dir/flow.json"
+begin "hideKeyboard on iOS: an app's own Delete and letter buttons are not a keyboard"
+status_is 0
+has out.txt "no keyboard was up"
+lacks idb/log "ui swipe"; lacks idb/log "ui key"
+verdict
+
 # ── the resident screen helper (#105) ────────────────────────────────────────
 # The helper is tests/fake-sdk/uia2-server, one per case on a free port, and
 # the fake adb forwards to it. The cache starts with the pinned pair already

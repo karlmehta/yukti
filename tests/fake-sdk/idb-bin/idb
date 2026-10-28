@@ -15,6 +15,11 @@
 #   lossy          present: every `ui text` loses its last character (one key
 #                  at a time: the key is lost); holding a number n: only the first
 #                  n do
+#   keyboard       present: a keyboard is up - the tree ends with its keys, plain
+#                  buttons as a simulator lists them (letters, shift, delete,
+#                  return), from y 590 down
+#   drag-closes    present: a `ui swipe` closes the keyboard
+#   return-closes  present: the Return key (`ui key 40`) closes it
 import json, os, sys
 
 d = os.environ["FAKE_IDB_DIR"]
@@ -42,9 +47,18 @@ if ops[:2] == ["ui", "describe-all"]:
     write("describes", str(n))
     while n > 1 and not has("desc-%d.json" % n): n -= 1
     t = read("typed")
-    sys.stdout.write(read("desc-%d.json" % n).replace('"@TYPED@"', json.dumps(t or read("hint")))
-                     .replace('"@DOTS@"', json.dumps("\u2022" * len(t)))
-                     .replace('"@SECURE@"', json.dumps("\u2022" * len(t) if t else read("hint"))))
+    out = (read("desc-%d.json" % n).replace('"@TYPED@"', json.dumps(t or read("hint")))
+           .replace('"@DOTS@"', json.dumps("\u2022" * len(t)))
+           .replace('"@SECURE@"', json.dumps("\u2022" * len(t) if t else read("hint"))))
+    if has("keyboard"):
+        keys = [{"type": "Button", "role_description": "button", "AXLabel": k, "AXValue": None,
+                 "frame": {"x": 4 + 40 * (i % 10), "y": 590 + 54 * (i // 10), "width": 34, "height": 46}}
+                for i, k in enumerate("qwertyuiopasdfghjklzxcvbnm") ]
+        keys += [{"type": "Button", "role_description": "button", "AXLabel": k, "AXValue": None,
+                  "frame": {"x": 4 + 100 * i, "y": 752, "width": 90, "height": 46}}
+                 for i, k in enumerate(["shift", "delete", "return"])]
+        out = json.dumps(json.loads(out) + keys)
+    sys.stdout.write(out)
 elif ops[:2] == ["ui", "text"]:
     q = ops[2]
     if has("lossy"):
@@ -54,7 +68,10 @@ elif ops[:2] == ["ui", "text"]:
     write("typed", read("typed") + q)
 elif ops[:2] == ["ui", "key"]:
     if ops[2:] == ["42"]: write("typed", read("typed")[:-1])
-elif ops[:2] in (["ui", "tap"], ["ui", "swipe"]) or ops[:1] == ["connect"]:
+    if ops[2:] == ["40"] and has("return-closes") and has("keyboard"): os.remove(path("keyboard"))
+elif ops[:2] == ["ui", "swipe"]:
+    if has("drag-closes") and has("keyboard"): os.remove(path("keyboard"))
+elif ops[:2] == ["ui", "tap"] or ops[:1] == ["connect"]:
     pass
 else:
     sys.exit(1)

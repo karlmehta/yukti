@@ -1677,15 +1677,34 @@ press_key(){ local name="${1:-}" u
   ok "pressKey '$name'"; }
 # Whether a keyboard is up, asked of iOS the only way idb allows: the tree names
 # the keyboard as an element. Same three outcomes as the Android side.
+# A simulator (iOS 26.5, measured) lists no element of type keyboard: only its
+# keys, as plain buttons - a "delete" key and one button per letter or digit.
+# The keyboard is up when the tree holds that "delete" (lower case: an app's
+# own button says "Delete") and at least nine one-character buttons (a number
+# pad has ten). With "geom" it also prints where to drag to close it: the
+# middle of the keys, and the top of their highest row.
 ikb_shown(){ paths; ui | "$PY" -c '
 import json,sys
 try: els=json.loads(sys.stdin.read())
 except ValueError: sys.exit(2)   # an unreadable tree is not "no keyboard"
+def frame(e):
+    b=e.get("frame") or {}
+    g=lambda *k: float(next((b[n] for n in k if n in b), 0) or 0)
+    return g("x","X"), g("y","Y"), g("width","Width"), g("height","Height")
+kb=None; keys=[]; delete=False
 for e in els:
     t=(str(e.get("type") or "")+" "+str(e.get("role_description") or "")).lower()
-    if "keyboard" in t: sys.exit(0)
-sys.exit(1)
-'; }
+    label=str(e.get("AXLabel") or "")
+    if "keyboard" in t: kb=frame(e)
+    if "button" in t and label=="delete": delete=True
+    if "button" in t and len(label)==1: keys.append(frame(e))
+if kb is None and not (delete and len(keys)>=9): sys.exit(1)
+if len(sys.argv)>1:
+    x,y,w,h = kb if kb else (min(k[0] for k in keys), min(k[1] for k in keys),
+                             max(k[0]+k[2] for k in keys)-min(k[0] for k in keys), 0)
+    sys.stdout.write("%d %d" % (int(x+w/2), int(y)))
+sys.exit(0)
+' "$@"; }
 # hideKeyboard is pressKey with a postcondition, which is why it is built on it
 # rather than beside it. The postcondition is the verb: an Android form longer
 # than one field cannot be filled while the keyboard is up, so "the keys were
@@ -1699,12 +1718,12 @@ hide_keyboard(){ local st=0
 # Closing a keyboard that is up, with the check that it closed. `who` opens every
 # line it prints, so a swipe step that closes one says it in its own name.
 kb_close(){ local who="$1" st=0
+  is_android || { ikb_close "$who"; return; }
   press_key escape >/dev/null || die "$who: the device refused the escape key"
   sleep 0.6
   kb_shown || st=$?
   if [ "$st" -eq 2 ]; then device_fault; die "$who: the device did not report its input method state"; fi
   if [ "$st" -eq 1 ]; then ok "$who: keyboard closed"; return 0; fi
-  if ! is_android; then die "$who: the keyboard is still up after escape"; fi
   # Back is the fallback and never the mechanism, and only while the keyboard is
   # still up: the IME consumes it then. Measured on API 35 - with the keyboard
   # already down the same key walked the rig out of the app and, one screen
@@ -1716,6 +1735,33 @@ kb_close(){ local who="$1" st=0
   if [ "$st" -eq 2 ]; then device_fault; die "$who: the device did not report its input method state"; fi
   if [ "$st" -eq 1 ]; then ok "$who: keyboard closed (Back)"; return 0; fi
   die "$who: the keyboard is still up after escape and Back"; }
+# iOS has no key that only closes the keyboard: escape does nothing to it. Two
+# ways, measured on a simulator (iOS 26.5): a short drag down just above the keys
+# - a scroll view that dismisses on drag closes it, and nothing is typed or
+# submitted - and Return, which a single-line field takes as "done". Return can
+# also submit a form or put a newline into a multi-line field, so it is the
+# fallback, and the run says when it was the one that worked.
+ikb_close(){ local who="$1" u st=0 geo x top
+  paths; u="$(U)"
+  geo="$(ikb_shown geom)" || st=$?
+  if [ "$st" -eq 2 ]; then device_fault; die "$who: the device did not report its input method state"; fi
+  [ "$st" -eq 1 ] && { ok "$who: keyboard closed"; return 0; }
+  read -r x top <<<"$geo"
+  if [ "$top" -gt 200 ]; then
+    idb ui swipe --udid "$u" "$x" $((top-150)) "$x" $((top-60)) --duration 0.3 >/dev/null 2>&1 \
+      || die "$who: the simulator refused the drag above the keyboard"
+    sleep 0.6
+    st=0; ikb_shown || st=$?
+    if [ "$st" -eq 2 ]; then device_fault; die "$who: the device did not report its input method state"; fi
+    if [ "$st" -eq 1 ]; then ok "$who: keyboard closed (drag)"; return 0; fi
+  fi
+  warn "$who: a drag did not close the keyboard - trying Return"
+  idb ui key --udid "$u" 40 >/dev/null 2>&1 || die "$who: the simulator refused the Return key"
+  sleep 0.6
+  st=0; ikb_shown || st=$?
+  if [ "$st" -eq 2 ]; then device_fault; die "$who: the device did not report its input method state"; fi
+  if [ "$st" -eq 1 ]; then ok "$who: keyboard closed (Return)"; return 0; fi
+  die "$who: the keyboard is still up after a drag and Return"; }
 # A swipe that starts on a soft keyboard is taken by the keyboard: Gboard reads a
 # drag across its keys as glide typing and types a word into the focused field,
 # and the list behind it does not move. So the first swipe of a step asks first.
