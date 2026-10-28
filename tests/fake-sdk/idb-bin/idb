@@ -17,7 +17,7 @@
 #                  n do
 #   keyboard       present: a keyboard is up - the tree ends with its keys, plain
 #                  buttons as a simulator lists them (letters, shift, delete,
-#                  return), from y 590 down
+#                  return), from y 590 down; holding a number: from that y
 #   drag-closes    present: a `ui swipe` closes the keyboard
 #   return-closes  present: the Return key (`ui key 40`) closes it
 import json, os, sys
@@ -51,11 +51,12 @@ if ops[:2] == ["ui", "describe-all"]:
            .replace('"@DOTS@"', json.dumps("\u2022" * len(t)))
            .replace('"@SECURE@"', json.dumps("\u2022" * len(t) if t else read("hint"))))
     if has("keyboard"):
+        top = int(read("keyboard").strip() or 590)
         keys = [{"type": "Button", "role_description": "button", "AXLabel": k, "AXValue": None,
-                 "frame": {"x": 4 + 40 * (i % 10), "y": 590 + 54 * (i // 10), "width": 34, "height": 46}}
+                 "frame": {"x": 4 + 40 * (i % 10), "y": top + 54 * (i // 10), "width": 34, "height": 46}}
                 for i, k in enumerate("qwertyuiopasdfghjklzxcvbnm") ]
         keys += [{"type": "Button", "role_description": "button", "AXLabel": k, "AXValue": None,
-                  "frame": {"x": 4 + 100 * i, "y": 752, "width": 90, "height": 46}}
+                  "frame": {"x": 4 + 100 * i, "y": top + 162, "width": 90, "height": 46}}
                  for i, k in enumerate(["shift", "delete", "return"])]
         out = json.dumps(json.loads(out) + keys)
     sys.stdout.write(out)

@@ -1632,7 +1632,7 @@ sys.stdout.write("%d\x1f%s\x1f%s" % (int(x+w-4), "field" if ("field" in t or "te
 # iOS has no select-all through idb, so the deletes are counted from what the
 # field actually holds - measured in the dump, not a constant that was right for
 # one form. The read-back after them is the same rule as on Android.
-iclear(){ paths; local x="${1:?x}" y="${2:?y}" vb="${3:-clearText}" u out edge val after i kind
+iclear(){ paths; local x="${1:?x}" y="${2:?y}" vb="${3:-clearText}" u out edge val after probe i kind
   # iOS is written from the idb docs and has not been run - see AF-USER-GUIDE.
   # The field is read before the tap: what it holds and where its edge is are
   # the same either side of it, and clearTextId has already found the field in
@@ -1652,8 +1652,23 @@ iclear(){ paths; local x="${1:?x}" y="${2:?y}" vb="${3:-clearText}" u out edge v
   for i in $(seq 1 ${#val}); do idb ui key --udid "$u" 42 >/dev/null 2>&1 || die "$vb: the simulator refused the delete key"; done
   out="$(ifield_probe "$x" "$y")" || lookup_die $? "$vb: no element at $x,$y any more"
   IFS=$'\x1f' read -r edge kind after <<<"$out"
-  [ -z "$after" ] || die "$vb: the field still holds text after ${#val} deletes"
-  ok "$vb: field empty at $x,$y"; }
+  [ -n "$after" ] || { ok "$vb: field empty at $x,$y"; return 0; }
+  # An empty plain field reports its placeholder as its value too, and idb names
+  # no placeholder: what is left is the placeholder, or text the deletes missed.
+  # One digit tells them apart - it replaces a placeholder and is added to text -
+  # and is deleted again before the field is judged.
+  idb ui text --udid "$u" 1 >/dev/null 2>&1 || die "$vb: the simulator refused a key"
+  sleep .3
+  out="$(ifield_probe "$x" "$y")" || lookup_die $? "$vb: no element at $x,$y any more"
+  IFS=$'\x1f' read -r edge kind probe <<<"$out"
+  [ "$probe" != "$after" ] || die "$vb: the field is not empty after ${#val} deletes, or shows a placeholder and took no digit to tell"
+  idb ui key --udid "$u" 42 >/dev/null 2>&1 || die "$vb: the simulator refused the delete key"
+  [ "$probe" = 1 ] || die "$vb: the field still holds text after ${#val} deletes"
+  sleep .3
+  out="$(ifield_probe "$x" "$y")" || lookup_die $? "$vb: no element at $x,$y any more"
+  IFS=$'\x1f' read -r edge kind probe <<<"$out"
+  [ "$probe" = "$after" ] || die "$vb: the digit typed to tell a placeholder from text is still in the field"
+  ok "$vb: field empty at $x,$y (it shows its placeholder)"; }
 clear_field(){ is_android && { aclear "$1" "$2" "${3:-}"; return; }; iclear "$1" "$2" "${3:-}"; }
 # One key, by name, on either platform. iOS has no Back key at all - saying so is
 # the whole point: a flow that asks for one on iOS is wrong about the platform,
@@ -1735,33 +1750,27 @@ kb_close(){ local who="$1" st=0
   if [ "$st" -eq 2 ]; then device_fault; die "$who: the device did not report its input method state"; fi
   if [ "$st" -eq 1 ]; then ok "$who: keyboard closed (Back)"; return 0; fi
   die "$who: the keyboard is still up after escape and Back"; }
-# iOS has no key that only closes the keyboard: escape does nothing to it. Two
-# ways, measured on a simulator (iOS 26.5): a short drag down just above the keys
-# - a scroll view that dismisses on drag closes it, and nothing is typed or
-# submitted - and Return, which a single-line field takes as "done". Return can
-# also submit a form or put a newline into a multi-line field, so it is the
-# fallback, and the run says when it was the one that worked.
+# iOS has no key that only closes the keyboard: escape does nothing to it. The
+# way that types and submits nothing, measured on a simulator (iOS 26.5), is a
+# short drag down just above the keys: a scroll view that dismisses on drag
+# closes it. Return closes a single-line field too, but it can also submit the
+# form or put a newline into a multi-line field, so it is never pressed for the
+# flow: a keyboard the drag leaves up stops the step, and a flow whose form may
+# take Return says so with pressKey 'enter'.
 ikb_close(){ local who="$1" u st=0 geo x top
   paths; u="$(U)"
   geo="$(ikb_shown geom)" || st=$?
   if [ "$st" -eq 2 ]; then device_fault; die "$who: the device did not report its input method state"; fi
   [ "$st" -eq 1 ] && { ok "$who: keyboard closed"; return 0; }
   read -r x top <<<"$geo"
-  if [ "$top" -gt 200 ]; then
-    idb ui swipe --udid "$u" "$x" $((top-150)) "$x" $((top-60)) --duration 0.3 >/dev/null 2>&1 \
-      || die "$who: the simulator refused the drag above the keyboard"
-    sleep 0.6
-    st=0; ikb_shown || st=$?
-    if [ "$st" -eq 2 ]; then device_fault; die "$who: the device did not report its input method state"; fi
-    if [ "$st" -eq 1 ]; then ok "$who: keyboard closed (drag)"; return 0; fi
-  fi
-  warn "$who: a drag did not close the keyboard - trying Return"
-  idb ui key --udid "$u" 40 >/dev/null 2>&1 || die "$who: the simulator refused the Return key"
+  [ "$top" -gt 200 ] || die "$who: the keyboard reaches up to y $top, with no room above it for the drag that closes it - if this form may take Return, close it with pressKey 'enter'"
+  idb ui swipe --udid "$u" "$x" $((top-150)) "$x" $((top-60)) --duration 0.3 >/dev/null 2>&1 \
+    || die "$who: the simulator refused the drag above the keyboard"
   sleep 0.6
   st=0; ikb_shown || st=$?
   if [ "$st" -eq 2 ]; then device_fault; die "$who: the device did not report its input method state"; fi
-  if [ "$st" -eq 1 ]; then ok "$who: keyboard closed (Return)"; return 0; fi
-  die "$who: the keyboard is still up after a drag and Return"; }
+  if [ "$st" -eq 1 ]; then ok "$who: keyboard closed (drag)"; return 0; fi
+  die "$who: the keyboard is still up after a drag above it - this screen does not close it on a drag; if this form may take Return, close it with pressKey 'enter'"; }
 # A swipe that starts on a soft keyboard is taken by the keyboard: Gboard reads a
 # drag across its keys as glide typing and types a word into the focused field,
 # and the list behind it does not move. So the first swipe of a step asks first.
