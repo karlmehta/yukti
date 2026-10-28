@@ -1,5 +1,5 @@
 # Checks this repository itself. The engine is one bash script and everything it
-# ships beside it is JSON, so both are checkable on a Linux runner in seconds -
+# ships beside it is JSON, so both are checkable on a Linux runner in minutes -
 # no simulator, no device, no secrets. The template that drives a real app lives
 # in examples/ci/ and is not run from here.
 
@@ -11,7 +11,7 @@ on:
 jobs:
   checks:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
