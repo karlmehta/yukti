@@ -1444,20 +1444,23 @@ tap(){ is_android && { atap "$1" "$2"; return; }; paths; idb ui tap --udid "$(U)
 # iOS: what is really under a tap point. The lookups above judge an element by
 # its own frame only - in the window, of real size - and never ask whether
 # something drawn over it takes the touch. A button scrolled behind the tab bar
-# passes them, and its tap opens the tab instead: on Today a survey card's
-# "Skip" (onboarding-card-next, centre 326,833) sat under tab-progress
-# (321-402 x 785-840), dismiss took it for an interstitial, and every flow's
-# known-screen block ended on Progress (idb ui describe-point 326 833 answered
-# tab-progress; 2026-10-28). So the point is asked: idb describe-point names the
-# element that gets the touch. It is the target when it matches the query by
-# find_el's own rule (id: the identifier exactly; text: the query inside
-# identifier, label, value or title, case folded), or when it lies inside the
-# target's frame (a part of it). For an id query a part has no id of its own:
-# an element that carries a different id is another control, even inside the
-# target's frame - Log Food's sticky date strip day ("29, THU",
-# nutrition-pillar-meals-date-picker-day) lay inside the scrolled-under Search
-# Food tile's frame, and the tap went to the day (2026-10-29). Anything else
-# covers the target. Answers:
+# passes them, and its tap opens the tab instead: a card's "Skip" (centre
+# 326,833) sat under a tab button (321-402 x 785-840), dismiss took it for an
+# interstitial, and every flow's first block ended on that tab (idb ui
+# describe-point 326 833 answered the tab; 2026-10-28). So the point is asked:
+# idb describe-point names the element that gets the touch. It is the target
+# when it matches the query by find_el's own rule (id: the identifier exactly;
+# text: the query inside identifier, label, value or title, case folded), or a
+# part of the target: an element with no id of its own whose centre lies inside
+# the target's frame (a centre, not the whole frame: a label's frame can stick
+# out of its button by a point). An element with an id of its own that does not
+# match is another control, even inside the target's frame, for an id query and
+# a text query alike - a sticky date strip's day button lay inside a
+# scrolled-under tile's frame, and the tap went to the day (2026-10-29).
+# Anything else covers the target. Known limit: a target that is not an
+# accessibility element (a plain view with an id) holding a child with an id of
+# its own answers the child at its point, and reads as covered by it; accessible
+# touchables hide their children, so it needs such a container. Answers:
 # "ok", "covered <id or type>", "unknown" (idb gave no element). Only the
 # covering element's id or type is printed, never its label: a label can carry
 # what the screen shows.
@@ -1472,7 +1475,7 @@ if not isinstance(el,dict) or not el: print("unknown"); sys.exit(0)
 ident=n(el.get("AXUniqueId") or el.get("identifier"))
 texts=(ident,n(el.get("AXLabel")),n(el.get("AXValue")),n(el.get("title")))
 hit=(bool(q) and q==ident) if mode=="id" else (bool(q) and any(q in t for t in texts))
-if not hit and len(box)>=4 and not (mode=="id" and ident and ident!=q):
+if not hit and len(box)>=4 and not ident:
     b=el.get("frame") or {}
     def g(*ks):
         for k in ks:
@@ -1482,7 +1485,8 @@ if not hit and len(box)>=4 and not (mode=="id" and ident and ident!=q):
         return 0.0
     x,y,w,h=g("X","x"),g("Y","y"),g("Width","width"),g("Height","height")
     bx=[float(v) for v in box[:4]]
-    hit=w>0 and h>0 and bx[0]<=x and bx[1]<=y and x+w<=bx[2] and y+h<=bx[3]
+    cx,cy=x+w/2,y+h/2
+    hit=w>0 and h>0 and bx[0]<=cx<=bx[2] and bx[1]<=cy<=bx[3]
 if hit: print("ok")
 else: print("covered", el.get("AXUniqueId") or el.get("identifier") or (str(el.get("type") or "element")+" (no id)"))
 '
@@ -1527,7 +1531,11 @@ tap_text(){ local xy st=0 grow="${2:-$SCROLL_GROW_WAIT}"
 # happened - the very class of lie the status check above exists to end.
 tap_text_optional(){ local xy st=0 v; xy="$(find_el "$1")" || st=$?; [ "$st" -eq 0 ] || lookup_die "$st"
   # Covered is not absent: say so, and leave it alone (see ihit).
-  [ -n "$xy" ] && { v="$(ihit "$1" text $xy)"; case "$v" in covered*) warn "optional '$1' is covered by ${v#covered } - not tapped"; return 0;; esac; }
+  [ -n "$xy" ] && { v="$(ihit "$1" text $xy)"; case "$v" in
+    ok) ;;
+    covered*) warn "optional '$1' is covered by ${v#covered } - not tapped"; return 0;;
+    *) warn "could not read what is under optional '$1' at ${xy/ /,} - tapping as before";;
+  esac; }
   [ -n "$xy" ] && { tap $xy || die "optional tap '$1': the device refused the tap"; ok "optional tap '$1'"; } || warn "optional '$1' not present — skipped"; }
 # Auto-dismiss the interstitials that derail flows (Save Password, notifications, promos…)
 # only SAFE interstitial labels — never Cancel/Close/OK (those navigate/confirm)
@@ -1555,7 +1563,11 @@ dismiss(){ local L xy st hit v round=0
       # behind the tab bar), not an interstitial on top: leave it (see ihit).
       if [ -n "$xy" ]; then
         v="$(ihit "$L" text $xy)"
-        case "$v" in covered*) warn "dismiss: '$L' is covered by ${v#covered } - not a pop-up, left alone"; xy=""; continue;; esac
+        case "$v" in
+          ok) ;;
+          covered*) warn "dismiss: '$L' is covered by ${v#covered } - not a pop-up, left alone"; xy=""; continue;;
+          *) warn "dismiss: could not read what is under '$L' at ${xy/ /,} - tapping as before";;
+        esac
         hit="$L"; break
       fi
     done
