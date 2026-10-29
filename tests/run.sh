@@ -738,6 +738,59 @@ has out.txt "no keyboard was up"
 lacks idb/log "ui swipe"; lacks idb/log "ui key"
 verdict
 
+# ── a tap asks what is really under its point (idb describe-point) ───────────
+# ibutton <id> - a button 200 wide and 100 high at 100,300: its centre is 200,350.
+ibutton(){ printf '{"type":"Button","role_description":"button","AXUniqueId":"%s","AXLabel":"Go","frame":{"x":100,"y":300,"width":200,"height":100}}' "$1"; }
+# ipoint <id or empty> <x> <y> <w> <h> - what describe-point answers.
+ipoint(){ printf '{"type":"Other","AXUniqueId":%s,"AXLabel":"","frame":{"x":%s,"y":%s,"width":%s,"height":%s}}' \
+  "$([ -n "$1" ] && printf '"%s"' "$1" || printf 'null')" "$2" "$3" "$4" "$5" > "$case_dir/idb/point.json"; }
+taps_are(){ local got; got="$(grep -c '^ui tap ' "$case_dir/idb/log" 2>/dev/null)"
+  [ "$got" = "$1" ] || no "$got taps, wanted $1"; }
+
+ios_case ios-tap-self
+tree "$case_dir/idb/desc-1.json" "$(ibutton go)"
+ipoint go 100 300 200 100
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "go" }'
+run_ios "$case_dir/flow.json"
+begin "tapId on iOS: the point answers the target itself, and the tap goes"
+status_is 0; taps_are 1; lacks out.txt "covered"
+verdict
+
+ios_case ios-tap-covered
+tree "$case_dir/idb/desc-1.json" "$(ibutton go)"
+ipoint tab-progress 0 330 402 60
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "go" }'
+run_ios "$case_dir/flow.json"
+begin "tapId on iOS: an element drawn over the target fails the step by name, nothing tapped"
+status_is 1; taps_are 0; has out.txt "'go' at 200,350 is covered by tab-progress"
+verdict
+
+ios_case ios-tap-part
+tree "$case_dir/idb/desc-1.json" "$(ibutton go)"
+ipoint "" 150 330 100 40
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "go" }'
+run_ios "$case_dir/flow.json"
+begin "tapId on iOS: an element with no id inside the target's frame is a part of it, and the tap goes"
+status_is 0; taps_are 1; lacks out.txt "covered"
+verdict
+
+ios_case ios-tap-other-id-inside
+tree "$case_dir/idb/desc-1.json" "$(ibutton go)"
+ipoint date-day 180 320 40 64
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "go" }'
+run_ios "$case_dir/flow.json"
+begin "tapId on iOS: an element with an id of its own inside the target's frame is another control, not a part"
+status_is 1; taps_are 0; has out.txt "'go' at 200,350 is covered by date-day"
+verdict
+
+ios_case ios-tap-unknown
+tree "$case_dir/idb/desc-1.json" "$(ibutton go)"
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "go" }'
+run_ios "$case_dir/flow.json"
+begin "tapId on iOS: no answer from describe-point taps as before, with a warning"
+status_is 0; taps_are 1; has out.txt "could not read what is under 'go' at 200,350"
+verdict
+
 # ── the resident screen helper (#105) ────────────────────────────────────────
 # The helper is tests/fake-sdk/uia2-server, one per case on a free port, and
 # the fake adb forwards to it. The cache starts with the pinned pair already

@@ -1441,6 +1441,70 @@ elif out=="why":
     elif off: print("off",*off)
 ' "$1" "${2:-text}" "${3:-exact}" "${4:-centre}"; }
 tap(){ is_android && { atap "$1" "$2"; return; }; paths; idb ui tap --udid "$(U)" "${1:?x}" "${2:?y}"; }
+# iOS: what is really under a tap point. The lookups above judge an element by
+# its own frame only - in the window, of real size - and never ask whether
+# something drawn over it takes the touch. A button scrolled behind the tab bar
+# passes them, and its tap opens the tab instead: on Today a survey card's
+# "Skip" (onboarding-card-next, centre 326,833) sat under tab-progress
+# (321-402 x 785-840), dismiss took it for an interstitial, and every flow's
+# known-screen block ended on Progress (idb ui describe-point 326 833 answered
+# tab-progress; 2026-10-28). So the point is asked: idb describe-point names the
+# element that gets the touch. It is the target when it matches the query by
+# find_el's own rule (id: the identifier exactly; text: the query inside
+# identifier, label, value or title, case folded), or when it lies inside the
+# target's frame (a part of it). For an id query a part has no id of its own:
+# an element that carries a different id is another control, even inside the
+# target's frame - Log Food's sticky date strip day ("29, THU",
+# nutrition-pillar-meals-date-picker-day) lay inside the scrolled-under Search
+# Food tile's frame, and the tap went to the day (2026-10-29). Anything else
+# covers the target. Answers:
+# "ok", "covered <id or type>", "unknown" (idb gave no element). Only the
+# covering element's id or type is printed, never its label: a label can carry
+# what the screen shows.
+IHIT_PY='
+import json,os,sys
+n=lambda s: " ".join(str(s or "").split()).lower()
+q=n(sys.argv[1]); mode=sys.argv[2]; box=(sys.argv[3].split() if len(sys.argv)>3 else [])
+try: el=json.loads(os.environ.get("YUKTI_PT") or "")
+except ValueError: el=None
+if isinstance(el,list): el=el[0] if el else None
+if not isinstance(el,dict) or not el: print("unknown"); sys.exit(0)
+ident=n(el.get("AXUniqueId") or el.get("identifier"))
+texts=(ident,n(el.get("AXLabel")),n(el.get("AXValue")),n(el.get("title")))
+hit=(bool(q) and q==ident) if mode=="id" else (bool(q) and any(q in t for t in texts))
+if not hit and len(box)>=4 and not (mode=="id" and ident and ident!=q):
+    b=el.get("frame") or {}
+    def g(*ks):
+        for k in ks:
+            if b.get(k) is not None:
+                try: return float(b[k])
+                except (TypeError,ValueError): return 0.0
+        return 0.0
+    x,y,w,h=g("X","x"),g("Y","y"),g("Width","width"),g("Height","height")
+    bx=[float(v) for v in box[:4]]
+    hit=w>0 and h>0 and bx[0]<=x and bx[1]<=y and x+w<=bx[2] and y+h<=bx[3]
+if hit: print("ok")
+else: print("covered", el.get("AXUniqueId") or el.get("identifier") or (str(el.get("type") or "element")+" (no id)"))
+'
+ihit(){ local q="$1" mode="$2" x="$3" y="$4" pt v box
+  is_android && { echo ok; return 0; }
+  paths; pt="$(idb ui describe-point --udid "$(U)" "$x" "$y" 2>/dev/null)" || pt=""
+  v="$(YUKTI_PT="$pt" "$PY" -c "$IHIT_PY" "$q" "$mode")" || v=unknown
+  case "$v" in covered*)
+    box="$(find_el "$q" "$mode" exact box 2>/dev/null)" || box=""
+    [ -n "$box" ] && { v="$(YUKTI_PT="$pt" "$PY" -c "$IHIT_PY" "$q" "$mode" "$box")" || v=unknown; };;
+  esac
+  printf '%s\n' "${v:-unknown}"; }
+# A tap that must land on its target: covered = the step fails and says by what,
+# instead of tapping the element on top. No answer from idb = the tap goes ahead
+# as it did before this check, with a warning.
+tap_checked(){ local q="$1" mode="$2" x="$3" y="$4" v; v="$(ihit "$q" "$mode" "$x" "$y")"
+  case "$v" in
+    ok) ;;
+    covered*) die "'$q' at $x,$y is covered by ${v#covered } - not tapped, the touch would go to that instead";;
+    *) warn "could not read what is under '$q' at $x,$y - tapping as before";;
+  esac
+  tap "$x" "$y"; }
 # A lookup has three outcomes, not two: coordinates, "no such element", and
 # "the screen could not be read at all". The third one used to arrive as the
 # second, because `die` inside aui/ui exits a command-substitution subshell and
@@ -1456,12 +1520,15 @@ tap_text(){ local xy st=0 grow="${2:-$SCROLL_GROW_WAIT}"
   case "$grow" in ''|*[!0-9]*|0) die "tapText: timeout must be a whole number of seconds greater than zero, got '$grow'";; esac
   xy="$(scroll_to "$1" down "" tapText "$grow")" || st=$?
   case "$st" in 0) ;; 5) die "no element matching '$1'";; 6|7|8) die "no element matching '$1' - $(scroll_miss "$st" "$1" down "$grow")";; *) lookup_die "$st";; esac
-  [ -n "$xy" ] || die "no element matching '$1'"; tap $xy; }  # auto-scrolls off-screen elements into view
+  [ -n "$xy" ] || die "no element matching '$1'"; tap_checked "$1" text $xy; }  # auto-scrolls off-screen elements into view
 # The exception these two verbs enjoy is about an ABSENT label, and nothing else.
 # A device that refuses the tap is not an absent label: the status of `tap` is
 # checked here, or the step keeps its exception and reports a tap that never
 # happened - the very class of lie the status check above exists to end.
-tap_text_optional(){ local xy st=0; xy="$(find_el "$1")" || st=$?; [ "$st" -eq 0 ] || lookup_die "$st"; [ -n "$xy" ] && { tap $xy || die "optional tap '$1': the device refused the tap"; ok "optional tap '$1'"; } || warn "optional '$1' not present — skipped"; }
+tap_text_optional(){ local xy st=0 v; xy="$(find_el "$1")" || st=$?; [ "$st" -eq 0 ] || lookup_die "$st"
+  # Covered is not absent: say so, and leave it alone (see ihit).
+  [ -n "$xy" ] && { v="$(ihit "$1" text $xy)"; case "$v" in covered*) warn "optional '$1' is covered by ${v#covered } - not tapped"; return 0;; esac; }
+  [ -n "$xy" ] && { tap $xy || die "optional tap '$1': the device refused the tap"; ok "optional tap '$1'"; } || warn "optional '$1' not present — skipped"; }
 # Auto-dismiss the interstitials that derail flows (Save Password, notifications, promos…)
 # only SAFE interstitial labels — never Cancel/Close/OK (those navigate/confirm)
 DISMISS_LABELS=("Not Now" "Not now" "Maybe Later" "Later" "Skip for now" "Skip" "No thanks" "No Thanks" "Got it")
@@ -1473,7 +1540,7 @@ DISMISS_LABELS=("Not Now" "Not now" "Maybe Later" "Later" "Skip for now" "Skip" 
 # capped - a screen that keeps answering with another interstitial is news, and
 # the step says so instead of looping. It stops after the sixth tap without
 # reading the screen again, so it never claims to know what is on it.
-dismiss(){ local L xy st hit round=0
+dismiss(){ local L xy st hit v round=0
   while :; do
     HELD_TREE=""
     # ui() says why itself and leaves non-zero from the substitution; the step
@@ -1484,7 +1551,13 @@ dismiss(){ local L xy st hit round=0
     for L in "${DISMISS_LABELS[@]}"; do
       st=0; xy="$(find_el "$L")" || st=$?
       [ "$st" -eq 0 ] || { HELD_TREE=""; lookup_die "$st"; }
-      [ -n "$xy" ] && { hit="$L"; break; }
+      # A covered match is a button under something else (a card's own Skip
+      # behind the tab bar), not an interstitial on top: leave it (see ihit).
+      if [ -n "$xy" ]; then
+        v="$(ihit "$L" text $xy)"
+        case "$v" in covered*) warn "dismiss: '$L' is covered by ${v#covered } - not a pop-up, left alone"; xy=""; continue;; esac
+        hit="$L"; break
+      fi
     done
     HELD_TREE=""
     [ -n "$hit" ] || return 0
@@ -1806,7 +1879,7 @@ assert_text(){ local q="${1:-}" m="${2:-exact}" xy st=0
 # segment and match it exactly, or fail. An empty id is a failure, never a match:
 # a flow step with a missing or misspelled `value` must stop the run, not tap a
 # random point. Neither scrolls — use scrollToText first for a target below the fold.
-tap_id(){ local q="${1:-}"; [ -n "$q" ] || die "tapId needs a non-empty id"; local xy st=0; xy="$(find_el "$q" id)" || st=$?; [ "$st" -eq 0 ] || die "$(lookup_err "$st")"; [ -n "$xy" ] || die "no element with id '$q'"; tap $xy; }
+tap_id(){ local q="${1:-}"; [ -n "$q" ] || die "tapId needs a non-empty id"; local xy st=0; xy="$(find_el "$q" id)" || st=$?; [ "$st" -eq 0 ] || die "$(lookup_err "$st")"; [ -n "$xy" ] || die "no element with id '$q'"; tap_checked "$q" id $xy; }
 assert_id(){ local q="${1:-}"; [ -n "$q" ] || die "assertId needs a non-empty id"; local xy st=0; xy="$(find_el "$q" id)" || st=$?; [ "$st" -eq 0 ] || die "assert FAILED: $(lookup_err "$st")"; [ -n "$xy" ] && ok "assert id: '$q' on screen at $xy" || die "assert FAILED: no element with id '$q'"; }
 # The density of the screen, for a constraint written in dp. Read once per run
 # and kept: it cannot change under a run, and every box assertion would
