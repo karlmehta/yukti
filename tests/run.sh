@@ -1731,7 +1731,7 @@ status_is 0; has idb/log "ui swipe --udid FAKE-UDID --duration 1.00 201 393 201 
 verdict
 
 # Up starts in the middle band, not at 30%: a sticky header is a fixed number of
-# points tall, and on a short screen 30% lies on it (iPhone SE, Log Food: no move).
+# points tall, and on a short screen 30% lies on it (iPhone SE: no move).
 ios_case scroll-ios-up-start
 tree "$case_dir/idb/desc-1.json" "$(itext name 100)"
 flow_file "$case_dir/flow.json" '{ "do": "scroll", "value": "up" }'
@@ -1753,8 +1753,26 @@ tree "$case_dir/idb/desc-1.json" "$(itext name 100)"
 flow_file "$case_dir/flow.json" '{ "do": "scroll", "value": "down" }'
 run_ios "$case_dir/flow.json" YUKTI_IOS_SWIPE_PT_S=fast
 begin "scroll: on iOS a speed that is not a number stops the step and says so, nothing swiped"
-status_is 1; has out.txt "YUKTI_IOS_SWIPE_PT_S must be a whole number of points a second above 0, is 'fast'"
+status_is 1; has out.txt "YUKTI_IOS_SWIPE_PT_S must be a whole number of points a second above 0, with no leading zero, is 'fast'"
 lacks idb/log "ui swipe"
+verdict
+
+# "00" passed the digit check and divided by zero: the swipe went out with no
+# duration and the step passed. "007" read as 7 points a second (49.86 s).
+ios_case scroll-ios-speed-zeros
+tree "$case_dir/idb/desc-1.json" "$(itext name 100)"
+flow_file "$case_dir/flow.json" '{ "do": "scroll", "value": "down" }'
+run_ios "$case_dir/flow.json" YUKTI_IOS_SWIPE_PT_S=00
+begin "scroll: on iOS a speed of 00 stops the step and says so, nothing swiped"
+status_is 1; has out.txt "is '00'"; lacks idb/log "ui swipe"
+verdict
+
+ios_case scroll-ios-speed-leading-zero
+tree "$case_dir/idb/desc-1.json" "$(itext name 100)"
+flow_file "$case_dir/flow.json" '{ "do": "scroll", "value": "down" }'
+run_ios "$case_dir/flow.json" YUKTI_IOS_SWIPE_PT_S=007
+begin "scroll: on iOS a speed with a leading zero (007) stops the step and says so, nothing swiped"
+status_is 1; has out.txt "is '007'"; lacks idb/log "ui swipe"
 verdict
 
 # ── an element at zero size, and a wait that may end without it (#111, #112) ─

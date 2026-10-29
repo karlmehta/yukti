@@ -2151,7 +2151,7 @@ scroll(){ local d="${1:-down}" w h
       # The finger goes down where a touch moves the list: in the middle band,
       # never at 30% of the height. A sticky header is a fixed number of points
       # tall, so on a short screen 30% lies on it and the touch scrolls nothing -
-      # Log Food on an iPhone SE (375x667): its header ends near y 200, 30% is
+      # a screen on an iPhone SE (375x667) whose header ends near y 200: 30% is
       # 200, and `scroll up` from there moved the page 0 and 0 points, the same
       # swipe from y 300 256 and 256 (2026-10-29); on an iPhone 16 Pro 30% is 262,
       # just below the header, so it never showed there. Up therefore runs from
@@ -2195,7 +2195,9 @@ BASIS_W="${YUKTI_DEVICE_PT_W:-402}"; BASIS_H="${YUKTI_DEVICE_PT_H:-874}"; BAND_T
 IOS_SWIPE_PT_S="${YUKTI_IOS_SWIPE_PT_S:-150}"
 # iswipe <x1> <y1> <x2> <y2> - an idb swipe at IOS_SWIPE_PT_S, at least 0.3 s.
 iswipe(){ local t
-  case "$IOS_SWIPE_PT_S" in ''|*[!0-9]*|0) die "YUKTI_IOS_SWIPE_PT_S must be a whole number of points a second above 0, is '$IOS_SWIPE_PT_S'";; esac
+  # Digits only, and no leading zero: "0" is no speed, "00" divided by zero and
+  # sent the swipe with no duration (the very stall this fixes), "007" read as 7.
+  case "$IOS_SWIPE_PT_S" in ''|*[!0-9]*|0*) die "YUKTI_IOS_SWIPE_PT_S must be a whole number of points a second above 0, with no leading zero, is '$IOS_SWIPE_PT_S'";; esac
   t="$(awk -v a="$1" -v b="$2" -v c="$3" -v d="$4" -v v="$IOS_SWIPE_PT_S" \
     'BEGIN{s=sqrt((c-a)^2+(d-b)^2)/v; if(s<0.3)s=0.3; printf "%.2f", s}')"
   idb ui swipe --udid "$(U)" --duration "$t" "$1" "$2" "$3" "$4"; }
