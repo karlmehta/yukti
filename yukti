@@ -2149,12 +2149,12 @@ scroll(){ local d="${1:-down}" w h
       local lo hi
       set -- $(screen_wh); w="${1:-$BASIS_W}"; h="${2:-$BASIS_H}"
       lo=$(( h * 30 / 100 )); hi=$(( h * 70 / 100 ))
-      if [ "$d" = down ]; then idb ui swipe --udid "$(U)" $(( w / 2 )) "$hi" $(( w / 2 )) "$lo"
-      else idb ui swipe --udid "$(U)" $(( w / 2 )) "$lo" $(( w / 2 )) "$hi"; fi;;
+      if [ "$d" = down ]; then iswipe $(( w / 2 )) "$hi" $(( w / 2 )) "$lo"
+      else iswipe $(( w / 2 )) "$lo" $(( w / 2 )) "$hi"; fi;;
     left|right)
       set -- $(screen_wh); w="${1:-$BASIS_W}"; h="${2:-$BASIS_H}"
-      if [ "$d" = left ]; then idb ui swipe --udid "$(U)" $(( w / 5 )) $(( h / 2 )) $(( w * 4 / 5 )) $(( h / 2 ))
-      else idb ui swipe --udid "$(U)" $(( w * 4 / 5 )) $(( h / 2 )) $(( w / 5 )) $(( h / 2 )); fi;;
+      if [ "$d" = left ]; then iswipe $(( w / 5 )) $(( h / 2 )) $(( w * 4 / 5 )) $(( h / 2 ))
+      else iswipe $(( w * 4 / 5 )) $(( h / 2 )) $(( w / 5 )) $(( h / 2 )); fi;;
   esac; }
 # a11y reports FULL-CONTENT coords; taps need ON-SCREEN coords. Scroll a label into the viewport.
 # Stop on an unreadable screen instead of swiping eight times into the dark:
@@ -2171,6 +2171,25 @@ scroll(){ local d="${1:-down}" w h
 # iPhone 16 Pro at 402x874 points. Same env names Studio already uses for it
 # (studio/server.py DEVICE_PT_W/H), so one override covers both halves.
 BASIS_W="${YUKTI_DEVICE_PT_W:-402}"; BASIS_H="${YUKTI_DEVICE_PT_H:-874}"; BAND_TOP=60; BAND_BOTTOM=840
+# iOS swipes move the finger at a set speed, in points a second. Left to idb (no
+# --duration) a swipe often did not scroll at all: a 349-point `scroll down` on a
+# React Native ScrollView moved it 0, 0 and 0 points, and `scroll up` from the
+# bottom of another 0, 0, 0, 0, 31 and 206. Faster than the list's fling threshold
+# the list runs on after the finger lifts: the Android rule (3 ms for every 4,
+# 262 ms for those 349 points) flung it ~930 points, 0.6 s ~590, 1.0 s ~495. At
+# 175 points a second and slower it moved the finger's distance less ~10 (touch
+# slop), every time: 349 in 2 s and in 3 s, 140 in 1 s and in 2 s, on three
+# screens (iPhone 16 Pro simulator, iOS 26.3, 2026-10-29). Points are the device-
+# independent unit, so the speed is the same on every iPhone; 150 keeps a margin
+# under the 175 measured. A search reads the screen after every swipe, so a slower
+# finger costs time, not steps.
+IOS_SWIPE_PT_S="${YUKTI_IOS_SWIPE_PT_S:-150}"
+# iswipe <x1> <y1> <x2> <y2> - an idb swipe at IOS_SWIPE_PT_S, at least 0.3 s.
+iswipe(){ local t
+  case "$IOS_SWIPE_PT_S" in ''|*[!0-9]*|0) die "YUKTI_IOS_SWIPE_PT_S must be a whole number of points a second above 0, is '$IOS_SWIPE_PT_S'";; esac
+  t="$(awk -v a="$1" -v b="$2" -v c="$3" -v d="$4" -v v="$IOS_SWIPE_PT_S" \
+    'BEGIN{s=sqrt((c-a)^2+(d-b)^2)/v; if(s<0.3)s=0.3; printf "%.2f", s}')"
+  idb ui swipe --udid "$(U)" --duration "$t" "$1" "$2" "$3" "$4"; }
 # Where a per-run cache lives. Set once per invocation just before the command
 # runs (see the bottom of this file) and inherited by everything the run shells
 # out to. Empty when there is no such directory, and then nothing is cached at
@@ -2920,8 +2939,9 @@ swipe_pts(){ local t0 rc=0 why=""; t0="$(now)"; SWIPED_BY=adb
     fi
     SCROLL_N=$(( ${SCROLL_N:-0} + 1 ))
     apaths; adb shell input swipe "$1" "$2" "$3" "$4" "$5"; swipe_note adb "$t0" "$why"
-  # The duration is left to idb, as in scroll. Written, not measured - no Mac.
-  else SCROLL_N=$(( ${SCROLL_N:-0} + 1 )); paths; idb ui swipe --udid "$(U)" "$1" "$2" "$3" "$4"; swipe_note idb "$t0"; fi; }
+  # iOS: the finger at IOS_SWIPE_PT_S, as in scroll - not "$5", the Android rule,
+  # which is fast enough for the list to fling (see IOS_SWIPE_PT_S).
+  else SCROLL_N=$(( ${SCROLL_N:-0} + 1 )); paths; iswipe "$1" "$2" "$3" "$4"; swipe_note idb "$t0"; fi; }
 # The words for a miss that never saw the element, for the two verbs that search.
 scroll_miss(){ case "$1" in
     6) printf "reached the end of the list going %s and it did not grow for %ss, '%s' is not in it" "$3" "${4:-$SCROLL_GROW_WAIT}" "$2";;
