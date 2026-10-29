@@ -2148,9 +2148,18 @@ scroll(){ local d="${1:-down}" w h
     up|down)
       local lo hi
       set -- $(screen_wh); w="${1:-$BASIS_W}"; h="${2:-$BASIS_H}"
+      # The finger goes down where a touch moves the list: in the middle band,
+      # never at 30% of the height. A sticky header is a fixed number of points
+      # tall, so on a short screen 30% lies on it and the touch scrolls nothing -
+      # Log Food on an iPhone SE (375x667): its header ends near y 200, 30% is
+      # 200, and `scroll up` from there moved the page 0 and 0 points, the same
+      # swipe from y 300 256 and 256 (2026-10-29); on an iPhone 16 Pro 30% is 262,
+      # just below the header, so it never showed there. Up therefore runs from
+      # 45% to 85%, the same 40% of the height as down (70% to 30%), which
+      # already starts in the middle.
       lo=$(( h * 30 / 100 )); hi=$(( h * 70 / 100 ))
       if [ "$d" = down ]; then iswipe $(( w / 2 )) "$hi" $(( w / 2 )) "$lo"
-      else iswipe $(( w / 2 )) "$lo" $(( w / 2 )) "$hi"; fi;;
+      else iswipe $(( w / 2 )) $(( h * 45 / 100 )) $(( w / 2 )) $(( h * 85 / 100 )); fi;;
     left|right)
       set -- $(screen_wh); w="${1:-$BASIS_W}"; h="${2:-$BASIS_H}"
       if [ "$d" = left ]; then iswipe $(( w / 5 )) $(( h / 2 )) $(( w * 4 / 5 )) $(( h / 2 ))

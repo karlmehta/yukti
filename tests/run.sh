@@ -1727,7 +1727,17 @@ tree "$case_dir/idb/desc-1.json" "$(itext name 100)"
 flow_file "$case_dir/flow.json" '{ "do": "scroll", "value": "up" }'
 run_ios "$case_dir/flow.json" YUKTI_IOS_SWIPE_PT_S=349
 begin "scroll: on iOS YUKTI_IOS_SWIPE_PT_S sets the speed - 349 points at 349 a second is 1 s"
-status_is 0; has idb/log "ui swipe --udid FAKE-UDID --duration 1.00 201 262 201 611"
+status_is 0; has idb/log "ui swipe --udid FAKE-UDID --duration 1.00 201 393 201 742"
+verdict
+
+# Up starts in the middle band, not at 30%: a sticky header is a fixed number of
+# points tall, and on a short screen 30% lies on it (iPhone SE, Log Food: no move).
+ios_case scroll-ios-up-start
+tree "$case_dir/idb/desc-1.json" "$(itext name 100)"
+flow_file "$case_dir/flow.json" '{ "do": "scroll", "value": "up" }'
+run_ios "$case_dir/flow.json" YUKTI_DEVICE_PT_W=375 YUKTI_DEVICE_PT_H=667
+begin "scroll: on iOS up puts the finger down at 45% of the height - 300 on a 667-point screen, not 200"
+status_is 0; has idb/log "187 300 187 566"; lacks idb/log "187 200 187"
 verdict
 
 ios_case scroll-ios-speed-floor
