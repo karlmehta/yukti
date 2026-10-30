@@ -2752,7 +2752,9 @@ scroll_search(){ local lbl="$1" dir="${2:-down}" clear="${3:-}" verb="${4:-scrol
         probe="$(list_probe "$nudge" "$xy" "$w" "$h" "" "")" || st=$?
       # An element on the screen is not searched for: where to swipe is decided
       # by where it is, whatever the list did to bring it there.
-      elif [ -z "$lost" ] && [ -z "$xy" ] && [ -n "$exp" ] && [ "${15}" = 1 ]; then
+      # Not on a way back either, the one for a lost seam or for a lost element
+      # (#122): its short swipes go against the seam.
+      elif [ -z "$lost$above" ] && [ -z "$xy" ] && [ -n "$exp" ] && [ "${15}" = 1 ]; then
         if [ -z "$backed" ]; then
           printf '  · swipe went past the gesture - going back%s\n' "${dlast:+ (distance)}" >&2
           dmode=off; backed=1; nofar=1; far=""; lost="$exp"; exp=""; prev=""; ctl=0; end0=""; nudge="$bdir"
