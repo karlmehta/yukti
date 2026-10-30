@@ -1862,6 +1862,72 @@ flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target" }'
 run_ios "$case_dir/flow.json"
 begin "scroll: on iOS a search keeps the idb swipe of two fifths"
 status_is 0; count_is idb/log "ui swipe" 1; has out.txt "· swipe idb"; lacks out.txt "went past the gesture"
+count_is idb/log "--duration " 1
+verdict
+
+# iOS swipes move the finger at IOS_SWIPE_PT_S points a second (default 150):
+# left to idb they often did not scroll, faster ones fling (see the engine). The
+# fake idb has no screen size, so the 402x874 basis is used: a scroll down goes
+# 201,611 -> 201,262, 349 points, 2.33 s.
+ios_case scroll-ios-speed
+tree "$case_dir/idb/desc-1.json" "$(itext name 100)"
+flow_file "$case_dir/flow.json" '{ "do": "scroll", "value": "down" }'
+run_ios "$case_dir/flow.json"
+begin "scroll: on iOS a 349-point swipe takes 2.33 s at the default 150 points a second"
+status_is 0; has idb/log "ui swipe --udid FAKE-UDID --duration 2.33 201 611 201 262"
+verdict
+
+ios_case scroll-ios-speed-env
+tree "$case_dir/idb/desc-1.json" "$(itext name 100)"
+flow_file "$case_dir/flow.json" '{ "do": "scroll", "value": "up" }'
+run_ios "$case_dir/flow.json" YUKTI_IOS_SWIPE_PT_S=349
+begin "scroll: on iOS YUKTI_IOS_SWIPE_PT_S sets the speed - 349 points at 349 a second is 1 s"
+status_is 0; has idb/log "ui swipe --udid FAKE-UDID --duration 1.00 201 393 201 742"
+verdict
+
+# Up starts in the middle band, not at 30%: a sticky header is a fixed number of
+# points tall, and on a short screen 30% lies on it (iPhone SE: no move).
+ios_case scroll-ios-up-start
+tree "$case_dir/idb/desc-1.json" "$(itext name 100)"
+flow_file "$case_dir/flow.json" '{ "do": "scroll", "value": "up" }'
+run_ios "$case_dir/flow.json" YUKTI_DEVICE_PT_W=375 YUKTI_DEVICE_PT_H=667
+begin "scroll: on iOS up puts the finger down at 45% of the height - 300 on a 667-point screen, not 200"
+status_is 0; has idb/log "187 300 187 566"; lacks idb/log "187 200 187"
+verdict
+
+ios_case scroll-ios-speed-floor
+tree "$case_dir/idb/desc-1.json" "$(itext name 100)"
+flow_file "$case_dir/flow.json" '{ "do": "scroll", "value": "down" }'
+run_ios "$case_dir/flow.json" YUKTI_IOS_SWIPE_PT_S=5000
+begin "scroll: on iOS a swipe never takes less than 0.3 s"
+status_is 0; has idb/log "--duration 0.30 201 611 201 262"
+verdict
+
+ios_case scroll-ios-speed-bad
+tree "$case_dir/idb/desc-1.json" "$(itext name 100)"
+flow_file "$case_dir/flow.json" '{ "do": "scroll", "value": "down" }'
+run_ios "$case_dir/flow.json" YUKTI_IOS_SWIPE_PT_S=fast
+begin "scroll: on iOS a speed that is not a number stops the step and says so, nothing swiped"
+status_is 1; has out.txt "YUKTI_IOS_SWIPE_PT_S must be a whole number of points a second above 0, with no leading zero, is 'fast'"
+lacks idb/log "ui swipe"
+verdict
+
+# "00" passed the digit check and divided by zero: the swipe went out with no
+# duration and the step passed. "007" read as 7 points a second (49.86 s).
+ios_case scroll-ios-speed-zeros
+tree "$case_dir/idb/desc-1.json" "$(itext name 100)"
+flow_file "$case_dir/flow.json" '{ "do": "scroll", "value": "down" }'
+run_ios "$case_dir/flow.json" YUKTI_IOS_SWIPE_PT_S=00
+begin "scroll: on iOS a speed of 00 stops the step and says so, nothing swiped"
+status_is 1; has out.txt "is '00'"; lacks idb/log "ui swipe"
+verdict
+
+ios_case scroll-ios-speed-leading-zero
+tree "$case_dir/idb/desc-1.json" "$(itext name 100)"
+flow_file "$case_dir/flow.json" '{ "do": "scroll", "value": "down" }'
+run_ios "$case_dir/flow.json" YUKTI_IOS_SWIPE_PT_S=007
+begin "scroll: on iOS a speed with a leading zero (007) stops the step and says so, nothing swiped"
+status_is 1; has out.txt "is '007'"; lacks idb/log "ui swipe"
 verdict
 
 # ── an element at zero size, and a wait that may end without it (#111, #112) ─
