@@ -514,8 +514,7 @@ element really moved. When the element is nowhere in the full tree but rows
 below the fold are, the search swipes by distance to the lowest of them, and then
 goes on as before, with the same end of the list. A lazy list keeps no rows below
 the fold and is searched as before. The search leaves the distance swipes, and
-goes on as before, when a swipe moved nothing; when the element is gone from the
-screen and from the full tree (`· distance scroll lost the target`); when only
+goes on as before, when a swipe moved nothing; when only
 the full tree has it on the screen (`· distance scroll: the full tree has the
 element on the screen`); when the full read failed (`· full tree not read
 (helper: rc N)`); and when the list ran past the swipe, which is caught the same
@@ -523,6 +522,12 @@ way (`... going back (distance)`). An element that moved less than half or more
 than one and a half of the swipe is said (`· distance scroll ratio ... out of
 range - using 1`), the next swipe is not corrected by it, and the distance
 swipes go on.
+When the element is gone from the screen and from the full tree after a distance
+swipe, the swipe carried it above (`· distance scroll lost the target - going
+back`, #122): the search leaves the distance swipes and goes back with the usual
+short swipes until the element is on the screen. A way back that reaches the
+start of the list without it turns forward again, as the way back after a list
+that ran past does.
 Searching up, left or right, without the helper and on iOS is as it was.
 Without the helper, and on iOS, a swipe lets go at the speed it moved and the
 list runs on a little, so the swipe stays at 40%. Each swipe prints how it went

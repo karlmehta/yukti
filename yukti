@@ -2683,7 +2683,7 @@ scroll_to(){ local t0 st=0; t0="$(now)"; SCROLL_N=0; SWIPED_BY=adb; SWIPE_FAR=""
   scroll_search "$@" || st=$?
   printf '  · search %s swipes %d ms\n' "$SCROLL_N" $(( ($(us_of "$(now)") - $(us_of "$t0")) / 1000 )) >&2
   return "$st"; }
-scroll_search(){ local lbl="$1" dir="${2:-down}" clear="${3:-}" verb="${4:-scrollToText}" grow="${5:-$SCROLL_GROW_WAIT}" xy c lo hi blo bhi m w h seen="" nudge st probe prev="" ctl=0 ended="" flat="" kb="" end0="" far t1 tn waited=0 tw="" budget exp="" lost="" backed="" nofar="" bdir dmode="" dprev="" dlen=0 dlast="" k100=100 full r e aim want dprobe dkeep dt dk
+scroll_search(){ local lbl="$1" dir="${2:-down}" clear="${3:-}" verb="${4:-scrollToText}" grow="${5:-$SCROLL_GROW_WAIT}" xy c lo hi blo bhi m w h seen="" nudge st probe prev="" ctl=0 ended="" flat="" kb="" end0="" far t1 tn waited=0 tw="" budget exp="" lost="" backed="" nofar="" bdir dmode="" dprev="" dlen=0 dlast="" k100=100 full r e aim want dprobe dkeep dt dk above=""
   case "$dir" in up|down|left|right) ;; *) die "scrollToText: '$dir' is not a direction - use up, down, left or right";; esac
   case "$dir" in down) bdir=up;; up) bdir=down;; left) bdir=right;; right) bdir=left;; esac
   set -- $(screen_wh); w="${1:-$BASIS_W}"; h="${2:-$BASIS_H}"
@@ -2706,11 +2706,11 @@ scroll_search(){ local lbl="$1" dir="${2:-down}" clear="${3:-}" verb="${4:-scrol
     # change in between. Emptied before the swipe, as in dismiss.
     HELD_TREE=""; HELD_TREE="$(ui)" || exit 1
     st=0; xy="$(find_el "$lbl")" || st=$?; [ "$st" -eq 0 ] || { HELD_TREE=""; lookup_die "$st"; }
-    nudge="$dir"; [ -z "$lost" ] || nudge="$bdir"
+    nudge="$dir"; [ -z "$lost$above" ] || nudge="$bdir"
     if [ -n "$xy" ]; then
       # Found on the way back: the way back is over, and where to swipe now is
       # decided by where the element is, as always.
-      [ -z "$lost" ] || { lost=""; exp=""; prev=""; ctl=0; end0=""; }
+      [ -z "$lost$above" ] || { lost=""; above=""; exp=""; prev=""; ctl=0; end0=""; }
       dmode=off
       # The coordinate that decides is the one the swipe moves.
       case "$dir" in up|down) c="${xy##* }";; *) c="${xy%% *}";; esac
@@ -2752,7 +2752,9 @@ scroll_search(){ local lbl="$1" dir="${2:-down}" clear="${3:-}" verb="${4:-scrol
         probe="$(list_probe "$nudge" "$xy" "$w" "$h" "" "")" || st=$?
       # An element on the screen is not searched for: where to swipe is decided
       # by where it is, whatever the list did to bring it there.
-      elif [ -z "$lost" ] && [ -z "$xy" ] && [ -n "$exp" ] && [ "${15}" = 1 ]; then
+      # Not on a way back either, the one for a lost seam or for a lost element
+      # (#122): its short swipes go against the seam.
+      elif [ -z "$lost$above" ] && [ -z "$xy" ] && [ -n "$exp" ] && [ "${15}" = 1 ]; then
         if [ -z "$backed" ]; then
           printf '  · swipe went past the gesture - going back%s\n' "${dlast:+ (distance)}" >&2
           dmode=off; backed=1; nofar=1; far=""; lost="$exp"; exp=""; prev=""; ctl=0; end0=""; nudge="$bdir"
@@ -2804,11 +2806,21 @@ scroll_search(){ local lbl="$1" dir="${2:-down}" clear="${3:-}" verb="${4:-scrol
           HELD_TREE="$dkeep"
           case "$r" in below\ *) dt="${r#below }"; dk=t;; esac
           case "$e" in below\ *) dt="${e#below }"; dk=e;; esac
-          [ -n "$r" ] || [ "$dmode" != t ] || printf '  · distance scroll lost the target\n' >&2
+          # Lost (#122): the element was below the fold before the swipe, and
+          # now it is neither on the screen nor below it - the swipe carried it
+          # above. The search turns back with the usual short swipes, which
+          # cannot jump it again, and turns forward once more at the start of
+          # the list, as the way back of #117 does.
+          if [ -z "$r" ] && [ "$dmode" = t ]; then
+            printf '  · distance scroll lost the target - going back\n' >&2
+            above=1; nofar=1; far=""; exp=""; prev=""; ctl=0; end0=""; nudge="$bdir"
+          fi
           case "$r" in on\ *) printf '  · distance scroll: the full tree has the element on the screen\n' >&2;; esac
         fi
         aim=$(( ( (${16} > lo ? ${16} : lo) + (${17} < hi ? ${17} : hi) ) / 2 ))
-        if [ -z "$dk" ] || [ "$aim" -le "$(( ${16} > lo ? ${16} : lo ))" ]; then dmode=off
+        if [ -n "$above" ]; then dmode=off
+          probe="$(list_probe "$nudge" "$xy" "$w" "$h" "" "")" || st=$?
+        elif [ -z "$dk" ] || [ "$aim" -le "$(( ${16} > lo ? ${16} : lo ))" ]; then dmode=off
         elif [ "$1" = none ] && [ "$dk" = "$dmode" ] && [ -n "$dprev" ] && [ "$(( dt - dprev ))" -le 8 ] && [ "$(( dprev - dt ))" -le 8 ]; then dmode=off
         else
           k100=100
@@ -2846,11 +2858,12 @@ scroll_search(){ local lbl="$1" dir="${2:-down}" clear="${3:-}" verb="${4:-scrol
     flat=""
     set -- $probe
     if [ -n "$prev" ] && same_rows "$prev" "$1 $2 $3"; then
-      if [ "$ctl" = 1 ] && [ -n "$lost" ]; then
-        # On the way back the list stopped at its start without the lost seam:
-        # forward again at once. No wait for growth - the start of a list does
-        # not grow - and not the end of the search either.
-        lost=""; exp=""; prev=""; ctl=0; end0=""; continue
+      if [ "$ctl" = 1 ] && [ -n "$lost$above" ]; then
+        # On the way back the list stopped at its start without the lost seam
+        # (or the lost element): forward again at once. No wait for growth -
+        # the start of a list does not grow - and not the end of the search
+        # either.
+        lost=""; above=""; exp=""; prev=""; ctl=0; end0=""; continue
       fi
       if [ "$ctl" = 1 ]; then
         # Two misses in a row: the list stopped moving. With the element on the

@@ -1558,18 +1558,65 @@ status_is 0; gestures_are 3; gesture_line 1 540 1900 540 300; gesture_line 2 540
 gesture_line 3 540 1900 540 300; lacks out.txt "distance scroll ratio"; count_is out.txt "· full tree" 3
 verdict; helper_done
 
+# Lost (#122): after a distance swipe the element is neither on the screen nor
+# below the fold - the swipe carried it above. The search goes back with the
+# usual short swipe, not on down past it.
 helper_case scroll-dist-lost
 : > "$case_dir/adb/running"
 helper_screen "$case_dir/adb/helper-1.xml" "$(hlist @1)"
 helper_screen "$case_dir/adb/helper-full-1.xml" "$(hfull "$(hlist @1)" Target:2450)"
 helper_screen "$case_dir/adb/helper-2.xml" "$(hlist @7)"
 helper_screen "$case_dir/adb/helper-full-2.xml" "$(hfull "$(hlist @7)" 'R 17:2300')"
-helper_screen "$case_dir/adb/helper-3.xml" "$(hlist @15 Target 1100)"
+helper_screen "$case_dir/adb/helper-3.xml" "$(hlist @3 Target 1100)"
 flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target" }'
 run_helper flow "$case_dir/flow.json"
-begin "distance: an element neither on the screen nor below the fold any more is said lost, and the usual search goes on"
-status_is 0; count_is out.txt "· distance scroll lost the target" 1; gestures_are 2
-gesture_line 1 540 1900 540 650; gesture_line 2 540 1900 540 300
+begin "distance: an element neither on the screen nor below the fold any more is said lost, and the search goes back for it"
+status_is 0; count_is out.txt "· distance scroll lost the target - going back" 1; gestures_are 2
+gesture_line 1 540 1900 540 650; gesture_line 2 540 700 540 1500; count_is out.txt "· full tree" 2
+verdict; helper_done
+
+# The way back for a lost element reaches the start of the list without it:
+# forward again at once, as the way back of #117 does, and the element is
+# found below. Three swipes back, the control swipe at the start, two reads of
+# the start that turn the search forward, and the sixth gesture is the forward
+# one.
+helper_case scroll-dist-lost-start
+: > "$case_dir/adb/running"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hlist @1)"
+helper_screen "$case_dir/adb/helper-full-1.xml" "$(hfull "$(hlist @1)" Target:2450)"
+helper_screen "$case_dir/adb/helper-2.xml" "$(hlist @7)"
+helper_screen "$case_dir/adb/helper-full-2.xml" "$(hfull "$(hlist @7)" 'R 17:2300')"
+helper_screen "$case_dir/adb/helper-3.xml" "$(hlist @3)"
+helper_screen "$case_dir/adb/helper-4.xml" "$(hlist @1)"
+helper_screen "$case_dir/adb/helper-5.xml" "$(hlist @1)"
+helper_screen "$case_dir/adb/helper-6.xml" "$(hlist @1)"
+helper_screen "$case_dir/adb/helper-7.xml" "$(hlist @1)"
+helper_screen "$case_dir/adb/helper-8.xml" "$(hlist @5 Target 1100)"
+flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target" }'
+run_helper flow "$case_dir/flow.json"
+begin "distance: the way back for a lost element that reaches the start of the list turns forward and finds it below"
+status_is 0; count_is out.txt "· distance scroll lost the target - going back" 1; gestures_are 6
+count_is out.txt "· full tree" 2; lacks out.txt "went past the gesture"
+gesture_line 2 540 700 540 1500; gesture_line 3 540 700 540 1500; gesture_line 4 540 700 540 1500
+gesture_line 5 540 900 540 1400; gesture_line 6 540 1500 540 700
+verdict; helper_done
+
+# The way back for a lost element is not judged by the seam of #117: a read
+# after a swipe back with none of the rows that were on the screen is not a list
+# that ran past, and the search goes on back.
+helper_case scroll-dist-lost-no-past
+: > "$case_dir/adb/running"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hlist @1)"
+helper_screen "$case_dir/adb/helper-full-1.xml" "$(hfull "$(hlist @1)" Target:2450)"
+helper_screen "$case_dir/adb/helper-2.xml" "$(hlist @7)"
+helper_screen "$case_dir/adb/helper-full-2.xml" "$(hfull "$(hlist @7)" 'R 17:2300')"
+helper_screen "$case_dir/adb/helper-3.xml" "$(hlist @25)"
+helper_screen "$case_dir/adb/helper-4.xml" "$(hlist @21 Target 1100)"
+flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Target" }'
+run_helper flow "$case_dir/flow.json"
+begin "distance: the way back for a lost element is not taken for a list that ran past"
+status_is 0; count_is out.txt "· distance scroll lost the target - going back" 1; lacks out.txt "went past the gesture"
+gestures_are 3; gesture_line 2 540 700 540 1500; gesture_line 3 540 700 540 1500
 verdict; helper_done
 
 # A lazy list holds no row below the fold: the full read changes nothing.
