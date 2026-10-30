@@ -607,6 +607,27 @@ if _m: SX1,SY1,SX2,SY2=map(int,_m.groups())
 # negative assertion or a `when` condition PASSES on that answer. The screen that
 # cannot be judged has to say so in a way the caller can read.
 if mode in ("assert","id") and not (SX2>SX1 and SY2>SY1): sys.exit(3)
+# "in" (#102): an assertion limited to one element. The element is the one tapId
+# would tap - the first node whose resource-id segment is the id, of real size,
+# its centre on the screen - and the candidates are that node and the nodes that
+# lie within its bounds; every other text on the screen is ignored. No such
+# element is status 4: the screen was read and the element the check is about
+# is not on it, which is neither "the text is missing" nor "unreadable". The iOS
+# path does the same by frame.
+scope=(sys.argv[6].lower() if len(sys.argv)>6 else ""); sbox=None
+if scope and mode=="assert":
+    for m in re.finditer(r"<node\b[^>]*>", xml):
+        tag=m.group(0)
+        r=re.search(r"resource-id=\"([^\"]*)\"",tag)
+        if not r or norm(html.unescape(r.group(1))).split("/")[-1].lower()!=scope: continue
+        b=re.search(r"bounds=\"\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]\"",tag)
+        if not b: continue
+        x1,y1,x2,y2=map(int,b.groups())
+        if not (x2>x1 and y2>y1): continue
+        cx,cy=(x1+x2)//2,(y1+y2)//2
+        if not (SX1<=cx<SX2 and SY1<=cy<SY2): continue
+        sbox=(x1,y1,x2,y2); break
+    if sbox is None: sys.exit(4)
 best=None; best_box=None; best_score=0; zero=None; off=None
 # A tree read with the rows below the fold (#116, helper_full_tree) is asked in
 # two more ways. Such a row comes upside down: its top is where it stands in the
@@ -683,6 +704,8 @@ for m in re.finditer(r"<node\b[^>]*>", xml):
     if full and below(x1,y1,x2,y2):
         if low is None or score>low[0] or (score==low[0] and y1<low[1]): low=(score,y1)
         continue
+    # Outside the element named by "in": not a candidate, not even a near miss.
+    if sbox and not (sbox[0]<=x1 and sbox[1]<=y1 and x2<=sbox[2] and y2<=sbox[3]): continue
     if not (x2>x1 and y2>y1):   # zero-area node: in the tree, not on the screen
         if zero is None: zero=(x1,y1,x2,y2)
         continue
@@ -709,7 +732,7 @@ elif best:
 elif out=="why":
     if zero: print("zero",*zero)
     elif off: print("off",*off)
-' "$1" "${2:-text}" "${3:-exact}" "${4:-centre}" "${5:-}"; }
+' "$1" "${2:-text}" "${3:-exact}" "${4:-centre}" "${5:-}" "${6:-}"; }
 # Where a horizontal swipe should land, from the dump. A swipe across the middle
 # of the screen lands on whatever is there, and an element that does not claim
 # the gesture may be pressed instead of scrolled: measured on the app under test,
@@ -1290,7 +1313,7 @@ ui(){ is_android && { aui; return; }; [ -n "$HELD_TREE" ] && { printf '%s' "$HEL
   # empty string made every caller read it as "the element is not there". The
   # Android path already fails here; this is the same rule for iOS.
   device_fault; die "idb returned no accessibility tree after 4 tries - is the simulator booted?"; }
-find_el(){ is_android && { afind "$1" "${2:-text}" "${3:-exact}" "${4:-centre}"; return; }; paths; ui | "$PY" -c '
+find_el(){ is_android && { afind "$1" "${2:-text}" "${3:-exact}" "${4:-centre}" "" "${5:-}"; return; }; paths; ui | "$PY" -c '
 import json,sys,os,traceback
 # A lookup must never leave with status 1: that status now means the screen
 # could not be read AND the reason is already printed. Anything unforeseen in
@@ -1362,6 +1385,16 @@ def centre(e):
 # stops discriminating. Requiring a named window here would fail closed on every
 # build that names none, which cannot be verified without a Mac.
 if mode in ("assert","id") and not (SW>0 and SH>0): sys.exit(3)   # 3 = read, not judgeable
+# "in" (#102), the same contract as the Android path: the element tapId would
+# tap - the first with that accessibility identifier, of real size, its centre
+# in the window - and only what lies within its frame counts; none is status 4.
+scope=(sys.argv[5].lower() if len(sys.argv)>5 else ""); sbox=None
+if scope and mode=="assert":
+    for e in els:
+        if str(e.get("AXUniqueId") or e.get("identifier") or "").lower()!=scope: continue
+        if centre(e) is None: continue
+        x,y,w,h=frame(e); sbox=(x,y,x+w,y+h); break
+    if sbox is None: sys.exit(4)
 def emit(e,xy):
     # The frame in the same coordinates as the centre above it: whatever the
     # scale of this idb build, a share of the screen is the same share, and a
@@ -1409,6 +1442,9 @@ for e in els:
         elif not (q_raw and q_raw in (label_raw, value_raw, title_raw)): continue
         xy=centre(e)
         if xy is None: continue
+        if sbox:
+            x,y,w,h=frame(e)
+            if not (sbox[0]<=x and sbox[1]<=y and x+w<=sbox[2] and y+h<=sbox[3]): continue
         emit(e,xy); sys.exit(0)
     if not (q and (q in ident or q in label or q in value or q in title)): continue
     score=0
@@ -1439,8 +1475,76 @@ if best: emit(best_el,best)
 elif out=="why":
     if zero: print("zero",*zero)
     elif off: print("off",*off)
-' "$1" "${2:-text}" "${3:-exact}" "${4:-centre}"; }
+' "$1" "${2:-text}" "${3:-exact}" "${4:-centre}" "${5:-}"; }
 tap(){ is_android && { atap "$1" "$2"; return; }; paths; idb ui tap --udid "$(U)" "${1:?x}" "${2:?y}"; }
+# iOS: what is really under a tap point. The lookups above judge an element by
+# its own frame only - in the window, of real size - and never ask whether
+# something drawn over it takes the touch. A button scrolled behind the tab bar
+# passes them, and its tap opens the tab instead: a card's "Skip" (centre
+# 326,833) sat under a tab button (321-402 x 785-840), dismiss took it for an
+# interstitial, and every flow's first block ended on that tab (idb ui
+# describe-point 326 833 answered the tab; 2026-10-28). So the point is asked:
+# idb describe-point names the element that gets the touch. It is the target
+# when it matches the query by find_el's own rule (id: the identifier exactly;
+# text: the query inside identifier, label, value or title, case folded), or a
+# part of the target: an element with no id of its own whose centre lies inside
+# the target's frame (a centre, not the whole frame: a label's frame can stick
+# out of its button by a point). An element with an id of its own that does not
+# match is another control, even inside the target's frame, for an id query and
+# a text query alike - a sticky date strip's day button lay inside a
+# scrolled-under tile's frame, and the tap went to the day (2026-10-29).
+# Anything else covers the target. Known limit: a target that is not an
+# accessibility element (a plain view with an id) holding a child with an id of
+# its own answers the child at its point, and reads as covered by it; accessible
+# touchables hide their children, so it needs such a container. Answers:
+# "ok", "covered <id or type>", "unknown" (idb gave no element). Only the
+# covering element's id or type is printed, never its label: a label can carry
+# what the screen shows.
+IHIT_PY='
+import json,os,sys
+n=lambda s: " ".join(str(s or "").split()).lower()
+q=n(sys.argv[1]); mode=sys.argv[2]; box=(sys.argv[3].split() if len(sys.argv)>3 else [])
+try: el=json.loads(os.environ.get("YUKTI_PT") or "")
+except ValueError: el=None
+if isinstance(el,list): el=el[0] if el else None
+if not isinstance(el,dict) or not el: print("unknown"); sys.exit(0)
+ident=n(el.get("AXUniqueId") or el.get("identifier"))
+texts=(ident,n(el.get("AXLabel")),n(el.get("AXValue")),n(el.get("title")))
+hit=(bool(q) and q==ident) if mode=="id" else (bool(q) and any(q in t for t in texts))
+if not hit and len(box)>=4 and not ident:
+    b=el.get("frame") or {}
+    def g(*ks):
+        for k in ks:
+            if b.get(k) is not None:
+                try: return float(b[k])
+                except (TypeError,ValueError): return 0.0
+        return 0.0
+    x,y,w,h=g("X","x"),g("Y","y"),g("Width","width"),g("Height","height")
+    bx=[float(v) for v in box[:4]]
+    cx,cy=x+w/2,y+h/2
+    hit=w>0 and h>0 and bx[0]<=cx<=bx[2] and bx[1]<=cy<=bx[3]
+if hit: print("ok")
+else: print("covered", el.get("AXUniqueId") or el.get("identifier") or (str(el.get("type") or "element")+" (no id)"))
+'
+ihit(){ local q="$1" mode="$2" x="$3" y="$4" pt v box
+  is_android && { echo ok; return 0; }
+  paths; pt="$(idb ui describe-point --udid "$(U)" "$x" "$y" 2>/dev/null)" || pt=""
+  v="$(YUKTI_PT="$pt" "$PY" -c "$IHIT_PY" "$q" "$mode")" || v=unknown
+  case "$v" in covered*)
+    box="$(find_el "$q" "$mode" exact box 2>/dev/null)" || box=""
+    [ -n "$box" ] && { v="$(YUKTI_PT="$pt" "$PY" -c "$IHIT_PY" "$q" "$mode" "$box")" || v=unknown; };;
+  esac
+  printf '%s\n' "${v:-unknown}"; }
+# A tap that must land on its target: covered = the step fails and says by what,
+# instead of tapping the element on top. No answer from idb = the tap goes ahead
+# as it did before this check, with a warning.
+tap_checked(){ local q="$1" mode="$2" x="$3" y="$4" v; v="$(ihit "$q" "$mode" "$x" "$y")"
+  case "$v" in
+    ok) ;;
+    covered*) die "'$q' at $x,$y is covered by ${v#covered } - not tapped, the touch would go to that instead";;
+    *) warn "could not read what is under '$q' at $x,$y - tapping as before";;
+  esac
+  tap "$x" "$y"; }
 # A lookup has three outcomes, not two: coordinates, "no such element", and
 # "the screen could not be read at all". The third one used to arrive as the
 # second, because `die` inside aui/ui exits a command-substitution subshell and
@@ -1456,12 +1560,19 @@ tap_text(){ local xy st=0 grow="${2:-$SCROLL_GROW_WAIT}"
   case "$grow" in ''|*[!0-9]*|0) die "tapText: timeout must be a whole number of seconds greater than zero, got '$grow'";; esac
   xy="$(scroll_to "$1" down "" tapText "$grow")" || st=$?
   case "$st" in 0) ;; 5) die "no element matching '$1'";; 6|7|8) die "no element matching '$1' - $(scroll_miss "$st" "$1" down "$grow")";; *) lookup_die "$st";; esac
-  [ -n "$xy" ] || die "no element matching '$1'"; tap $xy; }  # auto-scrolls off-screen elements into view
+  [ -n "$xy" ] || die "no element matching '$1'"; tap_checked "$1" text $xy; }  # auto-scrolls off-screen elements into view
 # The exception these two verbs enjoy is about an ABSENT label, and nothing else.
 # A device that refuses the tap is not an absent label: the status of `tap` is
 # checked here, or the step keeps its exception and reports a tap that never
 # happened - the very class of lie the status check above exists to end.
-tap_text_optional(){ local xy st=0; xy="$(find_el "$1")" || st=$?; [ "$st" -eq 0 ] || lookup_die "$st"; [ -n "$xy" ] && { tap $xy || die "optional tap '$1': the device refused the tap"; ok "optional tap '$1'"; } || warn "optional '$1' not present — skipped"; }
+tap_text_optional(){ local xy st=0 v; xy="$(find_el "$1")" || st=$?; [ "$st" -eq 0 ] || lookup_die "$st"
+  # Covered is not absent: say so, and leave it alone (see ihit).
+  [ -n "$xy" ] && { v="$(ihit "$1" text $xy)"; case "$v" in
+    ok) ;;
+    covered*) warn "optional '$1' is covered by ${v#covered } - not tapped"; return 0;;
+    *) warn "could not read what is under optional '$1' at ${xy/ /,} - tapping as before";;
+  esac; }
+  [ -n "$xy" ] && { tap $xy || die "optional tap '$1': the device refused the tap"; ok "optional tap '$1'"; } || warn "optional '$1' not present — skipped"; }
 # Auto-dismiss the interstitials that derail flows (Save Password, notifications, promos…)
 # only SAFE interstitial labels — never Cancel/Close/OK (those navigate/confirm)
 DISMISS_LABELS=("Not Now" "Not now" "Maybe Later" "Later" "Skip for now" "Skip" "No thanks" "No Thanks" "Got it")
@@ -1473,7 +1584,7 @@ DISMISS_LABELS=("Not Now" "Not now" "Maybe Later" "Later" "Skip for now" "Skip" 
 # capped - a screen that keeps answering with another interstitial is news, and
 # the step says so instead of looping. It stops after the sixth tap without
 # reading the screen again, so it never claims to know what is on it.
-dismiss(){ local L xy st hit round=0
+dismiss(){ local L xy st hit v round=0
   while :; do
     HELD_TREE=""
     # ui() says why itself and leaves non-zero from the substitution; the step
@@ -1484,7 +1595,17 @@ dismiss(){ local L xy st hit round=0
     for L in "${DISMISS_LABELS[@]}"; do
       st=0; xy="$(find_el "$L")" || st=$?
       [ "$st" -eq 0 ] || { HELD_TREE=""; lookup_die "$st"; }
-      [ -n "$xy" ] && { hit="$L"; break; }
+      # A covered match is a button under something else (a card's own Skip
+      # behind the tab bar), not an interstitial on top: leave it (see ihit).
+      if [ -n "$xy" ]; then
+        v="$(ihit "$L" text $xy)"
+        case "$v" in
+          ok) ;;
+          covered*) warn "dismiss: '$L' is covered by ${v#covered } - not a pop-up, left alone"; xy=""; continue;;
+          *) warn "dismiss: could not read what is under '$L' at ${xy/ /,} - tapping as before";;
+        esac
+        hit="$L"; break
+      fi
     done
     HELD_TREE=""
     [ -n "$hit" ] || return 0
@@ -1795,18 +1916,22 @@ kb_before_swipe(){ local who="$1, before swiping" st=0
 # the same lookup taps use: relevance, ranking and real non-zero bounds.
 # The match rule is part of the assertion, so the flow states it and the log
 # repeats it: a green line that does not say how it matched cannot be read back.
-assert_text(){ local q="${1:-}" m="${2:-exact}" xy st=0
+# With an "in" id (#102) only that element and what lies within it count, and
+# the two misses read apart: "no element with id" in the words of tapId, or the
+# element is there and the text is not in it.
+assert_text(){ local q="${1:-}" m="${2:-exact}" in="${3:-}" xy st=0
   [ -n "$q" ] || die "assertText needs a non-empty value"
   case "$m" in exact|contains) ;; *) die "assertText: unknown match '$m' - use exact or contains";; esac
-  xy="$(find_el "$q" assert "$m")" || st=$?
-  [ "$st" -eq 0 ] || die "assert FAILED: $(lookup_err "$st")"
+  xy="$(find_el "$q" assert "$m" centre "$in")" || st=$?
+  [ "$st" -eq 0 ] || die "assert FAILED: $(lookup_err "$st" "$in")"
+  [ -z "$in" ] || { [ -n "$xy" ] && ok "assert ($m) in '$in': '$q' on screen at $xy" || die "assert FAILED ($m match): '$q' not in the element with id '$in'"; return; }
   [ -n "$xy" ] && ok "assert ($m): '$q' on screen at $xy" || die "assert FAILED ($m match): '$q' not on screen"; }
 # Explicit-selector variants. tapText/assertText match on visible text and can
 # land on a neighbouring caption; these two take an accessibility id / resource-id
 # segment and match it exactly, or fail. An empty id is a failure, never a match:
 # a flow step with a missing or misspelled `value` must stop the run, not tap a
 # random point. Neither scrolls — use scrollToText first for a target below the fold.
-tap_id(){ local q="${1:-}"; [ -n "$q" ] || die "tapId needs a non-empty id"; local xy st=0; xy="$(find_el "$q" id)" || st=$?; [ "$st" -eq 0 ] || die "$(lookup_err "$st")"; [ -n "$xy" ] || die "no element with id '$q'"; tap $xy; }
+tap_id(){ local q="${1:-}"; [ -n "$q" ] || die "tapId needs a non-empty id"; local xy st=0; xy="$(find_el "$q" id)" || st=$?; [ "$st" -eq 0 ] || die "$(lookup_err "$st")"; [ -n "$xy" ] || die "no element with id '$q'"; tap_checked "$q" id $xy; }
 assert_id(){ local q="${1:-}"; [ -n "$q" ] || die "assertId needs a non-empty id"; local xy st=0; xy="$(find_el "$q" id)" || st=$?; [ "$st" -eq 0 ] || die "assert FAILED: $(lookup_err "$st")"; [ -n "$xy" ] && ok "assert id: '$q' on screen at $xy" || die "assert FAILED: no element with id '$q'"; }
 # The density of the screen, for a constraint written in dp. Read once per run
 # and kept: it cannot change under a run, and every box assertion would
@@ -1968,6 +2093,8 @@ lookup_die(){ local st="${1:-1}" msg="${2:-}"
 lookup_err(){ case "${1:-1}" in
     2) device_fault; printf '%s' "the device answered, but not with a tree that can be read";;
     3) printf '%s' "the screen was read but does not report its own bounds, so nothing on it can be called visible";;
+    # The element an "in" names is not on the screen (#102); the id comes second.
+    4) printf "no element with id '%s'" "${2:-}";;
     *) printf '%s' "cannot read the screen - see the error above";; esac; }
 # The negative assertions. Absence is the one verdict where an EMPTY answer is the
 # pass, which makes it the one verdict that a missing answer passes by accident:
@@ -1991,11 +2118,15 @@ assert_box_args(){ local q="${1:-}" kind="${2:-}" spec="" pair
   shift 2
   for pair in "$@"; do spec="${spec:+$spec$COND_SEP}${pair%%=*}$COND_KV${pair#*=}"; done
   assert_box "$q" "$kind" "$spec"; }
-assert_not_text(){ local q="${1:-}" m="${2:-exact}" xy st=0
+# With an "in" id, absence is judged inside that element, and an element that
+# is not there fails the step: nothing can be absent from what is not on screen.
+assert_not_text(){ local q="${1:-}" m="${2:-exact}" in="${3:-}" xy st=0
   [ -n "$q" ] || die "assertNotText needs a non-empty value"
   case "$m" in exact|contains) ;; *) die "assertNotText: unknown match '$m' - use exact or contains";; esac
-  xy="$(find_el "$q" assert "$m")" || st=$?
-  [ "$st" -eq 0 ] || die "assertNot FAILED: $(lookup_err "$st")"
+  xy="$(find_el "$q" assert "$m" centre "$in")" || st=$?
+  [ "$st" -eq 0 ] || die "assertNot FAILED: $(lookup_err "$st" "$in")"
+  [ -z "$in" ] || { [ -z "$xy" ] || die "assertNot FAILED ($m match): '$q' IS in the element with id '$in', at $xy"
+    ok "assertNot ($m) in '$in': '$q' not in that element"; return; }
   [ -z "$xy" ] || die "assertNot FAILED ($m match): '$q' IS on the screen, at $xy"
   ok "assertNot ($m): '$q' not on the current screen"; }
 assert_not_id(){ local q="${1:-}" xy st=0
@@ -2029,17 +2160,23 @@ wait_s(){ sleep "${1:-2}"; }
 # skip: a `~` line, the step lands in the report as skipped with the same words,
 # and the flow goes on. The words travel to the record in FLOW_OPT_MISS. An
 # unreadable screen still stops the flow: it is not an answer either way.
-wait_for(){ local q="${1:-}" t="${2:-10}" m="${3:-exact}" mode="${4:-assert}" opt="${5:-}" xy readable=1 lst=1 t0 el label why="" msg
+#
+# With an "in" id (waitFor only, #102) the poll waits for the text inside that
+# element, and an element not yet on the screen is "not there yet", not an
+# unreadable screen. The timeout says which of the two it ended in.
+wait_for(){ local q="${1:-}" t="${2:-10}" m="${3:-exact}" mode="${4:-assert}" opt="${5:-}" in="${6:-}" xy readable=1 lst=1 nosc=0 t0 el label why="" msg
   [ -n "$q" ] || die "waitFor needs a non-empty value"
   case "$t" in ''|*[!0-9]*|0) die "waitFor: timeout must be a whole number of seconds greater than zero, got '$t'";; esac
   case "$m" in exact|contains) ;; *) die "waitFor: unknown match '$m' - use exact or contains";; esac
-  [ "$mode" = id ] && label="waitFor id" || label="waitFor ($m match)"
+  [ "$mode" = id ] && label="waitFor id" || label="waitFor ($m match)${in:+ in '$in'}"
   say "$label: up to ${t}s for '$q'"
   t0=$SECONDS
   while :; do
-    if xy="$(find_el "$q" "$mode" "$m")"; then readable=1
+    if xy="$(find_el "$q" "$mode" "$m" centre "$in")"; then readable=1; nosc=0
       [ -n "$xy" ] && { el=$((SECONDS - t0)); ok "$label: '$q' on screen at $xy after ${el}s"; return 0; }
-    else lst=$?; readable=0; fi
+    else lst=$?
+      if [ "$lst" -eq 4 ]; then readable=1; nosc=1; else readable=0; fi
+    fi
     [ $((SECONDS - t0)) -lt "$t" ] || break
     sleep 0.5
   done
@@ -2054,6 +2191,9 @@ wait_for(){ local q="${1:-}" t="${2:-10}" m="${3:-exact}" mode="${4:-assert}" op
         *)       why="not in the tree";;
       esac
     else lst=$?; die "$label FAILED after ${t}s waiting for '$q': $(lookup_err "$lst")"; fi
+  fi
+  if [ -n "$in" ]; then
+    [ "$nosc" = 1 ] && why="no element with id '$in'" || why="not in the element with id '$in'"
   fi
   msg="'$q' not on screen after ${t}s${why:+ - $why}"
   if [ "$opt" = optional ]; then
@@ -2658,7 +2798,7 @@ scroll_to(){ local t0 st=0; t0="$(now)"; SCROLL_N=0; SWIPED_BY=adb; SWIPE_FAR=""
   scroll_search "$@" || st=$?
   printf '  · search %s swipes %d ms\n' "$SCROLL_N" $(( ($(us_of "$(now)") - $(us_of "$t0")) / 1000 )) >&2
   return "$st"; }
-scroll_search(){ local lbl="$1" dir="${2:-down}" clear="${3:-}" verb="${4:-scrollToText}" grow="${5:-$SCROLL_GROW_WAIT}" xy c lo hi blo bhi m w h seen="" nudge st probe prev="" ctl=0 ended="" flat="" kb="" end0="" far t1 tn waited=0 tw="" budget exp="" lost="" backed="" nofar="" bdir dmode="" dprev="" dlen=0 dlast="" k100=100 full r e aim want dprobe dkeep dt dk
+scroll_search(){ local lbl="$1" dir="${2:-down}" clear="${3:-}" verb="${4:-scrollToText}" grow="${5:-$SCROLL_GROW_WAIT}" xy c lo hi blo bhi m w h seen="" nudge st probe prev="" ctl=0 ended="" flat="" kb="" end0="" far t1 tn waited=0 tw="" budget exp="" lost="" backed="" nofar="" bdir dmode="" dprev="" dlen=0 dlast="" k100=100 full r e aim want dprobe dkeep dt dk above=""
   case "$dir" in up|down|left|right) ;; *) die "scrollToText: '$dir' is not a direction - use up, down, left or right";; esac
   case "$dir" in down) bdir=up;; up) bdir=down;; left) bdir=right;; right) bdir=left;; esac
   set -- $(screen_wh); w="${1:-$BASIS_W}"; h="${2:-$BASIS_H}"
@@ -2681,11 +2821,11 @@ scroll_search(){ local lbl="$1" dir="${2:-down}" clear="${3:-}" verb="${4:-scrol
     # change in between. Emptied before the swipe, as in dismiss.
     HELD_TREE=""; HELD_TREE="$(ui)" || exit 1
     st=0; xy="$(find_el "$lbl")" || st=$?; [ "$st" -eq 0 ] || { HELD_TREE=""; lookup_die "$st"; }
-    nudge="$dir"; [ -z "$lost" ] || nudge="$bdir"
+    nudge="$dir"; [ -z "$lost$above" ] || nudge="$bdir"
     if [ -n "$xy" ]; then
       # Found on the way back: the way back is over, and where to swipe now is
       # decided by where the element is, as always.
-      [ -z "$lost" ] || { lost=""; exp=""; prev=""; ctl=0; end0=""; }
+      [ -z "$lost$above" ] || { lost=""; above=""; exp=""; prev=""; ctl=0; end0=""; }
       dmode=off
       # The coordinate that decides is the one the swipe moves.
       case "$dir" in up|down) c="${xy##* }";; *) c="${xy%% *}";; esac
@@ -2727,7 +2867,9 @@ scroll_search(){ local lbl="$1" dir="${2:-down}" clear="${3:-}" verb="${4:-scrol
         probe="$(list_probe "$nudge" "$xy" "$w" "$h" "" "")" || st=$?
       # An element on the screen is not searched for: where to swipe is decided
       # by where it is, whatever the list did to bring it there.
-      elif [ -z "$lost" ] && [ -z "$xy" ] && [ -n "$exp" ] && [ "${15}" = 1 ]; then
+      # Not on a way back either, the one for a lost seam or for a lost element
+      # (#122): its short swipes go against the seam.
+      elif [ -z "$lost$above" ] && [ -z "$xy" ] && [ -n "$exp" ] && [ "${15}" = 1 ]; then
         if [ -z "$backed" ]; then
           printf '  · swipe went past the gesture - going back%s\n' "${dlast:+ (distance)}" >&2
           dmode=off; backed=1; nofar=1; far=""; lost="$exp"; exp=""; prev=""; ctl=0; end0=""; nudge="$bdir"
@@ -2779,11 +2921,21 @@ scroll_search(){ local lbl="$1" dir="${2:-down}" clear="${3:-}" verb="${4:-scrol
           HELD_TREE="$dkeep"
           case "$r" in below\ *) dt="${r#below }"; dk=t;; esac
           case "$e" in below\ *) dt="${e#below }"; dk=e;; esac
-          [ -n "$r" ] || [ "$dmode" != t ] || printf '  · distance scroll lost the target\n' >&2
+          # Lost (#122): the element was below the fold before the swipe, and
+          # now it is neither on the screen nor below it - the swipe carried it
+          # above. The search turns back with the usual short swipes, which
+          # cannot jump it again, and turns forward once more at the start of
+          # the list, as the way back of #117 does.
+          if [ -z "$r" ] && [ "$dmode" = t ]; then
+            printf '  · distance scroll lost the target - going back\n' >&2
+            above=1; nofar=1; far=""; exp=""; prev=""; ctl=0; end0=""; nudge="$bdir"
+          fi
           case "$r" in on\ *) printf '  · distance scroll: the full tree has the element on the screen\n' >&2;; esac
         fi
         aim=$(( ( (${16} > lo ? ${16} : lo) + (${17} < hi ? ${17} : hi) ) / 2 ))
-        if [ -z "$dk" ] || [ "$aim" -le "$(( ${16} > lo ? ${16} : lo ))" ]; then dmode=off
+        if [ -n "$above" ]; then dmode=off
+          probe="$(list_probe "$nudge" "$xy" "$w" "$h" "" "")" || st=$?
+        elif [ -z "$dk" ] || [ "$aim" -le "$(( ${16} > lo ? ${16} : lo ))" ]; then dmode=off
         elif [ "$1" = none ] && [ "$dk" = "$dmode" ] && [ -n "$dprev" ] && [ "$(( dt - dprev ))" -le 8 ] && [ "$(( dprev - dt ))" -le 8 ]; then dmode=off
         else
           k100=100
@@ -2821,11 +2973,12 @@ scroll_search(){ local lbl="$1" dir="${2:-down}" clear="${3:-}" verb="${4:-scrol
     flat=""
     set -- $probe
     if [ -n "$prev" ] && same_rows "$prev" "$1 $2 $3"; then
-      if [ "$ctl" = 1 ] && [ -n "$lost" ]; then
-        # On the way back the list stopped at its start without the lost seam:
-        # forward again at once. No wait for growth - the start of a list does
-        # not grow - and not the end of the search either.
-        lost=""; exp=""; prev=""; ctl=0; end0=""; continue
+      if [ "$ctl" = 1 ] && [ -n "$lost$above" ]; then
+        # On the way back the list stopped at its start without the lost seam
+        # (or the lost element): forward again at once. No wait for growth -
+        # the start of a list does not grow - and not the end of the search
+        # either.
+        lost=""; above=""; exp=""; prev=""; ctl=0; end0=""; continue
       fi
       if [ "$ctl" = 1 ]; then
         # Two misses in a row: the list stopped moving. With the element on the
@@ -3636,7 +3789,9 @@ BOX_KINDS = ("maxHeight", "maxWidth", "maxX", "maxY",
 # of a run and nothing else: the step runs the same with it or without it.
 # "optional" lets a waitForId time out without failing the flow; no other step
 # takes it.
-STEP_KEYS = set(KEYS) | {"when", "box", "title", "optional"}
+# "in" limits a text check to one element, named by id (#102).
+STEP_KEYS = set(KEYS) | {"when", "box", "title", "optional", "in"}
+IN_VERBS = ("assertText", "assertNotText", "waitFor")
 INCLUDE_KEYS = {"do", "value", "with", "when"}
 # One condition is a kind and a value; several in one `when` all have to hold.
 # These two characters separate them inside the single field that carries them.
@@ -3733,6 +3888,27 @@ def optional_of(step, at):
         fail('%s: "optional" is true or false, got %s' % (at, json.dumps(o)))
     return "1" if o else ""
 
+def in_of(step, at, scope, src):
+    if "in" not in step: return ""
+    verb = step.get("do", "")
+    # The text checks and nothing else: a step that ignored the key would tell
+    # the author its lookup was limited to an element when it was not.
+    if verb not in IN_VERBS:
+        fail('%s: step \'%s\' does not take "in" - only %s do'
+             % (at, verb, ", ".join(IN_VERBS)))
+    v = step["in"]
+    if v is None or isinstance(v, (dict, list, bool)):
+        fail('%s: "in" is the id of the element the text has to be in, for '
+             'instance "greeting-text"' % at)
+    v = fill(v if isinstance(v, str) else str(v), scope, at, bool(src)).strip()
+    # Empty would mean "no element", and the lookup would fail every time with
+    # words about an id nobody wrote.
+    if not v:
+        fail('%s: "in" is empty - name the id of the element or drop the key' % at)
+    if SEP in v or END in v:
+        fail('%s: "in" contains a character the runner separates fields with' % at)
+    return v
+
 def box_spec(step, at, scope, src):
     verb = step.get("do", "")
     if "box" not in step:
@@ -3793,7 +3969,7 @@ def guard(cond, span, src, idx):
     # the screen cannot change halfway through it, which is exactly what
     # happens if the condition is re-asked at every step of the block: the
     # first step dismisses the dialog, and the rest of the block is skipped.
-    return SEP.join(["__when"] + [""] * (len(KEYS) - 1) + [src, str(idx), cond, str(span), "", "", ""])
+    return SEP.join(["__when"] + [""] * (len(KEYS) - 1) + [src, str(idx), cond, str(span), "", "", "", ""])
 
 def fill(v, scope, at, inside):
     missing = []
@@ -3877,6 +4053,7 @@ def build(path, shown, src, scope, chain, depth, pre=""):
         fields.append(box_spec(step, at, scope, src))
         fields.append(title_of(step, at))
         fields.append(optional_of(step, at))
+        fields.append(in_of(step, at, scope, src))
         if cond: recs.append(guard(cond, 1, src, idx))
         recs.append(SEP.join(fields))
 
@@ -3943,7 +4120,7 @@ PY
   # still reported PASS). Reading `<&3` also keeps the loop in THIS shell (not a
   # pipe subshell), so a step's `die` (exit 1) aborts the whole flow with a
   # non-zero status instead of being lost.
-  while IFS=$'\x1f' read -r -d '' do_ val x y mtch tmo dir edg src sidx wcond wspan bspec ttl opt <&3; do
+  while IFS=$'\x1f' read -r -d '' do_ val x y mtch tmo dir edg src sidx wcond wspan bspec ttl opt inid <&3; do
       # A guard is not a step: it takes no number of its own, and when it holds
       # the run says nothing about it - the steps that follow simply run. When it
       # does not hold, its whole group is read off the stream and every step in it
@@ -4008,7 +4185,7 @@ PY
                # THIS step and the flow stops with a message.
       case "$do_" in
         wait)        wait_s "${val:-2}";;
-        waitFor)     wait_for "$val" "${tmo:-10}" "${mtch:-exact}" assert;;
+        waitFor)     wait_for "$val" "${tmo:-10}" "${mtch:-exact}" assert "" "$inid";;
         waitForId)   wait_for "$val" "${tmo:-10}" exact id "${opt:+optional}";;
         # shot runs in a substitution, so its own die kills only that subshell:
         # the step used to report PASS with an empty path, whether the name was
@@ -4030,8 +4207,8 @@ PY
         pressKey)    press_key "$val";;
         hideKeyboard) hide_keyboard;;
         type)        say "type ${#val} chars"; type_str "$val";;
-        assertText)  assert_text "$val" "${mtch:-exact}";;
-        assertNotText) assert_not_text "$val" "${mtch:-exact}";;
+        assertText)  assert_text "$val" "${mtch:-exact}" "$inid";;
+        assertNotText) assert_not_text "$val" "${mtch:-exact}" "$inid";;
         assertNotId) assert_not_id "$val";;
         tapId)       say "tap id '$val'"; tap_id "$val";;
         assertId)    assert_id "$val";;
@@ -4129,7 +4306,9 @@ ${B}yukti v$YUKTI_VERSION${R} — YUKTI — smart mobile-app QA automation for R
   yukti scroll <up|down|left|right>
                             scroll the screen · yukti scroll-to "<label>" [dir] [clear] [timeout] scroll a label into view, fail on a miss
   yukti dismiss             auto-dismiss common modals (Not Now / Skip / OK / Close…)
-  yukti assert "<text>"     assert the text is on screen (perceivable text only, no scroll)
+  yukti assert "<text>" [exact|contains] [<id>]
+                            assert the text is on screen (perceivable text only, no scroll);
+                            with an id, only in that element and what lies within it
   yukti stop-app <variant>  force-stop the app of that variant
   yukti clear-state <variant>
                             wipe the app's data (Android only) - the app stops, launch it again
@@ -4147,7 +4326,9 @@ ${B}yukti v$YUKTI_VERSION${R} — YUKTI — smart mobile-app QA automation for R
                             assert the box of that element: minWidth, minHeight,
                             maxWidth, maxHeight, minX, minY, maxX, maxY, written
                             in pixels (48), dp ("48dp") or a share ("5%")
-  yukti assert-not "<text>" assert the text is NOT on the current screen (no scroll)
+  yukti assert-not "<text>" [exact|contains] [<id>]
+                            assert the text is NOT on the current screen (no scroll);
+                            with an id, NOT in that element, which has to be on screen
   yukti assert-not-id "<id>"
                             assert no element with this id is on the current screen
 
@@ -4160,6 +4341,8 @@ ${B}yukti v$YUKTI_VERSION${R} — YUKTI — smart mobile-app QA automation for R
               not route still answers ok, and the app navigates after the step returns, so the step after it is
               waitFor / waitForId, not an assert
               assertText matches the whole label as written; "match":"contains" asks for a substring
+              assertText, assertNotText and waitFor take "in": "<id>" - only the element tapId would tap
+              and what lies within its bounds count; that element missing fails as "no element with id"
               waitFor polls for an element and fails on timeout ("timeout": seconds, default 10); it never scrolls.
               waitForId names on timeout which case it ended in: not in the tree, at zero size, or outside the screen;
               "optional": true on it skips the step on timeout instead of failing the flow, with those words
