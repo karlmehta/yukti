@@ -159,6 +159,26 @@ available, and has to be asked for:
 then passes on a screen that only says `Network & internet`. Use it where a
 label carries a value that changes, and prefer the default everywhere else.
 
+A text check looks at the whole screen, so a second element with the same
+words answers for the one the check is about: a greeting that lost the name
+still passes when a card below it opens with the name. `"in"` names the
+element by id, and only that element and the nodes that lie within its bounds
+count (#102):
+
+```json
+{"do":"waitFor","value":", ${FIRST_NAME}!","match":"contains","in":"greeting-text"}
+```
+
+The element is the one `tapId` would tap: the first with that id, of real size,
+on the screen - the last segment of `resource-id` on Android, the accessibility
+identifier on iOS. When it is not there the step says `no element with id` in
+the words of `tapId`; when it is there without the text, `not in the element
+with id`. `assertText`, `assertNotText` and `waitFor` take the key; `waitFor`
+keeps polling while the element is missing. `assertNotText` with `"in"` fails
+when the element is missing, since nothing can be absent from what is not on
+the screen; without `"in"` it is the stronger claim, absent anywhere. The iOS
+half is written from the code and not measured.
+
 The locator verbs - `tapText`, `optionalTapText`, `scrollToText` - are not
 assertions, and their matching is unchanged: they still match a substring and
 fold case, and they rank the candidates. What `scrollToText` does on a miss is
@@ -257,6 +277,7 @@ Seventeen more ways a flow stops, the first four of them typos that used to pass
 - a step name the runner does not know;
 - a `"match"` value that is neither `exact` nor `contains`;
 - a `"match"` key on a step that does not take one;
+- an `"in"` key on a step other than `assertText`, `assertNotText` and `waitFor`, or one that is empty;
 - a `wait` whose value is not a number - `sleep` refuses it;
 - a `"value"` on a `hideKeyboard`, which has nothing to read one with;
 - a `pressKey` naming a key the tool does not have;
