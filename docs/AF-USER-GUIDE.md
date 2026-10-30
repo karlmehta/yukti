@@ -123,14 +123,14 @@ A flow is `{ "name": "...", "steps": [ ... ] }`. Common step verbs:
 | `{"do":"type","value":"165"}` | type into the focused field (`${TEST_EMAIL}` / `${TEST_PASSWORD}` inject creds) |
 | `{"do":"scrollToText","value":"Weight History"}` | scroll until visible, and fail the flow if it never becomes visible. `"direction"` is `up`, `down` (the default), `left` or `right`; `"edges":"clear"` asks for it to land away from the edges; `"timeout"` (seconds, default 5) is how long it waits at the end of the list for the list to grow |
 | `{"do":"tapId","value":"submit"}` | tap the element with this a11y id / `resource-id` segment, exact match |
-| `{"do":"assertText","value":"Logged"}` | verify the text is on screen (the test's checkpoint — perceivable text only, no scroll). Matches the whole label, case as written; add `"match":"contains"` for a partial match |
+| `{"do":"assertText","value":"Logged"}` | verify the text is on screen (the test's checkpoint — perceivable text only, no scroll). Matches the whole label, case as written; add `"match":"contains"` for a partial match; add `"in":"<id>"` to look only inside that element |
 | `{"do":"assertId","value":"weight_card"}` | verify an element with this id is on screen |
 | `{"do":"assertBox","value":"Reconnect","box":{"minX":16,"maxX":"95%"}}` | verify the box of the element with this label: `minWidth`, `minHeight`, `maxWidth`, `maxHeight` for the size, `minX`, `minY`, `maxX`, `maxY` for the edges. Pixels (`48`), dp (`"48dp"`) or a share of the screen (`"5%"`) |
 | `{"do":"assertBoxId","value":"primary-cta","box":{"minWidth":"48dp","minHeight":"48dp"}}` | the same check, matching the id exactly - here the touch-target minimum |
-| `{"do":"assertNotText","value":"Wrong password"}` | verify the text is NOT on the screen as it is now (no scroll). Same matching as `assertText`, `"match":"contains"` included |
+| `{"do":"assertNotText","value":"Wrong password"}` | verify the text is NOT on the screen as it is now (no scroll). Same matching as `assertText`, `"match":"contains"` and `"in"` included |
 | `{"do":"assertNotId","value":"paywall"}` | verify no element with this id is on the screen as it is now |
 | `{"do":"screenshot","value":"x.png"}` | capture for review |
-| `{"do":"waitFor","value":"Weight History","timeout":15}` | poll until the text is on screen, fail on timeout (seconds, default 10; no scrolling). Matches like `assertText`, `"match":"contains"` included |
+| `{"do":"waitFor","value":"Weight History","timeout":15}` | poll until the text is on screen, fail on timeout (seconds, default 10; no scrolling). Matches like `assertText`, `"match":"contains"` and `"in"` included |
 | `{"do":"waitForId","value":"weight_card"}` | the same wait, matching the id exactly; on timeout it says whether the id is not in the tree, is there at zero size, or is outside the screen |
 | `{"do":"waitForId","value":"chat-button","timeout":20,"optional":true}` | the same wait, but a timeout skips the step instead of failing the flow, with the same words |
 | `{"do":"scroll","value":"down"}` | one swipe: `up`, `down`, `left` or `right` |
