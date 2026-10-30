@@ -2341,5 +2341,178 @@ answer 'a["outcome"] == "not_read" and a["error"] and "png" not in a'
 lacks adb/log "uiautomator dump"
 verdict
 
+# ── a text check limited to one element: "in" (#102) ────────────────────────
+# The screen of the issue: a greeting with its own id and, elsewhere on the
+# screen, a card whose text also holds the name. A check written without "in"
+# passes on the card; with "in" only the greeting and what lies within it count.
+# tnode <id> <text> <x1,y1,x2,y2> - a node at a given place; an empty id is none.
+tnode(){ printf '<node index="0" text="%s" resource-id="%s" class="android.widget.TextView" package="com.example" content-desc="" checkable="false" checked="false" clickable="false" enabled="true" focusable="false" focused="false" scrollable="false" long-clickable="false" password="false" selected="false" bounds="[%s][%s]" />' \
+  "$2" "${1:+com.example:id/$1}" "$(printf '%s' "$3" | cut -d, -f1-2)" "$(printf '%s' "$3" | cut -d, -f3-4)"; }
+IN_ROOT="$(tnode "" "" 0,0,1080,2400)"
+IN_BOX="$(tnode greeting "" 0,100,1080,300)"
+IN_HI="$(tnode "" "Good morning, Ada!" 40,150,1040,250)"
+IN_BARE="$(tnode "" "Good morning!" 40,150,1040,250)"
+IN_CARD="$(tnode "" "Ada, your plan is ready" 40,900,1040,1000)"
+
+dev_case in-pass
+screen "$case_dir/adb/dump-1.xml" "$IN_ROOT" "$IN_BOX" "$IN_HI" "$IN_CARD"
+flow_file "$case_dir/flow.json" '{ "do": "assertText", "value": ", Ada!", "match": "contains", "in": "greeting" }'
+run_flow "$case_dir/flow.json"
+begin "in: the text inside the element passes"
+status_is 0; fake_used; has out.txt "assert (contains) in 'greeting': ', Ada!' on screen at 540 200"
+verdict
+
+# The false green of the issue: without "in" the card answers for the greeting.
+dev_case in-control
+screen "$case_dir/adb/dump-1.xml" "$IN_ROOT" "$IN_BOX" "$IN_BARE" "$IN_CARD"
+flow_file "$case_dir/flow.json" '{ "do": "assertText", "value": "Ada", "match": "contains" }'
+run_flow "$case_dir/flow.json"
+begin "in: without it, the text of another element passes (the case for the key)"
+status_is 0; has out.txt "assert (contains): 'Ada' on screen at 540 950"
+verdict
+
+dev_case in-elsewhere
+screen "$case_dir/adb/dump-1.xml" "$IN_ROOT" "$IN_BOX" "$IN_BARE" "$IN_CARD"
+flow_file "$case_dir/flow.json" '{ "do": "assertText", "value": "Ada", "match": "contains", "in": "greeting" }'
+run_flow "$case_dir/flow.json"
+begin "in: the same text in another element does not count"
+status_is 1; has out.txt "assert FAILED (contains match): 'Ada' not in the element with id 'greeting'"
+verdict
+
+# The element itself is a candidate: a text view that carries the id and the text.
+dev_case in-self
+screen "$case_dir/adb/dump-1.xml" "$IN_ROOT" "$(tnode greeting "Good morning, Ada!" 0,100,1080,300)" "$IN_CARD"
+flow_file "$case_dir/flow.json" '{ "do": "assertText", "value": "Good morning, Ada!", "in": "greeting" }'
+run_flow "$case_dir/flow.json"
+begin "in: the element named by id may hold the text itself"
+status_is 0; has out.txt "assert (exact) in 'greeting'"
+verdict
+
+dev_case in-no-id
+screen "$case_dir/adb/dump-1.xml" "$IN_ROOT" "$IN_HI" "$IN_CARD"
+flow_file "$case_dir/flow.json" '{ "do": "assertText", "value": "Ada", "match": "contains", "in": "greeting" }'
+run_flow "$case_dir/flow.json"
+begin "in: a missing element is named in the words of tapId"
+status_is 1; has out.txt "assert FAILED: no element with id 'greeting'"
+verdict
+
+# A namesake of zero size is not the element: the next one with the id is.
+dev_case in-zero-namesake
+screen "$case_dir/adb/dump-1.xml" "$IN_ROOT" "$(tnode greeting "" 500,50,500,50)" "$IN_BOX" "$IN_HI"
+flow_file "$case_dir/flow.json" '{ "do": "assertText", "value": ", Ada!", "match": "contains", "in": "greeting" }'
+run_flow "$case_dir/flow.json"
+begin "in: an element of zero size is skipped for the next one with the id"
+status_is 0; has out.txt "on screen at 540 200"
+verdict
+
+dev_case in-not-pass
+screen "$case_dir/adb/dump-1.xml" "$IN_ROOT" "$IN_BOX" "$IN_BARE" "$IN_CARD"
+flow_file "$case_dir/flow.json" '{ "do": "assertNotText", "value": "Ada", "match": "contains", "in": "greeting" }'
+run_flow "$case_dir/flow.json"
+begin "in: assertNotText ignores the same text in another element"
+status_is 0; has out.txt "assertNot (contains) in 'greeting': 'Ada' not in that element"
+verdict
+
+dev_case in-not-fail
+screen "$case_dir/adb/dump-1.xml" "$IN_ROOT" "$IN_BOX" "$IN_HI"
+flow_file "$case_dir/flow.json" '{ "do": "assertNotText", "value": "Ada", "match": "contains", "in": "greeting" }'
+run_flow "$case_dir/flow.json"
+begin "in: assertNotText fails on the text inside the element"
+status_is 1; has out.txt "assertNot FAILED (contains match): 'Ada' IS in the element with id 'greeting', at 540 200"
+verdict
+
+dev_case in-not-no-id
+screen "$case_dir/adb/dump-1.xml" "$IN_ROOT" "$IN_CARD"
+flow_file "$case_dir/flow.json" '{ "do": "assertNotText", "value": "Ada", "match": "contains", "in": "greeting" }'
+run_flow "$case_dir/flow.json"
+begin "in: assertNotText cannot pass on an element that is not there"
+status_is 1; has out.txt "assertNot FAILED: no element with id 'greeting'"
+verdict
+
+dev_case in-wait-arrives
+screen "$case_dir/adb/dump-1.xml" "$IN_ROOT" "$IN_CARD"
+screen "$case_dir/adb/dump-2.xml" "$IN_ROOT" "$IN_BOX" "$IN_BARE" "$IN_CARD"
+screen "$case_dir/adb/dump-3.xml" "$IN_ROOT" "$IN_BOX" "$IN_HI" "$IN_CARD"
+flow_file "$case_dir/flow.json" '{ "do": "waitFor", "value": ", Ada!", "match": "contains", "in": "greeting", "timeout": 5 }'
+run_flow "$case_dir/flow.json"
+begin "in: waitFor keeps polling through a missing element and a text not yet in it"
+status_is 0; has out.txt "waitFor (contains match) in 'greeting': ', Ada!' on screen at 540 200"
+reads_are 3
+verdict
+
+dev_case in-wait-elsewhere
+screen "$case_dir/adb/dump-1.xml" "$IN_ROOT" "$IN_BOX" "$IN_BARE" "$IN_CARD"
+flow_file "$case_dir/flow.json" '{ "do": "waitFor", "value": "Ada", "match": "contains", "in": "greeting", "timeout": 1 }'
+run_flow "$case_dir/flow.json"
+begin "in: waitFor times out naming the element that is there without the text"
+status_is 1; has out.txt "'Ada' not on screen after 1s - not in the element with id 'greeting'"
+verdict
+
+dev_case in-wait-no-id
+screen "$case_dir/adb/dump-1.xml" "$IN_ROOT" "$IN_CARD"
+flow_file "$case_dir/flow.json" '{ "do": "waitFor", "value": "Ada", "match": "contains", "in": "greeting", "timeout": 1 }'
+run_flow "$case_dir/flow.json"
+begin "in: waitFor times out naming the missing element"
+status_is 1; has out.txt "'Ada' not on screen after 1s - no element with id 'greeting'"
+verdict
+
+# iOS: the same contract by frame and accessibility identifier.
+ilabel(){ printf '{"type":"StaticText","role_description":"text","AXUniqueId":"%s","AXLabel":"%s","frame":{"x":%s,"y":%s,"width":%s,"height":%s}}' "$1" "$2" $(printf '%s' "$3" | tr , ' '); }
+I_BOX="$(ilabel greeting "" 0,60,402,100)"
+I_HI="$(ilabel "" "Good morning, Ada!" 20,80,360,40)"
+I_BARE="$(ilabel "" "Good morning!" 20,80,360,40)"
+I_CARD="$(ilabel "" "Ada, your plan is ready" 20,400,360,40)"
+
+ios_case ios-in-pass
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$I_BOX" "$I_HI" "$I_CARD"
+flow_file "$case_dir/flow.json" '{ "do": "assertText", "value": ", Ada!", "match": "contains", "in": "greeting" }'
+run_ios "$case_dir/flow.json"
+begin "in on iOS: the text inside the element passes"
+status_is 0; has out.txt "assert (contains) in 'greeting': ', Ada!' on screen at 200 100"
+verdict
+
+ios_case ios-in-elsewhere
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$I_BOX" "$I_BARE" "$I_CARD"
+flow_file "$case_dir/flow.json" '{ "do": "assertText", "value": "Ada", "match": "contains", "in": "greeting" }'
+run_ios "$case_dir/flow.json"
+begin "in on iOS: the same text in another element does not count"
+status_is 1; has out.txt "'Ada' not in the element with id 'greeting'"
+verdict
+
+ios_case ios-in-no-id
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$I_HI" "$I_CARD"
+flow_file "$case_dir/flow.json" '{ "do": "assertNotText", "value": "Ada", "match": "contains", "in": "greeting" }'
+run_ios "$case_dir/flow.json"
+begin "in on iOS: a missing element is named in the words of tapId"
+status_is 1; has out.txt "assertNot FAILED: no element with id 'greeting'"
+verdict
+
+# The builder.
+new_case in-check
+flow_file "$case_dir/flow.json" '{ "do": "assertText", "value": "Ada", "in": "${YUKTI_TEST_IN}" }' \
+  '{ "do": "assertNotText", "value": "Ada", "in": "greeting" }' '{ "do": "waitFor", "value": "Ada", "in": "greeting" }'
+expect "check: in on the three text checks builds, a variable filled" 0 " - 3 steps" \
+  env YUKTI_TEST_IN=greeting "$YUKTI" flow --check "$case_dir/flow.json"
+
+new_case in-wrong-step
+flow_file "$case_dir/flow.json" '{ "do": "tapText", "value": "Ada", "in": "greeting" }'
+expect "check: in on a step that does not take it is refused" 1 \
+  "step 1 'tapText': step 'tapText' does not take \"in\" - only assertText, assertNotText, waitFor do" check "$case_dir/flow.json"
+
+new_case in-empty
+flow_file "$case_dir/flow.json" '{ "do": "assertText", "value": "Ada", "in": " " }'
+expect "check: an empty in is refused" 1 \
+  "step 1 'assertText': \"in\" is empty - name the id of the element or drop the key" check "$case_dir/flow.json"
+
+new_case in-not-text
+flow_file "$case_dir/flow.json" '{ "do": "assertText", "value": "Ada", "in": { "id": "greeting" } }'
+expect "check: an in that is not text is refused" 1 \
+  "step 1 'assertText': \"in\" is the id of the element the text has to be in" check "$case_dir/flow.json"
+
+new_case in-unset-var
+flow_file "$case_dir/flow.json" '{ "do": "assertText", "value": "Ada", "in": "${YUKTI_TEST_IN}" }'
+expect "check: an in with a variable that is not set is refused" 1 \
+  "\$YUKTI_TEST_IN is not set" env -u YUKTI_TEST_IN "$YUKTI" flow --check "$case_dir/flow.json"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

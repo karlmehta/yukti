@@ -607,6 +607,27 @@ if _m: SX1,SY1,SX2,SY2=map(int,_m.groups())
 # negative assertion or a `when` condition PASSES on that answer. The screen that
 # cannot be judged has to say so in a way the caller can read.
 if mode in ("assert","id") and not (SX2>SX1 and SY2>SY1): sys.exit(3)
+# "in" (#102): an assertion limited to one element. The element is the one tapId
+# would tap - the first node whose resource-id segment is the id, of real size,
+# its centre on the screen - and the candidates are that node and the nodes that
+# lie within its bounds; every other text on the screen is ignored. No such
+# element is status 4: the screen was read and the element the check is about
+# is not on it, which is neither "the text is missing" nor "unreadable". The iOS
+# path does the same by frame.
+scope=(sys.argv[6].lower() if len(sys.argv)>6 else ""); sbox=None
+if scope and mode=="assert":
+    for m in re.finditer(r"<node\b[^>]*>", xml):
+        tag=m.group(0)
+        r=re.search(r"resource-id=\"([^\"]*)\"",tag)
+        if not r or norm(html.unescape(r.group(1))).split("/")[-1].lower()!=scope: continue
+        b=re.search(r"bounds=\"\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]\"",tag)
+        if not b: continue
+        x1,y1,x2,y2=map(int,b.groups())
+        if not (x2>x1 and y2>y1): continue
+        cx,cy=(x1+x2)//2,(y1+y2)//2
+        if not (SX1<=cx<SX2 and SY1<=cy<SY2): continue
+        sbox=(x1,y1,x2,y2); break
+    if sbox is None: sys.exit(4)
 best=None; best_box=None; best_score=0; zero=None; off=None
 # A tree read with the rows below the fold (#116, helper_full_tree) is asked in
 # two more ways. Such a row comes upside down: its top is where it stands in the
@@ -683,6 +704,8 @@ for m in re.finditer(r"<node\b[^>]*>", xml):
     if full and below(x1,y1,x2,y2):
         if low is None or score>low[0] or (score==low[0] and y1<low[1]): low=(score,y1)
         continue
+    # Outside the element named by "in": not a candidate, not even a near miss.
+    if sbox and not (sbox[0]<=x1 and sbox[1]<=y1 and x2<=sbox[2] and y2<=sbox[3]): continue
     if not (x2>x1 and y2>y1):   # zero-area node: in the tree, not on the screen
         if zero is None: zero=(x1,y1,x2,y2)
         continue
@@ -709,7 +732,7 @@ elif best:
 elif out=="why":
     if zero: print("zero",*zero)
     elif off: print("off",*off)
-' "$1" "${2:-text}" "${3:-exact}" "${4:-centre}" "${5:-}"; }
+' "$1" "${2:-text}" "${3:-exact}" "${4:-centre}" "${5:-}" "${6:-}"; }
 # Where a horizontal swipe should land, from the dump. A swipe across the middle
 # of the screen lands on whatever is there, and an element that does not claim
 # the gesture may be pressed instead of scrolled: measured on the app under test,
@@ -1290,7 +1313,7 @@ ui(){ is_android && { aui; return; }; [ -n "$HELD_TREE" ] && { printf '%s' "$HEL
   # empty string made every caller read it as "the element is not there". The
   # Android path already fails here; this is the same rule for iOS.
   device_fault; die "idb returned no accessibility tree after 4 tries - is the simulator booted?"; }
-find_el(){ is_android && { afind "$1" "${2:-text}" "${3:-exact}" "${4:-centre}"; return; }; paths; ui | "$PY" -c '
+find_el(){ is_android && { afind "$1" "${2:-text}" "${3:-exact}" "${4:-centre}" "" "${5:-}"; return; }; paths; ui | "$PY" -c '
 import json,sys,os,traceback
 # A lookup must never leave with status 1: that status now means the screen
 # could not be read AND the reason is already printed. Anything unforeseen in
@@ -1362,6 +1385,16 @@ def centre(e):
 # stops discriminating. Requiring a named window here would fail closed on every
 # build that names none, which cannot be verified without a Mac.
 if mode in ("assert","id") and not (SW>0 and SH>0): sys.exit(3)   # 3 = read, not judgeable
+# "in" (#102), the same contract as the Android path: the element tapId would
+# tap - the first with that accessibility identifier, of real size, its centre
+# in the window - and only what lies within its frame counts; none is status 4.
+scope=(sys.argv[5].lower() if len(sys.argv)>5 else ""); sbox=None
+if scope and mode=="assert":
+    for e in els:
+        if str(e.get("AXUniqueId") or e.get("identifier") or "").lower()!=scope: continue
+        if centre(e) is None: continue
+        x,y,w,h=frame(e); sbox=(x,y,x+w,y+h); break
+    if sbox is None: sys.exit(4)
 def emit(e,xy):
     # The frame in the same coordinates as the centre above it: whatever the
     # scale of this idb build, a share of the screen is the same share, and a
@@ -1409,6 +1442,9 @@ for e in els:
         elif not (q_raw and q_raw in (label_raw, value_raw, title_raw)): continue
         xy=centre(e)
         if xy is None: continue
+        if sbox:
+            x,y,w,h=frame(e)
+            if not (sbox[0]<=x and sbox[1]<=y and x+w<=sbox[2] and y+h<=sbox[3]): continue
         emit(e,xy); sys.exit(0)
     if not (q and (q in ident or q in label or q in value or q in title)): continue
     score=0
@@ -1439,7 +1475,7 @@ if best: emit(best_el,best)
 elif out=="why":
     if zero: print("zero",*zero)
     elif off: print("off",*off)
-' "$1" "${2:-text}" "${3:-exact}" "${4:-centre}"; }
+' "$1" "${2:-text}" "${3:-exact}" "${4:-centre}" "${5:-}"; }
 tap(){ is_android && { atap "$1" "$2"; return; }; paths; idb ui tap --udid "$(U)" "${1:?x}" "${2:?y}"; }
 # A lookup has three outcomes, not two: coordinates, "no such element", and
 # "the screen could not be read at all". The third one used to arrive as the
@@ -1795,11 +1831,15 @@ kb_before_swipe(){ local who="$1, before swiping" st=0
 # the same lookup taps use: relevance, ranking and real non-zero bounds.
 # The match rule is part of the assertion, so the flow states it and the log
 # repeats it: a green line that does not say how it matched cannot be read back.
-assert_text(){ local q="${1:-}" m="${2:-exact}" xy st=0
+# With an "in" id (#102) only that element and what lies within it count, and
+# the two misses read apart: "no element with id" in the words of tapId, or the
+# element is there and the text is not in it.
+assert_text(){ local q="${1:-}" m="${2:-exact}" in="${3:-}" xy st=0
   [ -n "$q" ] || die "assertText needs a non-empty value"
   case "$m" in exact|contains) ;; *) die "assertText: unknown match '$m' - use exact or contains";; esac
-  xy="$(find_el "$q" assert "$m")" || st=$?
-  [ "$st" -eq 0 ] || die "assert FAILED: $(lookup_err "$st")"
+  xy="$(find_el "$q" assert "$m" centre "$in")" || st=$?
+  [ "$st" -eq 0 ] || die "assert FAILED: $(lookup_err "$st" "$in")"
+  [ -z "$in" ] || { [ -n "$xy" ] && ok "assert ($m) in '$in': '$q' on screen at $xy" || die "assert FAILED ($m match): '$q' not in the element with id '$in'"; return; }
   [ -n "$xy" ] && ok "assert ($m): '$q' on screen at $xy" || die "assert FAILED ($m match): '$q' not on screen"; }
 # Explicit-selector variants. tapText/assertText match on visible text and can
 # land on a neighbouring caption; these two take an accessibility id / resource-id
@@ -1968,6 +2008,8 @@ lookup_die(){ local st="${1:-1}" msg="${2:-}"
 lookup_err(){ case "${1:-1}" in
     2) device_fault; printf '%s' "the device answered, but not with a tree that can be read";;
     3) printf '%s' "the screen was read but does not report its own bounds, so nothing on it can be called visible";;
+    # The element an "in" names is not on the screen (#102); the id comes second.
+    4) printf "no element with id '%s'" "${2:-}";;
     *) printf '%s' "cannot read the screen - see the error above";; esac; }
 # The negative assertions. Absence is the one verdict where an EMPTY answer is the
 # pass, which makes it the one verdict that a missing answer passes by accident:
@@ -1991,11 +2033,15 @@ assert_box_args(){ local q="${1:-}" kind="${2:-}" spec="" pair
   shift 2
   for pair in "$@"; do spec="${spec:+$spec$COND_SEP}${pair%%=*}$COND_KV${pair#*=}"; done
   assert_box "$q" "$kind" "$spec"; }
-assert_not_text(){ local q="${1:-}" m="${2:-exact}" xy st=0
+# With an "in" id, absence is judged inside that element, and an element that
+# is not there fails the step: nothing can be absent from what is not on screen.
+assert_not_text(){ local q="${1:-}" m="${2:-exact}" in="${3:-}" xy st=0
   [ -n "$q" ] || die "assertNotText needs a non-empty value"
   case "$m" in exact|contains) ;; *) die "assertNotText: unknown match '$m' - use exact or contains";; esac
-  xy="$(find_el "$q" assert "$m")" || st=$?
-  [ "$st" -eq 0 ] || die "assertNot FAILED: $(lookup_err "$st")"
+  xy="$(find_el "$q" assert "$m" centre "$in")" || st=$?
+  [ "$st" -eq 0 ] || die "assertNot FAILED: $(lookup_err "$st" "$in")"
+  [ -z "$in" ] || { [ -z "$xy" ] || die "assertNot FAILED ($m match): '$q' IS in the element with id '$in', at $xy"
+    ok "assertNot ($m) in '$in': '$q' not in that element"; return; }
   [ -z "$xy" ] || die "assertNot FAILED ($m match): '$q' IS on the screen, at $xy"
   ok "assertNot ($m): '$q' not on the current screen"; }
 assert_not_id(){ local q="${1:-}" xy st=0
@@ -2029,17 +2075,23 @@ wait_s(){ sleep "${1:-2}"; }
 # skip: a `~` line, the step lands in the report as skipped with the same words,
 # and the flow goes on. The words travel to the record in FLOW_OPT_MISS. An
 # unreadable screen still stops the flow: it is not an answer either way.
-wait_for(){ local q="${1:-}" t="${2:-10}" m="${3:-exact}" mode="${4:-assert}" opt="${5:-}" xy readable=1 lst=1 t0 el label why="" msg
+#
+# With an "in" id (waitFor only, #102) the poll waits for the text inside that
+# element, and an element not yet on the screen is "not there yet", not an
+# unreadable screen. The timeout says which of the two it ended in.
+wait_for(){ local q="${1:-}" t="${2:-10}" m="${3:-exact}" mode="${4:-assert}" opt="${5:-}" in="${6:-}" xy readable=1 lst=1 nosc=0 t0 el label why="" msg
   [ -n "$q" ] || die "waitFor needs a non-empty value"
   case "$t" in ''|*[!0-9]*|0) die "waitFor: timeout must be a whole number of seconds greater than zero, got '$t'";; esac
   case "$m" in exact|contains) ;; *) die "waitFor: unknown match '$m' - use exact or contains";; esac
-  [ "$mode" = id ] && label="waitFor id" || label="waitFor ($m match)"
+  [ "$mode" = id ] && label="waitFor id" || label="waitFor ($m match)${in:+ in '$in'}"
   say "$label: up to ${t}s for '$q'"
   t0=$SECONDS
   while :; do
-    if xy="$(find_el "$q" "$mode" "$m")"; then readable=1
+    if xy="$(find_el "$q" "$mode" "$m" centre "$in")"; then readable=1; nosc=0
       [ -n "$xy" ] && { el=$((SECONDS - t0)); ok "$label: '$q' on screen at $xy after ${el}s"; return 0; }
-    else lst=$?; readable=0; fi
+    else lst=$?
+      if [ "$lst" -eq 4 ]; then readable=1; nosc=1; else readable=0; fi
+    fi
     [ $((SECONDS - t0)) -lt "$t" ] || break
     sleep 0.5
   done
@@ -2054,6 +2106,9 @@ wait_for(){ local q="${1:-}" t="${2:-10}" m="${3:-exact}" mode="${4:-assert}" op
         *)       why="not in the tree";;
       esac
     else lst=$?; die "$label FAILED after ${t}s waiting for '$q': $(lookup_err "$lst")"; fi
+  fi
+  if [ -n "$in" ]; then
+    [ "$nosc" = 1 ] && why="no element with id '$in'" || why="not in the element with id '$in'"
   fi
   msg="'$q' not on screen after ${t}s${why:+ - $why}"
   if [ "$opt" = optional ]; then
@@ -3605,7 +3660,9 @@ BOX_KINDS = ("maxHeight", "maxWidth", "maxX", "maxY",
 # of a run and nothing else: the step runs the same with it or without it.
 # "optional" lets a waitForId time out without failing the flow; no other step
 # takes it.
-STEP_KEYS = set(KEYS) | {"when", "box", "title", "optional"}
+# "in" limits a text check to one element, named by id (#102).
+STEP_KEYS = set(KEYS) | {"when", "box", "title", "optional", "in"}
+IN_VERBS = ("assertText", "assertNotText", "waitFor")
 INCLUDE_KEYS = {"do", "value", "with", "when"}
 # One condition is a kind and a value; several in one `when` all have to hold.
 # These two characters separate them inside the single field that carries them.
@@ -3702,6 +3759,27 @@ def optional_of(step, at):
         fail('%s: "optional" is true or false, got %s' % (at, json.dumps(o)))
     return "1" if o else ""
 
+def in_of(step, at, scope, src):
+    if "in" not in step: return ""
+    verb = step.get("do", "")
+    # The text checks and nothing else: a step that ignored the key would tell
+    # the author its lookup was limited to an element when it was not.
+    if verb not in IN_VERBS:
+        fail('%s: step \'%s\' does not take "in" - only %s do'
+             % (at, verb, ", ".join(IN_VERBS)))
+    v = step["in"]
+    if v is None or isinstance(v, (dict, list, bool)):
+        fail('%s: "in" is the id of the element the text has to be in, for '
+             'instance "greeting-text"' % at)
+    v = fill(v if isinstance(v, str) else str(v), scope, at, bool(src)).strip()
+    # Empty would mean "no element", and the lookup would fail every time with
+    # words about an id nobody wrote.
+    if not v:
+        fail('%s: "in" is empty - name the id of the element or drop the key' % at)
+    if SEP in v or END in v:
+        fail('%s: "in" contains a character the runner separates fields with' % at)
+    return v
+
 def box_spec(step, at, scope, src):
     verb = step.get("do", "")
     if "box" not in step:
@@ -3762,7 +3840,7 @@ def guard(cond, span, src, idx):
     # the screen cannot change halfway through it, which is exactly what
     # happens if the condition is re-asked at every step of the block: the
     # first step dismisses the dialog, and the rest of the block is skipped.
-    return SEP.join(["__when"] + [""] * (len(KEYS) - 1) + [src, str(idx), cond, str(span), "", "", ""])
+    return SEP.join(["__when"] + [""] * (len(KEYS) - 1) + [src, str(idx), cond, str(span), "", "", "", ""])
 
 def fill(v, scope, at, inside):
     missing = []
@@ -3846,6 +3924,7 @@ def build(path, shown, src, scope, chain, depth, pre=""):
         fields.append(box_spec(step, at, scope, src))
         fields.append(title_of(step, at))
         fields.append(optional_of(step, at))
+        fields.append(in_of(step, at, scope, src))
         if cond: recs.append(guard(cond, 1, src, idx))
         recs.append(SEP.join(fields))
 
@@ -3912,7 +3991,7 @@ PY
   # still reported PASS). Reading `<&3` also keeps the loop in THIS shell (not a
   # pipe subshell), so a step's `die` (exit 1) aborts the whole flow with a
   # non-zero status instead of being lost.
-  while IFS=$'\x1f' read -r -d '' do_ val x y mtch tmo dir edg src sidx wcond wspan bspec ttl opt <&3; do
+  while IFS=$'\x1f' read -r -d '' do_ val x y mtch tmo dir edg src sidx wcond wspan bspec ttl opt inid <&3; do
       # A guard is not a step: it takes no number of its own, and when it holds
       # the run says nothing about it - the steps that follow simply run. When it
       # does not hold, its whole group is read off the stream and every step in it
@@ -3977,7 +4056,7 @@ PY
                # THIS step and the flow stops with a message.
       case "$do_" in
         wait)        wait_s "${val:-2}";;
-        waitFor)     wait_for "$val" "${tmo:-10}" "${mtch:-exact}" assert;;
+        waitFor)     wait_for "$val" "${tmo:-10}" "${mtch:-exact}" assert "" "$inid";;
         waitForId)   wait_for "$val" "${tmo:-10}" exact id "${opt:+optional}";;
         # shot runs in a substitution, so its own die kills only that subshell:
         # the step used to report PASS with an empty path, whether the name was
@@ -3999,8 +4078,8 @@ PY
         pressKey)    press_key "$val";;
         hideKeyboard) hide_keyboard;;
         type)        say "type ${#val} chars"; type_str "$val";;
-        assertText)  assert_text "$val" "${mtch:-exact}";;
-        assertNotText) assert_not_text "$val" "${mtch:-exact}";;
+        assertText)  assert_text "$val" "${mtch:-exact}" "$inid";;
+        assertNotText) assert_not_text "$val" "${mtch:-exact}" "$inid";;
         assertNotId) assert_not_id "$val";;
         tapId)       say "tap id '$val'"; tap_id "$val";;
         assertId)    assert_id "$val";;
@@ -4098,7 +4177,9 @@ ${B}yukti v$YUKTI_VERSION${R} — YUKTI — smart mobile-app QA automation for R
   yukti scroll <up|down|left|right>
                             scroll the screen · yukti scroll-to "<label>" [dir] [clear] [timeout] scroll a label into view, fail on a miss
   yukti dismiss             auto-dismiss common modals (Not Now / Skip / OK / Close…)
-  yukti assert "<text>"     assert the text is on screen (perceivable text only, no scroll)
+  yukti assert "<text>" [exact|contains] [<id>]
+                            assert the text is on screen (perceivable text only, no scroll);
+                            with an id, only in that element and what lies within it
   yukti stop-app <variant>  force-stop the app of that variant
   yukti clear-state <variant>
                             wipe the app's data (Android only) - the app stops, launch it again
@@ -4116,7 +4197,9 @@ ${B}yukti v$YUKTI_VERSION${R} — YUKTI — smart mobile-app QA automation for R
                             assert the box of that element: minWidth, minHeight,
                             maxWidth, maxHeight, minX, minY, maxX, maxY, written
                             in pixels (48), dp ("48dp") or a share ("5%")
-  yukti assert-not "<text>" assert the text is NOT on the current screen (no scroll)
+  yukti assert-not "<text>" [exact|contains] [<id>]
+                            assert the text is NOT on the current screen (no scroll);
+                            with an id, NOT in that element, which has to be on screen
   yukti assert-not-id "<id>"
                             assert no element with this id is on the current screen
 
@@ -4129,6 +4212,8 @@ ${B}yukti v$YUKTI_VERSION${R} — YUKTI — smart mobile-app QA automation for R
               not route still answers ok, and the app navigates after the step returns, so the step after it is
               waitFor / waitForId, not an assert
               assertText matches the whole label as written; "match":"contains" asks for a substring
+              assertText, assertNotText and waitFor take "in": "<id>" - only the element tapId would tap
+              and what lies within its bounds count; that element missing fails as "no element with id"
               waitFor polls for an element and fails on timeout ("timeout": seconds, default 10); it never scrolls.
               waitForId names on timeout which case it ended in: not in the tree, at zero size, or outside the screen;
               "optional": true on it skips the step on timeout instead of failing the flow, with those words
