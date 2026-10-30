@@ -174,10 +174,13 @@ on the screen - the last segment of `resource-id` on Android, the accessibility
 identifier on iOS. When it is not there the step says `no element with id` in
 the words of `tapId`; when it is there without the text, `not in the element
 with id`. `assertText`, `assertNotText` and `waitFor` take the key; `waitFor`
-keeps polling while the element is missing. `assertNotText` with `"in"` fails
+keeps polling while the element is missing and while it is there without the
+text. `assertNotText` with `"in"` fails
 when the element is missing, since nothing can be absent from what is not on
 the screen; without `"in"` it is the stronger claim, absent anywhere. The iOS
-half is written from the code and not measured.
+half is written from the code and not measured, and one difference is known:
+uiautomator clips a child's bounds to its parent, idb reports a frame as it is,
+so on iOS a label wider than its container may read as "not in the element".
 
 The locator verbs - `tapText`, `optionalTapText`, `scrollToText` - are not
 assertions, and their matching is unchanged: they still match a substring and
