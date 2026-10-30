@@ -72,6 +72,10 @@ elif ops[:2] == ["ui", "key"]:
     if ops[2:] == ["40"] and has("return-closes") and has("keyboard"): os.remove(path("keyboard"))
 elif ops[:2] == ["ui", "swipe"]:
     if has("drag-closes") and has("keyboard"): os.remove(path("keyboard"))
+elif ops[:2] == ["ui", "describe-point"] and has("point.json"):
+    # What is under a tap point: point.json, written by the case. Without it the
+    # verb is refused, as before, and the engine's tap check answers "unknown".
+    sys.stdout.write(read("point.json"))
 elif ops[:2] == ["ui", "tap"] or ops[:1] == ["connect"]:
     pass
 else:
