@@ -602,6 +602,18 @@ typed on Android; anything else is refused rather than typed in part. The step
 reads the screen twice, whatever the length: once before the first key, once
 after the last. A read costs seconds on an emulator, a piece of eight does not.
 
+A field that filters what is typed - a digits-only amount drops letters - never
+holds the whole value, so the read-back would retype it three times and fail.
+`"shows"` on the step names what the field holds once the value is typed:
+`{"do":"type","value":"12a!","shows":"12"}`. The value is still sent whole; the
+read-back, its retries and its failure check `shows` instead, on Android and on
+iOS, and the failure says `the field does not show what "shows" expects`, with
+counts and never the text. Without the key nothing changes. An empty `shows` is
+refused: a field that shows nothing new cannot be told from a field the keys
+never reached. The report masks a field by the typed value, so a `shows` that
+keeps at least half of the value in order is masked with it; one that keeps
+less shows less than half of the value.
+
 `type` on iOS keeps typing one key at a time - idb's bulk text drops characters -
 and now reads back the same way: the text fields before the first key and after
 the last. idb does not say which field has focus, so the field that was typed
