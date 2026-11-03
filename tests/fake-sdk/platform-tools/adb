@@ -17,6 +17,8 @@
 #   hint           what the field shows while it is empty, as Android reports it
 #   lossy          present: every burst of typed text loses its last character;
 #                  holding a number n: only the first n bursts do
+#   filter         the characters the field keeps; any other typed character
+#                  is dropped, as a digits-only field drops letters (#128)
 #   tap-fails      present: `input tap` exits 1
 #   screencap      "fail": exit 1; "hang": never answer; absent: a small PNG
 #   no-density     present: `wm density` answers nothing, as a device may
@@ -79,6 +81,7 @@ elif args[:1] == ["shell"] and line.startswith("shell input text "):
         left = read("lossy").strip()
         if not left: q = q[:-1]
         elif int(left) > 0: q = q[:-1]; write("lossy", str(int(left) - 1))
+    if has("filter"): q = "".join(c for c in q if c in read("filter"))
     write("typed", read("typed") + q)
 elif args[:3] == ["shell", "input", "keycombination"]:
     if args[3:] == ["113", "29"]: write("selected", "1")   # Ctrl+A

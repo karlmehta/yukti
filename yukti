@@ -808,7 +808,10 @@ atyped_is(){ local start="$1" sent="$2" dots="" k
 # the same (#106). A field that does not hold what was sent is emptied and typed
 # again, three times, before the step fails. The failure names counts and never
 # the value: the value may be a password.
-atype(){ apaths; local s="$1" m before start pre="" v i try empty n; m=${#s}
+atype(){ apaths; local s="$1" shows="${2:-}" e m before start pre="" v i try empty n; m=${#s}
+  # What the field has to hold: what was sent, or what a field that filters
+  # its input makes of it (#128).
+  e="${shows:-$s}"
   # `input text` has key events for ASCII only; anything else never arrives, and
   # three attempts at it would end in counts that are not even characters.
   if printf '%s' "$s" | LC_ALL=C grep -q '[^ -~]'; then die "type: only ASCII text can be typed on Android"; fi
@@ -825,8 +828,8 @@ atype(){ apaths; local s="$1" m before start pre="" v i try empty n; m=${#s}
     while [ "$i" -lt "${#v}" ]; do asend "${v:$i:8}"; i=$((i+8)); done
     aread_typed
     # A field that renders late is not a field that lost characters.
-    atyped_is "$start" "$v" || { sleep 0.5; aread_typed; }
-    atyped_is "$start" "$v" && { [ "$try" = 1 ] || ok "type: $m characters arrived on attempt $try"; return 0; }
+    atyped_is "$start" "$pre$e" || { sleep 0.5; aread_typed; }
+    atyped_is "$start" "$pre$e" && { [ "$try" = 1 ] || type_arrived "$try" "$shows" "$m"; return 0; }
     [ "$try" = 3 ] && break
     warn "type: attempt $try lost characters - clearing the field and typing again"
     aerase_typed "$TN"; empty="$TTX"
@@ -837,7 +840,7 @@ atype(){ apaths; local s="$1" m before start pre="" v i try empty n; m=${#s}
     start="$empty"; v="$pre$s"
   done
   n=0; [ "$TTX" = "$start" ] || n=$(( TN - ${#pre} )); [ "$n" -ge 0 ] || n=0
-  die "type: arrived $n of $m characters after 3 attempts"; }
+  type_lost "$n" "$shows" "$m"; }
 # Empty the focused field: to the end of the text, one delete per character it
 # shows and one more, then one delete as a probe. An empty field does not change
 # under it; a field that still holds text does, and typing again on top of that
@@ -1644,7 +1647,13 @@ dismiss(){ local L xy st hit v round=0
     round=$((round + 1))
     [ "$round" -lt 6 ] || { warn "dismiss: six interstitials tapped in a row - stopping here without reading the screen again, and leaving whatever is on it to the step that follows"; return 0; }
   done; }
-type_str(){ [ -n "${1:-}" ] || die "type: the value is empty"; is_android && { atype "$1"; return; }; itype "$1"; }
+type_str(){ [ -n "${1:-}" ] || die "type: the value is empty"; is_android && { atype "$1" "${2:-}"; return; }; itype "$1" "${2:-}"; }
+# How `type` ends, the same words on both platforms. With "shows" (#128) the
+# field filters what is typed, so the counts are of what it shows and what
+# "shows" expects, not of what was sent. Counts, never the value.
+type_arrived(){ if [ -n "$2" ]; then ok "type: the field shows the expected ${#2} characters on attempt $1"; else ok "type: $3 characters arrived on attempt $1"; fi; }
+type_lost(){ if [ -n "$2" ]; then die "type: the field does not show what \"shows\" expects after 3 attempts (it holds $1 characters, \"shows\" has ${#2})"; fi
+  die "type: arrived $1 of $3 characters after 3 attempts"; }
 # The text fields of the iOS tree, and what `type` made of them. idb reports no
 # focus, so the field that was typed into is the one whose value changed: the
 # fields are listed before the keys ("list", as JSON in $YUKTI_FIELDS) and
@@ -1720,7 +1729,8 @@ sys.stdout.write("%d" % max(n,0)); sys.exit(4)
 # the field, as on Android. The keys stay one at a time: idb's own bulk text
 # drops characters (README), and bursts wait until they can be measured on a
 # simulator. Written from the idb docs, not run on a simulator yet (#87).
-itype(){ paths; local s="$1" m=${#1} u was st try i n=0
+itype(){ paths; local s="$1" shows="${2:-}" e m=${#1} u was st try i n=0
+  e="${shows:-$s}"
   u="$(U)"
   st=0; was="$(ifields list)" || st=$?
   [ "$st" -eq 0 ] || lookup_die "$st"
@@ -1730,10 +1740,10 @@ itype(){ paths; local s="$1" m=${#1} u was st try i n=0
       idb ui text --udid "$u" "${s:$i:1}" >/dev/null 2>&1 || die "type: the simulator refused a key"
       sleep 0.12; i=$((i+1))
     done
-    st=0; n="$(YUKTI_FIELDS="$was" YUKTI_SENT="$s" ifields check)" || st=$?
-    [ "$st" -eq 4 ] && { sleep 0.5; st=0; n="$(YUKTI_FIELDS="$was" YUKTI_SENT="$s" ifields check)" || st=$?; }
+    st=0; n="$(YUKTI_FIELDS="$was" YUKTI_SENT="$e" ifields check)" || st=$?
+    [ "$st" -eq 4 ] && { sleep 0.5; st=0; n="$(YUKTI_FIELDS="$was" YUKTI_SENT="$e" ifields check)" || st=$?; }
     case "$st" in
-      0) [ "$try" = 1 ] || ok "type: $m characters arrived on attempt $try"; return 0;;
+      0) [ "$try" = 1 ] || type_arrived "$try" "$shows" "$m"; return 0;;
       4) ;;
       5) die "type: more than one text field changed - there is no telling which one was typed into";;
       *) lookup_die "$st";;
@@ -1742,7 +1752,7 @@ itype(){ paths; local s="$1" m=${#1} u was st try i n=0
     warn "type: attempt $try lost characters - clearing the field and typing again"
     for ((i=0;i<n;i++)); do idb ui key --udid "$u" 42 >/dev/null 2>&1 || die "type: the simulator refused the delete key"; done
   done
-  die "type: arrived $n of $m characters after 3 attempts"; }
+  type_lost "$n" "$shows" "$m"; }
 # The right edge of the field under a point, and what it holds. Both come out of
 # one dump: on iOS the caret has to be put at the end of THIS field before
 # deleting, and the old code tapped a fixed x=360 - right for one screen width
@@ -3863,10 +3873,11 @@ BOX_KINDS = ("maxHeight", "maxWidth", "maxX", "maxY",
 # "optional" lets a waitForId time out without failing the flow; no other step
 # takes it.
 # "in" limits a text check to one element, named by id (#102).
+# "shows" is what a field that filters its input holds after `type` (#128).
 # "selected" and "checked" ask an element found by id for its state (#103).
 STATE_KEYS = ("selected", "checked")
 STATE_VERBS = ("assertId", "waitForId")
-STEP_KEYS = set(KEYS) | {"when", "box", "title", "optional", "in"} | set(STATE_KEYS)
+STEP_KEYS = set(KEYS) | {"when", "box", "title", "optional", "in", "shows"} | set(STATE_KEYS)
 IN_VERBS = ("assertText", "assertNotText", "waitFor")
 INCLUDE_KEYS = {"do", "value", "with", "when"}
 # One condition is a kind and a value; several in one `when` all have to hold.
@@ -4001,6 +4012,29 @@ def in_of(step, at, scope, src):
         fail('%s: "in" is empty - name the id of the element or drop the key' % at)
     if SEP in v or END in v:
         fail('%s: "in" contains a character the runner separates fields with' % at)
+    return v
+
+def shows_of(step, at, scope, src):
+    if "shows" not in step: return ""
+    verb = step.get("do", "")
+    # `type` reads the field back, and nothing else does: a step that ignored
+    # the key would tell the author the field was checked when it was not.
+    if verb != "type":
+        fail('%s: step \'%s\' does not take "shows" - only type does' % (at, verb))
+    v = step["shows"]
+    if v is None or isinstance(v, (dict, list, bool)):
+        fail('%s: "shows" is the text the field holds once the value is typed, '
+             'for instance "12" for "12a!" in a digits-only field' % at)
+    v = fill(v if isinstance(v, str) else str(v), scope, at, bool(src))
+    # A field that shows nothing new cannot be told from a field the keys never
+    # reached: iOS finds the typed field by its change, and on Android an
+    # unchanged field would pass a step whose keys went nowhere.
+    if not v:
+        fail('%s: "shows" is empty - a field that shows nothing new cannot be '
+             'told from a field the keys never reached; type at least one '
+             'character the field keeps' % at)
+    if SEP in v or END in v:
+        fail('%s: "shows" contains a character the runner separates fields with' % at)
     return v
 
 def box_spec(step, at, scope, src):
@@ -4148,6 +4182,7 @@ def build(path, shown, src, scope, chain, depth, pre=""):
         fields.append(title_of(step, at))
         fields.append(optional_of(step, at))
         fields.append(in_of(step, at, scope, src))
+        fields.append(shows_of(step, at, scope, src))
         fields.append(state_of(step, at))
         if cond: recs.append(guard(cond, 1, src, idx))
         recs.append(SEP.join(fields))
@@ -4215,7 +4250,7 @@ PY
   # still reported PASS). Reading `<&3` also keeps the loop in THIS shell (not a
   # pipe subshell), so a step's `die` (exit 1) aborts the whole flow with a
   # non-zero status instead of being lost.
-  while IFS=$'\x1f' read -r -d '' do_ val x y mtch tmo dir edg src sidx wcond wspan bspec ttl opt inid stt <&3; do
+  while IFS=$'\x1f' read -r -d '' do_ val x y mtch tmo dir edg src sidx wcond wspan bspec ttl opt inid shw stt <&3; do
       # A guard is not a step: it takes no number of its own, and when it holds
       # the run says nothing about it - the steps that follow simply run. When it
       # does not hold, its whole group is read off the stream and every step in it
@@ -4301,7 +4336,7 @@ PY
         clearTextId) say "clear id '$val'"; clear_id "$val";;
         pressKey)    press_key "$val";;
         hideKeyboard) hide_keyboard;;
-        type)        say "type ${#val} chars"; type_str "$val";;
+        type)        say "type ${#val} chars"; type_str "$val" "$shw";;
         assertText)  assert_text "$val" "${mtch:-exact}" "$inid";;
         assertNotText) assert_not_text "$val" "${mtch:-exact}" "$inid";;
         assertNotId) assert_not_id "$val";;
@@ -4438,6 +4473,8 @@ ${B}yukti v$YUKTI_VERSION${R} — YUKTI — smart mobile-app QA automation for R
               assertText matches the whole label as written; "match":"contains" asks for a substring
               assertText, assertNotText and waitFor take "in": "<id>" - only the element tapId would tap
               and what lies within its bounds count; that element missing fails as "no element with id"
+              type takes "shows": the text a field that filters its input holds once the value is typed
+              ("value":"12a!","shows":"12" in a digits-only field); the read-back and its retries check that
               assertId and waitForId take "selected" and "checked" (true or false): the element found by the id has
               to be in that state - waitForId waits for it; a "checked" asked of an element that is not checkable fails
               waitFor polls for an element and fails on timeout ("timeout": seconds, default 10); it never scrolls.
