@@ -686,6 +686,27 @@ be read still stops the flow. Only `waitForId` takes the key, and only `true` or
 the wait a fixed `wait` plus a condition used to stand in for: it costs nothing
 when the element arrives early, and it waits long enough when it arrives late.
 
+`"selected"` and `"checked"` on `assertId` and `waitForId` ask the element found
+by the id for its state: `{"do":"assertId","value":"week-tab","selected":true}`.
+A tap on a range switch, a tab or a checkbox often changes nothing else on the
+screen, so without the state a green tap proves nothing. `assertId` reads it once;
+`waitForId` waits until the element is in that state and, on timeout, says
+`'week-tab' is not selected after 10s` when the element was there in the other
+state. Only `true` or `false`, only on these two steps; anything else is refused
+before the run. Android reads the node's `selected` and `checked` attributes,
+which React Native sets from `accessibilityState`; `checked` counts only on a
+node marked `checkable`, so a plain view fails `"checked": false` by name
+(`has no checked state`) instead of passing it. iOS reads the `Selected` trait
+and, for checked, the part of the value React Native builds from the role and
+the state (`checkbox, checked`, `radio button, unchecked`) that is checked,
+unchecked or mixed, or a switch's 1 and 0; a value in another language reads as
+no state. A mixed checkbox is `partly checked` on iOS and has no checked state
+on Android, where React Native marks only true and false as checkable.
+`"selected": false` passes on any element that carries no selected state - a
+wrapper with the id while the state sits on a child, too - so it proves
+something only next to a `"selected": true` on its neighbour. The iOS half is written from the idb and React Native sources and has not
+been run on a simulator yet.
+
 The step sees only what outlives one poll - the sleep plus the lookup itself,
 about a second on a device. Wait for a state that stays, not for something that
 flashes: a toast that shows for two seconds will be caught some runs and missed
