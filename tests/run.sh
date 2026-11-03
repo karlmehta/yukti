@@ -2932,5 +2932,109 @@ flow_file "$case_dir/flow.json" '{ "do": "assertText", "value": "Ada", "in": "${
 expect "check: an in with a variable that is not set is refused" 1 \
   "\$YUKTI_TEST_IN is not set" env -u YUKTI_TEST_IN "$YUKTI" flow --check "$case_dir/flow.json"
 
+# ── turnWheel (#120) ─────────────────────────────────────────────────────────
+new_case wheel-missing-key
+flow_file "$case_dir/flow.json" '{ "do": "turnWheel", "value": -1 }'
+expect "check: turnWheel without a wheel number is refused" 1 \
+  "step 1 'turnWheel': turnWheel needs a \"wheel\"" check "$case_dir/flow.json"
+
+new_case wheel-wrong-step
+flow_file "$case_dir/flow.json" '{ "do": "tapText", "value": "19", "wheel": 2 }'
+expect "check: wheel on a step that does not take it is refused" 1 \
+  "step 1 'tapText': step 'tapText' does not take \"wheel\" - only turnWheel does" check "$case_dir/flow.json"
+
+new_case wheel-zero
+flow_file "$case_dir/flow.json" '{ "do": "turnWheel", "value": -1, "wheel": 0 }'
+expect "check: wheel 0 is refused" 1 \
+  "\"wheel\" is '0' - it has to be a whole number from 1" check "$case_dir/flow.json"
+
+for r in 0 '"19 Oct"' '""' 501 '"-2.5"'; do
+  new_case wheel-rows
+  flow_file "$case_dir/flow.json" "{ \"do\": \"turnWheel\", \"wheel\": 1, \"value\": $r }"
+  expect "check: turnWheel by $r rows is refused" 1 \
+    "turnWheel takes the number of rows to turn the wheel, minus for up, plus for down, not 0 and at most 500" check "$case_dir/flow.json"
+done
+
+new_case wheel-var
+flow_file "$case_dir/flow.json" '{ "do": "turnWheel", "value": "${DAY_BY}", "wheel": "${N}" }'
+expect "check: wheel and rows may come from variables" 0 " - 1 steps" env DAY_BY=-2 N=2 "$YUKTI" flow --check "$case_dir/flow.json"
+
+# Android. npick <x1> <value> - a NumberPicker 200 wide, y 1000-1300, and the
+# EditText that shows its value; the next row is 100 away from the middle, 1150.
+npick(){ printf '<node class="android.widget.NumberPicker" text="" resource-id="" bounds="[%d,1000][%d,1300]" /><node class="android.widget.EditText" text="%s" resource-id="android:id/numberpicker_input" bounds="[%d,1100][%d,1200]" />' \
+  "$1" "$(( $1 + 200 ))" "$2" "$1" "$(( $1 + 200 ))"; }
+# wheel_screens <value>... - the n-th read shows the n-th value on the middle
+# wheel; the two others stay put.
+wheel_screens(){ local i=1 v
+  for v in "$@"; do screen "$case_dir/adb/dump-$i.xml" "$(npick 0 Nov)" "$(npick 200 "$v")" "$(npick 400 2026)"; i=$((i + 1)); done; }
+taps_are(){ local got; got="$(grep '^shell input tap' "$case_dir/adb/log" | sed 's/^shell input tap //' | tr '\n' '|')"
+  [ "$got" = "$1" ] || no "taps were '$got', wanted '$1'"; }
+
+dev_case wheel-down
+wheel_screens 17 18 19
+flow_file "$case_dir/flow.json" '{ "do": "turnWheel", "wheel": 2, "value": 2 }'
+run_flow "$case_dir/flow.json"
+begin "turnWheel: plus turns the wheel down a row per tap, read after each"
+status_is 0; fake_used; has out.txt "turnWheel: wheel 2 turned 2 rows, '17' to '19'"; taps_are "300 1250|300 1250|"
+verdict
+
+dev_case wheel-up
+wheel_screens Mar Feb
+flow_file "$case_dir/flow.json" '{ "do": "turnWheel", "wheel": 2, "value": -1 }'
+run_flow "$case_dir/flow.json"
+begin "turnWheel: minus turns it up"
+status_is 0; has out.txt "wheel 2 turned -1 rows, 'Mar' to 'Feb'"; taps_are "300 1050|"
+verdict
+
+dev_case wheel-stuck
+wheel_screens 17 18 18
+flow_file "$case_dir/flow.json" '{ "do": "turnWheel", "wheel": 2, "value": 3 }'
+run_flow "$case_dir/flow.json"
+begin "turnWheel: a tap that does not move the wheel stops the step and says where"
+status_is 1; has out.txt "turnWheel: wheel 2 went from '18' to '18' on row 2 of 3 - it did not move"; taps_are "300 1250|300 1250|"
+verdict
+
+dev_case wheel-absent
+screen "$case_dir/adb/dump-1.xml" "$(npick 0 Nov)"
+flow_file "$case_dir/flow.json" '{ "do": "turnWheel", "wheel": 2, "value": 1 }'
+run_flow "$case_dir/flow.json"
+begin "turnWheel: a wheel number past the last one says how many there are"
+status_is 1; has out.txt "turnWheel: no wheel 2 on the screen, there is 1"
+verdict
+
+# iOS. iwheel <x> <width> <value> - one wheel of a date picker as idb lists it
+# on an iOS 26.5 simulator: a slider with the PickerElement trait, no id, no
+# label, its value the row number, y 54-345 (middle 199).
+iwheel(){ printf '{"type":"Slider","role_description":"slider","AXUniqueId":null,"AXLabel":null,"AXValue":%s,"traits":["Selected","Adjustable","PickerElement","Scrollable"],"frame":{"x":%s,"y":54.83,"width":%s,"height":291}}' "$3" "$1" "$2"; }
+islider='{"type":"Slider","role_description":"slider","AXUniqueId":"volume","AXLabel":"Volume","AXValue":"50%","traits":["Adjustable"],"frame":{"x":20,"y":10,"width":300,"height":30}}'
+iwheel_screens(){ local i=1 v
+  for v in "$@"; do tree "$case_dir/idb/desc-$i.json" "$islider" "$(iwheel 260 75 2025)" "$(iwheel 68 133 5002)" "$(iwheel 206 49 "$v")"; i=$((i + 1)); done; }
+itaps_are(){ local got; got="$(grep '^ui tap' "$case_dir/idb/log" | sed 's/^ui tap --udid FAKE-UDID //' | tr '\n' '|')"
+  [ "$got" = "$1" ] || no "taps were '$got', wanted '$1'"; }
+
+ios_case ios-wheel-up
+iwheel_screens 4993 4992 4991
+flow_file "$case_dir/flow.json" '{ "do": "turnWheel", "wheel": 2, "value": -2 }'
+run_ios "$case_dir/flow.json"
+begin "turnWheel on iOS: wheels left to right by their trait, a plain slider is not one; the row number moves by one per tap"
+status_is 0; has out.txt "turnWheel: wheel 2 turned -2 rows, '4993' to '4991'"; itaps_are "230 167|230 167|"
+verdict
+
+ios_case ios-wheel-refused
+iwheel_screens 4993 4993
+flow_file "$case_dir/flow.json" '{ "do": "turnWheel", "wheel": 2, "value": 1 }'
+run_ios "$case_dir/flow.json"
+begin "turnWheel on iOS: a row the picker refuses is a failure by name"
+status_is 1; has out.txt "wheel 2 went from '4993' to '4993' on row 1 of 1 - it did not move"
+verdict
+
+ios_case ios-wheel-jump
+iwheel_screens 4992 4991 4993
+flow_file "$case_dir/flow.json" '{ "do": "turnWheel", "wheel": 2, "value": -2 }'
+run_ios "$case_dir/flow.json"
+begin "turnWheel on iOS: a wheel that jumps back is not counted as a row"
+status_is 1; has out.txt "wheel 2 went from '4991' to '4993' on row 2 of 2 - not the next row: the picker did not take that row"
+verdict
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
