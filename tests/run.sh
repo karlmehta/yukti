@@ -381,11 +381,22 @@ verdict
 dev_case type-shows
 screen "$case_dir/adb/dump-1.xml" "$(field amount true 100,500,900,600)"
 printf '0123456789' > "$case_dir/adb/filter"
-flow_file "$case_dir/flow.json" '{ "do": "type", "value": "12a!", "shows": "12" }'
+flow_file "$case_dir/flow.json" '{ "do": "type", "value": "12a!", "shows": "12" }' '{ "do": "assertText", "value": "12" }'
 run_flow "$case_dir/flow.json"
-begin "type with shows: a digits-only field drops the letters and the step is green"
-status_is 0; fake_used; reads_are 2; typed_is "12"
+begin "type with shows: a digits-only field drops the letters, the step is green and assertText checks the field"
+status_is 0; fake_used; reads_are 3; typed_is "12"
 lacks out.txt "lost characters"
+verdict
+
+dev_case type-shows-own-text
+printf '7' > "$case_dir/adb/typed"
+screen "$case_dir/adb/dump-1.xml" "$(field amount true 100,500,900,600)"
+printf '0123456789' > "$case_dir/adb/filter"; printf '1' > "$case_dir/adb/lossy"
+flow_file "$case_dir/flow.json" '{ "do": "type", "value": "12a!5", "shows": "125" }'
+run_flow "$case_dir/flow.json"
+begin "type with shows: the field's own text is typed again in front of the value on a retry"
+status_is 0; typed_is "7125"
+has out.txt "the field shows the expected 3 characters on attempt 2"
 verdict
 
 dev_case type-shows-retry

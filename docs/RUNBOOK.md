@@ -610,9 +610,11 @@ read-back, its retries and its failure check `shows` instead, on Android and on
 iOS, and the failure says `the field does not show what "shows" expects`, with
 counts and never the text. Without the key nothing changes. An empty `shows` is
 refused: a field that shows nothing new cannot be told from a field the keys
-never reached. The report masks a field by the typed value, so a `shows` that
-keeps at least half of the value in order is masked with it; one that keeps
-less shows less than half of the value.
+never reached. The report masks a text field by the typed value - four of its
+characters in a row, or at least half of it and at least four characters in
+order - so a short `shows` such as `12` of `12a!` stays readable in the report.
+`shows` is for fields that filter what is typed, not for secrets: a password
+field is masked whole by its own flag, whatever was typed.
 
 `type` on iOS keeps typing one key at a time - idb's bulk text drops characters -
 and now reads back the same way: the text fields before the first key and after
