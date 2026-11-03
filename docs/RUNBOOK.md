@@ -749,10 +749,11 @@ past its maximum. For a date in the past, from today: the day to 1, then the
 year, then the month, then the day to the one wanted.
 
 Measured on an iOS 26.5 simulator (iPhone 17 Pro) on a date picker and a
-`UIPickerView`, and on an API 35 Android emulator on three `NumberPicker` wheels
-(month as text, day, year): the wheels turned to a date and the screen read
-back, a row past the end or the maximum refused by name. A row costs about ten
-seconds on the simulator and one to two on the emulator, most of it the read.
+`UIPickerView`, and on an API 35 Android emulator with animations off on three
+`NumberPicker` wheels (month as text, day, year): the wheels turned to a date
+and the screen read back, a row past the end or the maximum refused by name. A
+row cost about ten seconds on that simulator and one to two on that emulator,
+most of it the read.
 
 ### Starting a flow from a known state
 
