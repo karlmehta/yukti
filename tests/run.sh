@@ -377,6 +377,58 @@ status_is 0; typed_is "$VALUE"
 has out.txt "attempt 1 lost characters"; has out.txt "22 characters arrived on attempt 2"
 verdict
 
+# "shows" (#128): a field that filters what is typed holds less than was sent.
+dev_case type-shows
+screen "$case_dir/adb/dump-1.xml" "$(field amount true 100,500,900,600)"
+printf '0123456789' > "$case_dir/adb/filter"
+flow_file "$case_dir/flow.json" '{ "do": "type", "value": "12a!", "shows": "12" }' '{ "do": "assertText", "value": "12" }'
+run_flow "$case_dir/flow.json"
+begin "type with shows: a digits-only field drops the letters, the step is green and assertText checks the field"
+status_is 0; fake_used; reads_are 3; typed_is "12"
+lacks out.txt "lost characters"
+verdict
+
+dev_case type-shows-own-text
+printf '7' > "$case_dir/adb/typed"
+screen "$case_dir/adb/dump-1.xml" "$(field amount true 100,500,900,600)"
+printf '0123456789' > "$case_dir/adb/filter"; printf '1' > "$case_dir/adb/lossy"
+flow_file "$case_dir/flow.json" '{ "do": "type", "value": "12a!5", "shows": "125" }'
+run_flow "$case_dir/flow.json"
+begin "type with shows: the field's own text is typed again in front of the value on a retry"
+status_is 0; typed_is "7125"
+has out.txt "the field shows the expected 3 characters on attempt 2"
+verdict
+
+dev_case type-shows-retry
+screen "$case_dir/adb/dump-1.xml" "$(field amount true 100,500,900,600)"
+printf '0123456789' > "$case_dir/adb/filter"; printf '1' > "$case_dir/adb/lossy"
+flow_file "$case_dir/flow.json" '{ "do": "type", "value": "12a!5", "shows": "125" }'
+run_flow "$case_dir/flow.json"
+begin "type with shows: a lost character is still caught and the value typed again"
+status_is 0; typed_is "125"
+has out.txt "attempt 1 lost characters"; has out.txt "the field shows the expected 3 characters on attempt 2"
+verdict
+
+dev_case type-shows-fails
+screen "$case_dir/adb/dump-1.xml" "$(field amount true 100,500,900,600)"
+printf '0123456789' > "$case_dir/adb/filter"
+flow_file "$case_dir/flow.json" '{ "do": "type", "value": "12a!", "shows": "13" }'
+run_flow "$case_dir/flow.json"
+begin "type with shows: a field that shows something else fails with counts, not the values"
+status_is 1
+has out.txt 'the field does not show what "shows" expects after 3 attempts (it holds 2 characters, "shows" has 2)'
+lacks out.txt "12a!"
+verdict
+
+dev_case type-filter-no-shows
+screen "$case_dir/adb/dump-1.xml" "$(field amount true 100,500,900,600)"
+printf '0123456789' > "$case_dir/adb/filter"
+flow_file "$case_dir/flow.json" '{ "do": "type", "value": "12a!" }'
+run_flow "$case_dir/flow.json"
+begin "type without shows: a field that drops characters still fails as before"
+status_is 1; has out.txt "arrived 2 of 4 characters after 3 attempts"
+verdict
+
 dev_case clear-two-reads
 printf 'old text' > "$case_dir/adb/typed"
 screen "$case_dir/adb/dump-1.xml" "$(field email false 100,500,900,600)"
@@ -589,6 +641,26 @@ run_ios "$case_dir/flow.json" TEST_VALUE="$VALUE"
 begin "type on iOS: a key lost in a field with a placeholder is typed again"
 status_is 0; ityped_is "$VALUE"
 has out.txt "22 characters arrived on attempt 2"
+verdict
+
+ios_case ios-type-shows
+tree "$case_dir/idb/desc-1.json" "$(itext amount 200)"
+printf '0123456789' > "$case_dir/idb/filter"
+flow_file "$case_dir/flow.json" '{ "do": "type", "value": "12a!", "shows": "12" }'
+run_ios "$case_dir/flow.json"
+begin "type with shows on iOS: a digits-only field drops the letters and the step is green"
+status_is 0; ireads_are 2; bursts_are 4; ityped_is "12"
+verdict
+
+ios_case ios-type-shows-fails
+tree "$case_dir/idb/desc-1.json" "$(itext amount 200)"
+printf '0123456789' > "$case_dir/idb/filter"
+flow_file "$case_dir/flow.json" '{ "do": "type", "value": "12a!", "shows": "13" }'
+run_ios "$case_dir/flow.json"
+begin "type with shows on iOS: a field that shows something else fails with counts"
+status_is 1
+has out.txt 'the field does not show what "shows" expects after 3 attempts (it holds 2 characters, "shows" has 2)'
+lacks out.txt "12a!"
 verdict
 
 ios_case ios-clear
@@ -2714,6 +2786,27 @@ flow_file "$case_dir/flow.json" '{ "do": "assertText", "value": "Ada", "in": "${
   '{ "do": "assertNotText", "value": "Ada", "in": "greeting" }' '{ "do": "waitFor", "value": "Ada", "in": "greeting" }'
 expect "check: in on the three text checks builds, a variable filled" 0 " - 3 steps" \
   env YUKTI_TEST_IN=greeting "$YUKTI" flow --check "$case_dir/flow.json"
+
+new_case shows-check
+flow_file "$case_dir/flow.json" '{ "do": "type", "value": "12a!", "shows": "${YUKTI_TEST_SHOWS}" }' \
+  '{ "do": "type", "value": "5", "shows": 5 }'
+expect "check: shows on type builds, a variable filled, a number taken as text" 0 " - 2 steps" \
+  env YUKTI_TEST_SHOWS=12 "$YUKTI" flow --check "$case_dir/flow.json"
+
+new_case shows-wrong-step
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "amount", "shows": "12" }'
+expect "check: shows on a step that does not take it is refused" 1 \
+  "step 1 'tapId': step 'tapId' does not take \"shows\" - only type does" check "$case_dir/flow.json"
+
+new_case shows-empty
+flow_file "$case_dir/flow.json" '{ "do": "type", "value": "ab", "shows": "" }'
+expect "check: an empty shows is refused" 1 \
+  "step 1 'type': \"shows\" is empty - a field that shows nothing new cannot be told from a field the keys never reached" check "$case_dir/flow.json"
+
+new_case shows-not-text
+flow_file "$case_dir/flow.json" '{ "do": "type", "value": "12a!", "shows": ["12"] }'
+expect "check: a shows that is not text is refused" 1 \
+  "step 1 'type': \"shows\" is the text the field holds once the value is typed" check "$case_dir/flow.json"
 
 new_case in-wrong-step
 flow_file "$case_dir/flow.json" '{ "do": "tapText", "value": "Ada", "in": "greeting" }'

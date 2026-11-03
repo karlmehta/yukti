@@ -12,6 +12,8 @@
 #                  placeholder
 #   describes      how many trees were read - a case counts the reads with it
 #   typed          the text in the field; a case may write it first
+#   filter         the characters the field keeps; any other typed character
+#                  is dropped, as a digits-only field drops letters (#128)
 #   lossy          present: every `ui text` loses its last character (one key
 #                  at a time: the key is lost); holding a number n: only the first
 #                  n do
@@ -66,6 +68,7 @@ elif ops[:2] == ["ui", "text"]:
         left = read("lossy").strip()
         if not left: q = q[:-1]
         elif int(left) > 0: q = q[:-1]; write("lossy", str(int(left) - 1))
+    if has("filter"): q = "".join(c for c in q if c in read("filter"))
     write("typed", read("typed") + q)
 elif ops[:2] == ["ui", "key"]:
     if ops[2:] == ["42"]: write("typed", read("typed")[:-1])

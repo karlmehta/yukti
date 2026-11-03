@@ -121,6 +121,7 @@ A flow is `{ "name": "...", "steps": [ ... ] }`. Common step verbs:
 | `{"do":"tapText","value":"Sign In"}` | tap an element by its visible label (preferred — resilient) |
 | `{"do":"optionalTapText","value":"Skip"}` | tap if present, don't fail if absent |
 | `{"do":"type","value":"165"}` | type into the focused field (`${TEST_EMAIL}` / `${TEST_PASSWORD}` inject creds) |
+| `{"do":"type","value":"12a!","shows":"12"}` | type into a field that filters its input; the read-back checks what the field `shows`, not the value sent |
 | `{"do":"scrollToText","value":"Weight History"}` | scroll until visible, and fail the flow if it never becomes visible. `"direction"` is `up`, `down` (the default), `left` or `right`; `"edges":"clear"` asks for it to land away from the edges; `"timeout"` (seconds, default 5) is how long it waits at the end of the list for the list to grow |
 | `{"do":"tapId","value":"submit"}` | tap the element with this a11y id / `resource-id` segment, exact match |
 | `{"do":"assertText","value":"Logged"}` | verify the text is on screen (the test's checkpoint — perceivable text only, no scroll). Matches the whole label, case as written; add `"match":"contains"` for a partial match; add `"in":"<id>"` to look only inside that element |
