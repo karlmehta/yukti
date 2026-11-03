@@ -3977,7 +3977,8 @@ BOX_KINDS = ("maxHeight", "maxWidth", "maxX", "maxY",
 # "selected" and "checked" ask an element found by id for its state (#103).
 STATE_KEYS = ("selected", "checked")
 STATE_VERBS = ("assertId", "waitForId")
-# "wheel" is the number of the wheel turnWheel turns, left to right (#120).
+# "wheel" is the number of the wheel turnWheel turns, top to bottom, then
+# left to right (#120).
 STEP_KEYS = set(KEYS) | {"when", "box", "title", "optional", "in", "shows", "wheel"} | set(STATE_KEYS)
 IN_VERBS = ("assertText", "assertNotText", "waitFor")
 INCLUDE_KEYS = {"do", "value", "with", "when"}
@@ -4146,20 +4147,20 @@ def wheel_of(step, at, scope, src):
         # Wheels have no ids, so the number is the only way to say which one:
         # a step without it would turn whichever wheel came first.
         if verb == "turnWheel":
-            fail('%s: turnWheel needs a "wheel" - its number on the screen, left '
-                 "to right, from 1" % at)
+            fail('%s: turnWheel needs a "wheel" - its number on the screen, top '
+                 "to bottom, then left to right, from 1" % at)
         return ""
     if verb != "turnWheel":
         fail('%s: step \'%s\' does not take "wheel" - only turnWheel does' % (at, verb))
     v = step["wheel"]
     if v is None or isinstance(v, (dict, list, bool)):
-        fail('%s: "wheel" is the number of the wheel, left to right, from 1' % at)
+        fail('%s: "wheel" is the number of the wheel on the screen, from 1' % at)
     v = fill(v if isinstance(v, str) else str(v), scope, at, bool(src)).strip()
     # A whole number from 1, normalised as box numbers are: "02" is octal in the
     # shell arithmetic that picks the wheel.
     if not v.isdigit() or int(v) < 1:
         fail('%s: "wheel" is \'%s\' - it has to be a whole number from 1, the '
-             "wheels counted left to right" % (at, v))
+             "wheels counted top to bottom, then left to right" % (at, v))
     # How many rows to turn it: the wheel shows no value iOS can read (#120), so
     # the step counts rows. Up is minus. Zero would pass without touching it.
     r = fill(str(step.get("value", "")), scope, at, bool(src)).strip()
@@ -4596,7 +4597,7 @@ ${B}yukti v$YUKTI_VERSION${R} — YUKTI — smart mobile-app QA automation for R
   yukti assert-not-id "<id>"
                             assert no element with this id is on the current screen
 
-  flow steps: wait · waitFor · waitForId · screenshot · tap · tapText · optionalTapText · tapId · scroll · scrollToText · dismiss · type · clearText · clearTextId · pressKey · hideKeyboard · assertText · assertId · assertNotText · assertNotId · assertBox · assertBoxId · launch · stopApp · clearState · openUrl · include
+  flow steps: wait · waitFor · waitForId · screenshot · tap · tapText · optionalTapText · tapId · scroll · scrollToText · dismiss · type · clearText · clearTextId · pressKey · hideKeyboard · assertText · assertId · assertNotText · assertNotId · assertBox · assertBoxId · turnWheel · launch · stopApp · clearState · openUrl · include
               (clearText · clearTextId · pressKey · hideKeyboard · assertBox · assertBoxId: measured on Android, iOS not yet run)
               stopApp force-stops the app, clearState wipes its data (Android only); both take the variant name
               openUrl takes the key of a screen, not an address: the address is the variant's "urlBase" plus the key

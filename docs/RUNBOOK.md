@@ -718,6 +718,41 @@ label, case as written, while `tapText "log water"` matches a substring, folds
 case, and also looks at the element's id. Write the label the way the screen
 shows it and both are happy.
 
+### Wheel pickers
+
+A wheel - an iOS date picker in a modal, a time picker, a `UIPickerView`, an
+Android `NumberPicker` - has no id, and only the row next to the selected one is
+in reach of a tap. `turnWheel` turns one by a number of rows:
+`{"do":"turnWheel","wheel":2,"value":-1}` is one row up on the second wheel.
+Wheels are counted top to bottom, then left to right; in an en_US date picker 1,
+2 and 3 are month, day and year. Minus is up, towards the earlier rows, plus is
+down; 0 and more than 500 are refused before the run. Both may come from
+variables, so a flow can carry the distance its preconditions worked out:
+`"value": "${DAY_BY}"`.
+
+The step taps the row next to the selected one once per row and reads the wheel
+after every tap. It counts rows rather than looking for a value because iOS does
+not report the value: each wheel is a slider whose value is its row number, and
+the text on the wheel is nowhere in the tree (an iOS 26.5 simulator says 5002
+for November, 4993 for the 3rd, 2025 for the year 2026). So on iOS every tap has
+to move that number by exactly one in the direction asked. A date picker with a
+maximum refuses a day past it and jumps back, and the step fails by name, `wheel
+2 went from '4993' to '4993' on row 1 of 1 - it did not move`, rather than count
+a row the picker did not take. On Android the step reads the text of the
+`NumberPicker` and wants it changed.
+
+What the wheel ends on is the flow's to check, on the field the picker writes to
+once it is closed: `turnWheel` proves the wheel moved as asked, the field proves
+the date. Turn the wheels in an order every step of which is a valid date: a
+date picker clamps the day when the month has fewer days, and refuses a date
+past its maximum. For a date in the past, from today: the day to 1, then the
+year, then the month, then the day to the one wanted.
+
+Measured on an iOS 26.5 simulator (iPhone 17 Pro) on a date picker and a
+`UIPickerView`: month, day and year turned to a date and the field read back,
+a day past the maximum refused by name; about ten seconds a row there, most of
+it the read. The Android half is checked against the fake device only.
+
 ### Starting a flow from a known state
 
 A flow inherits whatever the flow before it left behind: the session, the
