@@ -895,6 +895,71 @@ count_is(){ local n; n="$(grep -cF -- "$2" "$case_dir/$1" 2>/dev/null)"; [ "${n:
 is_there(){ [ -e "$case_dir/$1" ] || no "$1 is missing"; }
 value_is(){ [ "$(cat "$case_dir/$1" 2>/dev/null)" = "$2" ] || no "$1 is '$(cat "$case_dir/$1" 2>/dev/null)', wanted '$2'"; }
 
+# State by id (#103): selected and checked, as the dump carries them.
+# sroot <node>... - the nodes inside a full-screen root, so the root is the screen.
+sroot(){ printf '<node index="0" text="" resource-id="" class="android.widget.FrameLayout" package="com.example" content-desc="" checkable="false" checked="false" clickable="false" enabled="true" focusable="false" focused="false" scrollable="false" long-clickable="false" password="false" selected="false" bounds="[0,0][1080,2400]">'
+  local n; for n in "$@"; do printf '%s' "$n"; done; printf '</node>'; }
+# snode <id> <y> <selected> [checkable] [checked] - a control 1080 wide, 100 high.
+snode(){ printf '<node index="0" text="%s" resource-id="com.example:id/%s" class="android.view.ViewGroup" package="com.example" content-desc="" checkable="%s" checked="%s" clickable="true" enabled="true" focusable="true" focused="false" scrollable="false" long-clickable="false" password="false" selected="%s" bounds="[0,%d][1080,%d]" />' \
+  "$1" "$1" "${4:-false}" "${5:-false}" "$3" "$2" "$(( $2 + 100 ))"; }
+
+dev_case state-selected
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(snode day 300 false)" "$(snode week 500 true)")"
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "week", "selected": true }' '{ "do": "assertId", "value": "day", "selected": false }'
+run_flow "$case_dir/flow.json"
+begin "assertId selected: Week is selected and Day is not"
+status_is 0; fake_used; has out.txt "assert id: 'week' on screen at 540 550, selected"; has out.txt "'day' on screen at 540 350, not selected"
+verdict
+
+dev_case state-not-selected
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(snode day 300 true)" "$(snode week 500 false)")"
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "week", "selected": true }'
+run_flow "$case_dir/flow.json"
+begin "assertId selected: the same flow is red while Week is not selected"
+status_is 1; has out.txt "assert FAILED: 'week' is not selected"
+verdict
+
+dev_case state-checked
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(snode remind 300 false true true)" "$(snode plain 500 false)")"
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "remind", "checked": true }' '{ "do": "assertId", "value": "remind", "checked": false }'
+run_flow "$case_dir/flow.json"
+begin "assertId checked: a checked switch passes checked true and fails checked false"
+status_is 1; has out.txt "'remind' on screen at 540 350, checked"; has out.txt "assert FAILED: 'remind' is checked"
+verdict
+
+dev_case state-not-checkable
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(snode plain 500 false)")"
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "plain", "checked": false }'
+run_flow "$case_dir/flow.json"
+begin "assertId checked: an element that is not checkable fails by name, never passes checked false"
+status_is 1; has out.txt "'plain' has no checked state"
+verdict
+
+dev_case state-wait
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(snode week 500 false)")"
+screen "$case_dir/adb/dump-2.xml" "$(sroot "$(snode week 500 true)")"
+flow_file "$case_dir/flow.json" '{ "do": "waitForId", "value": "week", "selected": true, "timeout": 5 }'
+run_flow "$case_dir/flow.json"
+begin "waitForId selected: the wait goes on until the element is in the state"
+status_is 0; reads_are 2; has out.txt "waitFor id: 'week' on screen at 540 550 after"; has out.txt "s, selected"
+verdict
+
+dev_case state-wait-timeout
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(snode week 500 false)")"
+flow_file "$case_dir/flow.json" '{ "do": "waitForId", "value": "week", "selected": true, "timeout": 1 }'
+run_flow "$case_dir/flow.json"
+begin "waitForId selected: on the screen in the other state is a failure that says so"
+status_is 1; has out.txt "waitFor id FAILED: 'week' is not selected after 1s"
+verdict
+
+dev_case state-wait-optional
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(snode week 500 false)")"
+flow_file "$case_dir/flow.json" '{ "do": "waitForId", "value": "week", "selected": true, "timeout": 1, "optional": true }'
+run_flow "$case_dir/flow.json"
+begin "waitForId selected optional: the miss is skipped with its words"
+status_is 0; has out.txt "'week' is not selected after 1s - optional, the flow goes on"
+verdict
+
 helper_case helper-reads
 : > "$case_dir/adb/running"
 helper_screen "$case_dir/adb/helper-1.xml" "$(hnode TextView title Today)"
@@ -2700,6 +2765,28 @@ begin "in on iOS: the same text in another element does not count"
 status_is 1; has out.txt "'Ada' not in the element with id 'greeting'"
 verdict
 
+# State by id on iOS (#103): the Selected trait, the checked word in the value.
+istate(){ printf '{"type":"%s","role_description":"%s","AXUniqueId":"%s","AXLabel":"%s","AXValue":"%s","traits":%s,"frame":{"x":20,"y":%s,"width":360,"height":44}}' \
+  "$2" "$(printf '%s' "$2" | tr 'A-Z' 'a-z')" "$1" "$1" "$4" "$5" "$3"; }
+
+ios_case ios-state-selected
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$(istate day Button 200 "" '["Button"]')" "$(istate week Button 300 "" '["Button","Selected"]')"
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "week", "selected": true }' '{ "do": "assertId", "value": "day", "selected": false }' '{ "do": "assertId", "value": "day", "selected": true }'
+run_ios "$case_dir/flow.json"
+begin "assertId selected on iOS: the Selected trait, and the same flow red on the other tab"
+status_is 1; has out.txt "'week' on screen at 200 322, selected"; has out.txt "'day' on screen at 200 222, not selected"
+has out.txt "assert FAILED: 'day' is not selected"
+verdict
+
+ios_case ios-state-checked
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$(istate remind Switch 200 1 '["Button"]')" "$(istate agree Other 300 checked '[]')" "$(istate plain Other 400 "" '[]')"
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "remind", "checked": true }' '{ "do": "assertId", "value": "agree", "checked": true }' '{ "do": "assertId", "value": "plain", "checked": false }'
+run_ios "$case_dir/flow.json"
+begin "assertId checked on iOS: a switch by 1, a view by its word, no state fails by name"
+status_is 1; has out.txt "'remind' on screen at 200 222, checked"; has out.txt "'agree' on screen at 200 322, checked"
+has out.txt "assert FAILED: 'plain' has no checked state"
+verdict
+
 ios_case ios-in-no-id
 tree "$case_dir/idb/desc-1.json" "$IAPP" "$I_HI" "$I_CARD"
 flow_file "$case_dir/flow.json" '{ "do": "assertNotText", "value": "Ada", "match": "contains", "in": "greeting" }'
@@ -2714,6 +2801,20 @@ flow_file "$case_dir/flow.json" '{ "do": "assertText", "value": "Ada", "in": "${
   '{ "do": "assertNotText", "value": "Ada", "in": "greeting" }' '{ "do": "waitFor", "value": "Ada", "in": "greeting" }'
 expect "check: in on the three text checks builds, a variable filled" 0 " - 3 steps" \
   env YUKTI_TEST_IN=greeting "$YUKTI" flow --check "$case_dir/flow.json"
+
+new_case state-check
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "week", "selected": true, "checked": false }' '{ "do": "waitForId", "value": "week", "selected": true }'
+expect "check: selected and checked on assertId and waitForId build" 0 " - 2 steps" check "$case_dir/flow.json"
+
+new_case state-wrong-step
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "week", "selected": true }'
+expect "check: a state on a step that does not take it is refused" 1 \
+  "step 1 'tapId': step 'tapId' does not take \"selected\" - only assertId, waitForId do" check "$case_dir/flow.json"
+
+new_case state-not-bool
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "week", "checked": "false" }'
+expect "check: a state that is not true or false is refused" 1 \
+  "step 1 'assertId': \"checked\" is true or false, got \"false\"" check "$case_dir/flow.json"
 
 new_case in-wrong-step
 flow_file "$case_dir/flow.json" '{ "do": "tapText", "value": "Ada", "in": "greeting" }'

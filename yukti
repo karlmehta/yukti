@@ -582,7 +582,11 @@ match=(sys.argv[3] if len(sys.argv)>3 else "exact")
 # screen without reading the screen a second time. "why" answers in words what
 # an empty answer leaves open: "on cx cy" for the winner, else "zero x1 y1 x2 y2"
 # for a match of zero area, else "off x1 y1 x2 y2" for one outside the screen,
-# else nothing - not in the tree. The iOS path answers the same.
+# else nothing - not in the tree. The iOS path answers the same. "state" (#103)
+# prints the centre and then the selected and checked state of the winner:
+# "cx cy true|false true|false|none" - "none" for a node that is not checkable,
+# whose checked="false" says nothing (React Native marks a node checkable
+# exactly when accessibilityState has "checked").
 out=(sys.argv[4] if len(sys.argv)>4 else "centre")
 xml=sys.stdin.read()
 # Nothing arrived: the dump failed and said so on its own line. Status 1 is "the
@@ -628,7 +632,7 @@ if scope and mode=="assert":
         if not (SX1<=cx<SX2 and SY1<=cy<SY2): continue
         sbox=(x1,y1,x2,y2); break
     if sbox is None: sys.exit(4)
-best=None; best_box=None; best_score=0; zero=None; off=None
+best=None; best_box=None; best_score=0; zero=None; off=None; best_state=None
 # A tree read with the rows below the fold (#116, helper_full_tree) is asked in
 # two more ways. Such a row comes upside down: its top is where it stands in the
 # content, its bottom is pinned to the bottom of the list. "full" looks for the
@@ -722,12 +726,15 @@ for m in re.finditer(r"<node\b[^>]*>", xml):
     # go to the first one. The iOS path runs the same test on the same corners.
     if score==best_score and not (mode not in ("assert","id") and inside((x1,y1,x2,y2),best_box)): continue
     best=(cx,cy); best_box=(x1,y1,x2,y2); best_score=score
+    best_state=("true" if a("selected")=="true" else "false",
+                ("true" if a("checked")=="true" else "false") if a("checkable")=="true" else "none")
 if full:
     if best and (low is None or best_score>=low[0]): print("on",best[0],best[1])
     elif low: print("below",low[1])
 elif best:
     if out=="box": print(best_box[0],best_box[1],best_box[2],best_box[3],SX1,SY1,SX2,SY2)
     elif out=="why": print("on",best[0],best[1])
+    elif out=="state": print(best[0],best[1],*best_state)
     else: print(best[0],best[1])
 elif out=="why":
     if zero: print("zero",*zero)
@@ -1402,7 +1409,26 @@ def emit(e,xy):
     if out=="box":
         x,y,w,h=frame(e); print(int(x),int(y),int(x+w),int(y+h),int(SX),int(SY),int(SX+SW),int(SY+SH))
     elif out=="why": print("on",xy[0],xy[1])
+    elif out=="state": print(xy[0],xy[1],*state(e))
     else: print(xy[0],xy[1])
+# "state" (#103), the answer of the Android path. Selected is the Selected trait
+# (idb lists "traits" from v1.7.0). Checked is not a trait on iOS: React Native
+# writes a word into the accessibility value - checked, unchecked or mixed, in
+# the language of the simulator - and a UISwitch reports 1 or 0. Only the
+# English words are read: a value in another language reads as no state and
+# fails by name instead of passing. Written from the idb and React Native
+# sources, not run on a simulator yet (#87).
+def state(e):
+    tr=e.get("traits") or []
+    if isinstance(tr,str): tr=tr.replace(","," ").split()
+    sel="true" if any(str(t).strip().lower()=="selected" for t in tr) else "false"
+    v=norm(str(e.get("AXValue") or "")).lower()
+    t=(str(e.get("type") or "")+" "+str(e.get("role_description") or "")).lower()
+    if v=="checked" or ("switch" in t and v=="1"): chk="true"
+    elif v=="unchecked" or ("switch" in t and v=="0"): chk="false"
+    elif v=="mixed": chk="mixed"
+    else: chk="none"
+    return sel,chk
 best=None; best_el=None; best_score=-1; zero=None; off=None
 # Corners (x1,y1,x2,y2): a lies entirely inside b and is not b itself. The
 # Android path defines the same function; keep the two identical. A tap match
@@ -1932,7 +1958,33 @@ assert_text(){ local q="${1:-}" m="${2:-exact}" in="${3:-}" xy st=0
 # a flow step with a missing or misspelled `value` must stop the run, not tap a
 # random point. Neither scrolls — use scrollToText first for a target below the fold.
 tap_id(){ local q="${1:-}"; [ -n "$q" ] || die "tapId needs a non-empty id"; local xy st=0; xy="$(find_el "$q" id)" || st=$?; [ "$st" -eq 0 ] || die "$(lookup_err "$st")"; [ -n "$xy" ] || die "no element with id '$q'"; tap_checked "$q" id $xy; }
-assert_id(){ local q="${1:-}"; [ -n "$q" ] || die "assertId needs a non-empty id"; local xy st=0; xy="$(find_el "$q" id)" || st=$?; [ "$st" -eq 0 ] || die "assert FAILED: $(lookup_err "$st")"; [ -n "$xy" ] && ok "assert id: '$q' on screen at $xy" || die "assert FAILED: no element with id '$q'"; }
+assert_id(){ local q="${1:-}" want="${2:-}"; [ -n "$q" ] || die "assertId needs a non-empty id"; local xy st=0 miss
+  [ -z "$want" ] || { xy="$(find_el "$q" id exact state)" || st=$?; [ "$st" -eq 0 ] || die "assert FAILED: $(lookup_err "$st")"
+    [ -n "$xy" ] || die "assert FAILED: no element with id '$q'"
+    miss="$(state_miss "$q" "$want" $xy)"; [ -z "$miss" ] || die "assert FAILED: $miss"
+    set -- $xy; ok "assert id: '$q' on screen at $1 $2, $(state_words "$want")"; return 0; }
+  xy="$(find_el "$q" id)" || st=$?; [ "$st" -eq 0 ] || die "assert FAILED: $(lookup_err "$st")"; [ -n "$xy" ] && ok "assert id: '$q' on screen at $xy" || die "assert FAILED: no element with id '$q'"; }
+# The state a step asks of an element (#103): "selected=true checked=false", as
+# the flow builder writes it. state_miss <id> <want> <cx> <cy> <selected>
+# <checked> prints what does not hold, in words, or nothing; state_words says
+# what was asked. A checked state asked of an element that has none ("none":
+# not checkable on Android, no checked word on iOS) is a miss, never a pass:
+# checked="false" on a plain view would otherwise satisfy "checked": false.
+state_miss(){ local q="$1" want="$2" sel="$5" chk="$6" k v out=""
+  for k in $want; do v="${k#*=}"
+    case "${k%%=*}" in
+      selected) [ "$sel" = "$v" ] || { [ "$v" = true ] && out="${out:+$out; }'$q' is not selected" || out="${out:+$out; }'$q' is selected"; };;
+      checked) case "$chk" in
+          none)  out="${out:+$out; }'$q' has no checked state - the app does not mark it as checkable";;
+          mixed) out="${out:+$out; }'$q' is partly checked (mixed)";;
+          *) [ "$chk" = "$v" ] || { [ "$v" = true ] && out="${out:+$out; }'$q' is not checked" || out="${out:+$out; }'$q' is checked"; };;
+        esac;;
+    esac
+  done
+  printf '%s' "$out"; }
+state_words(){ local k out=""
+  for k in $1; do case "$k" in selected=true) k="selected";; selected=false) k="not selected";; checked=true) k="checked";; checked=false) k="not checked";; esac; out="${out:+$out, }$k"; done
+  printf '%s' "$out"; }
 # The density of the screen, for a constraint written in dp. Read once per run
 # and kept: it cannot change under a run, and every box assertion would
 # otherwise pay for another adb round trip. An override density wins when one is
@@ -2164,16 +2216,19 @@ wait_s(){ sleep "${1:-2}"; }
 # With an "in" id (waitFor only, #102) the poll waits for the text inside that
 # element, and an element not yet on the screen is "not there yet", not an
 # unreadable screen. The timeout says which of the two it ended in.
-wait_for(){ local q="${1:-}" t="${2:-10}" m="${3:-exact}" mode="${4:-assert}" opt="${5:-}" in="${6:-}" xy readable=1 lst=1 nosc=0 t0 el label why="" msg
+wait_for(){ local q="${1:-}" t="${2:-10}" m="${3:-exact}" mode="${4:-assert}" opt="${5:-}" in="${6:-}" want="${7:-}" xy readable=1 lst=1 nosc=0 t0 el label why="" msg miss=""
   [ -n "$q" ] || die "waitFor needs a non-empty value"
   case "$t" in ''|*[!0-9]*|0) die "waitFor: timeout must be a whole number of seconds greater than zero, got '$t'";; esac
   case "$m" in exact|contains) ;; *) die "waitFor: unknown match '$m' - use exact or contains";; esac
   [ "$mode" = id ] && label="waitFor id" || label="waitFor ($m match)${in:+ in '$in'}"
-  say "$label: up to ${t}s for '$q'"
+  say "$label: up to ${t}s for '$q'${want:+, $(state_words "$want")}"
   t0=$SECONDS
   while :; do
-    if xy="$(find_el "$q" "$mode" "$m" centre "$in")"; then readable=1; nosc=0
-      [ -n "$xy" ] && { el=$((SECONDS - t0)); ok "$label: '$q' on screen at $xy after ${el}s"; return 0; }
+    if xy="$(find_el "$q" "$mode" "$m" "${want:+state}" "$in")"; then readable=1; nosc=0; miss=""
+      # With a state (#103) the element on the screen is not enough: the wait
+      # goes on until it is in that state, and the last miss is what it says.
+      if [ -n "$xy" ] && [ -n "$want" ]; then miss="$(state_miss "$q" "$want" $xy)"; [ -z "$miss" ] || xy=""; [ -n "$xy" ] && { set -- $xy; xy="$1 $2"; }; fi
+      [ -n "$xy" ] && { el=$((SECONDS - t0)); ok "$label: '$q' on screen at $xy after ${el}s${want:+, $(state_words "$want")}"; return 0; }
     else lst=$?
       if [ "$lst" -eq 4 ]; then readable=1; nosc=1; else readable=0; fi
     fi
@@ -2181,11 +2236,25 @@ wait_for(){ local q="${1:-}" t="${2:-10}" m="${3:-exact}" mode="${4:-assert}" op
     sleep 0.5
   done
   [ "$readable" = 1 ] || die "$label FAILED after ${t}s waiting for '$q': $(lookup_err "$lst")"
+  if [ -n "$miss" ]; then
+    msg="$miss after ${t}s"
+    if [ "$opt" = optional ]; then FLOW_OPT_MISS="$msg"; skipped "$label: $msg - optional, the flow goes on"; return 0; fi
+    die "$label FAILED: $msg"
+  fi
   if [ "$mode" = id ]; then
     if xy="$(find_el "$q" id exact why)"; then
       case "$xy" in
-        # It arrived between the last poll and this read: it is on the screen.
-        on\ *)   el=$((SECONDS - t0)); ok "$label: '$q' on screen at ${xy#on } after ${el}s"; return 0;;
+        # It arrived between the last poll and this read: it is on the screen -
+        # and with a state asked, it passes only in that state.
+        on\ *)   if [ -n "$want" ]; then
+                   xy="$(find_el "$q" id exact state)" || { lst=$?; die "$label FAILED after ${t}s waiting for '$q': $(lookup_err "$lst")"; }
+                   [ -n "$xy" ] && miss="$(state_miss "$q" "$want" $xy)" || miss="'$q' left the screen"
+                   if [ -n "$miss" ]; then msg="$miss after ${t}s"
+                     [ "$opt" = optional ] && { FLOW_OPT_MISS="$msg"; skipped "$label: $msg - optional, the flow goes on"; return 0; }
+                     die "$label FAILED: $msg"; fi
+                   set -- $xy; xy="on $1 $2"
+                 fi
+                 el=$((SECONDS - t0)); ok "$label: '$q' on screen at ${xy#on } after ${el}s${want:+, $(state_words "$want")}"; return 0;;
         zero\ *) set -- $xy; why="at zero size [$2,$3][$4,$5]";;
         off\ *)  set -- $xy; why="outside the screen at [$2,$3][$4,$5]";;
         *)       why="not in the tree";;
@@ -3790,7 +3859,10 @@ BOX_KINDS = ("maxHeight", "maxWidth", "maxX", "maxY",
 # "optional" lets a waitForId time out without failing the flow; no other step
 # takes it.
 # "in" limits a text check to one element, named by id (#102).
-STEP_KEYS = set(KEYS) | {"when", "box", "title", "optional", "in"}
+# "selected" and "checked" ask an element found by id for its state (#103).
+STATE_KEYS = ("selected", "checked")
+STATE_VERBS = ("assertId", "waitForId")
+STEP_KEYS = set(KEYS) | {"when", "box", "title", "optional", "in"} | set(STATE_KEYS)
 IN_VERBS = ("assertText", "assertNotText", "waitFor")
 INCLUDE_KEYS = {"do", "value", "with", "when"}
 # One condition is a kind and a value; several in one `when` all have to hold.
@@ -3873,6 +3945,24 @@ def title_of(step, at):
     if not t:
         fail('%s: "title" is empty - say what the step is for or drop the key' % at)
     return t
+
+def state_of(step, at):
+    keys = [k for k in STATE_KEYS if k in step]
+    if not keys: return ""
+    verb = step.get("do", "")
+    # A state belongs to an element named by id; a step that ignored the key
+    # would pass on an element in any state.
+    if verb not in STATE_VERBS:
+        fail('%s: step \'%s\' does not take "%s" - only %s do'
+             % (at, verb, keys[0], ", ".join(STATE_VERBS)))
+    out = []
+    for k in keys:
+        v = step[k]
+        # A boolean and nothing else, as "optional": "false" as text is truthy.
+        if not isinstance(v, bool):
+            fail('%s: "%s" is true or false, got %s' % (at, k, json.dumps(v)))
+        out.append("%s=%s" % (k, "true" if v else "false"))
+    return " ".join(out)
 
 def optional_of(step, at):
     if "optional" not in step: return ""
@@ -4054,6 +4144,7 @@ def build(path, shown, src, scope, chain, depth, pre=""):
         fields.append(title_of(step, at))
         fields.append(optional_of(step, at))
         fields.append(in_of(step, at, scope, src))
+        fields.append(state_of(step, at))
         if cond: recs.append(guard(cond, 1, src, idx))
         recs.append(SEP.join(fields))
 
@@ -4120,7 +4211,7 @@ PY
   # still reported PASS). Reading `<&3` also keeps the loop in THIS shell (not a
   # pipe subshell), so a step's `die` (exit 1) aborts the whole flow with a
   # non-zero status instead of being lost.
-  while IFS=$'\x1f' read -r -d '' do_ val x y mtch tmo dir edg src sidx wcond wspan bspec ttl opt inid <&3; do
+  while IFS=$'\x1f' read -r -d '' do_ val x y mtch tmo dir edg src sidx wcond wspan bspec ttl opt inid stt <&3; do
       # A guard is not a step: it takes no number of its own, and when it holds
       # the run says nothing about it - the steps that follow simply run. When it
       # does not hold, its whole group is read off the stream and every step in it
@@ -4186,7 +4277,7 @@ PY
       case "$do_" in
         wait)        wait_s "${val:-2}";;
         waitFor)     wait_for "$val" "${tmo:-10}" "${mtch:-exact}" assert "" "$inid";;
-        waitForId)   wait_for "$val" "${tmo:-10}" exact id "${opt:+optional}";;
+        waitForId)   wait_for "$val" "${tmo:-10}" exact id "${opt:+optional}" "" "$stt";;
         # shot runs in a substitution, so its own die kills only that subshell:
         # the step used to report PASS with an empty path, whether the name was
         # refused or screencap itself failed. The status has to be checked here,
@@ -4211,7 +4302,7 @@ PY
         assertNotText) assert_not_text "$val" "${mtch:-exact}" "$inid";;
         assertNotId) assert_not_id "$val";;
         tapId)       say "tap id '$val'"; tap_id "$val";;
-        assertId)    assert_id "$val";;
+        assertId)    assert_id "$val" "$stt";;
         assertBox)   assert_box "$val" assert "$bspec";;
         assertBoxId) assert_box "$val" id "$bspec";;
         launch)      launch "$val";;
@@ -4343,6 +4434,8 @@ ${B}yukti v$YUKTI_VERSION${R} — YUKTI — smart mobile-app QA automation for R
               assertText matches the whole label as written; "match":"contains" asks for a substring
               assertText, assertNotText and waitFor take "in": "<id>" - only the element tapId would tap
               and what lies within its bounds count; that element missing fails as "no element with id"
+              assertId and waitForId take "selected" and "checked" (true or false): the element found by the id has
+              to be in that state - waitForId waits for it; a "checked" asked of an element that is not checkable fails
               waitFor polls for an element and fails on timeout ("timeout": seconds, default 10); it never scrolls.
               waitForId names on timeout which case it ended in: not in the tree, at zero size, or outside the screen;
               "optional": true on it skips the step on timeout instead of failing the flow, with those words

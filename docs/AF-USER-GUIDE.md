@@ -132,6 +132,7 @@ A flow is `{ "name": "...", "steps": [ ... ] }`. Common step verbs:
 | `{"do":"screenshot","value":"x.png"}` | capture for review |
 | `{"do":"waitFor","value":"Weight History","timeout":15}` | poll until the text is on screen, fail on timeout (seconds, default 10; no scrolling). Matches like `assertText`, `"match":"contains"` and `"in"` included |
 | `{"do":"waitForId","value":"weight_card"}` | the same wait, matching the id exactly; on timeout it says whether the id is not in the tree, is there at zero size, or is outside the screen |
+| `{"do":"assertId","value":"week-tab","selected":true}` | the element with this id is on screen and selected; `"checked": true/false` for a checkbox or switch; `waitForId` takes the same keys and waits for the state |
 | `{"do":"waitForId","value":"chat-button","timeout":20,"optional":true}` | the same wait, but a timeout skips the step instead of failing the flow, with the same words |
 | `{"do":"scroll","value":"down"}` | one swipe: `up`, `down`, `left` or `right` |
 | `{"do":"wait","value":3}` / `{"do":"dismiss"}` | sleep a fixed time (prefer `waitFor`) / dismiss a modal |
