@@ -2779,11 +2779,14 @@ has out.txt "assert FAILED: 'day' is not selected"
 verdict
 
 ios_case ios-state-checked
-tree "$case_dir/idb/desc-1.json" "$IAPP" "$(istate remind Switch 200 1 '["Button"]')" "$(istate agree Other 300 checked '[]')" "$(istate plain Other 400 "" '[]')"
-flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "remind", "checked": true }' '{ "do": "assertId", "value": "agree", "checked": true }' '{ "do": "assertId", "value": "plain", "checked": false }'
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$(istate remind Switch 200 1 '["Button"]')" "$(istate agree Other 300 'checkbox, checked' '[]')" \
+  "$(istate items Other 500 'unchecked, 5 items' '[]')" "$(istate plain Other 400 "" '[]')"
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "remind", "checked": true }' '{ "do": "assertId", "value": "agree", "checked": true }' \
+  '{ "do": "assertId", "value": "items", "checked": false }' '{ "do": "assertId", "value": "plain", "checked": false }'
 run_ios "$case_dir/flow.json"
-begin "assertId checked on iOS: a switch by 1, a view by its word, no state fails by name"
+begin "assertId checked on iOS: a switch by 1, a checkbox by the part of its value, no state fails by name"
 status_is 1; has out.txt "'remind' on screen at 200 222, checked"; has out.txt "'agree' on screen at 200 322, checked"
+has out.txt "'items' on screen at 200 522, not checked"
 has out.txt "assert FAILED: 'plain' has no checked state"
 verdict
 

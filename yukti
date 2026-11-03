@@ -1413,10 +1413,12 @@ def emit(e,xy):
     else: print(xy[0],xy[1])
 # "state" (#103), the answer of the Android path. Selected is the Selected trait
 # (idb lists "traits" from v1.7.0). Checked is not a trait on iOS: React Native
-# writes a word into the accessibility value - checked, unchecked or mixed, in
-# the language of the simulator - and a UISwitch reports 1 or 0. Only the
-# English words are read: a value in another language reads as no state and
-# fails by name instead of passing. Written from the idb and React Native
+# builds the accessibility value from parts joined by ", " - the role
+# ("checkbox, checked", "radio button, unchecked"), then expanded, busy and the
+# view own value (RCTViewComponentView.mm) - and a switch reports 1 or 0. The
+# state is the one part that is checked, unchecked or mixed; none, or more than
+# one, is no state. Only the English words are read: a value in another
+# language reads as no state and fails by name instead of passing. Written from the idb and React Native
 # sources, not run on a simulator yet (#87).
 def state(e):
     tr=e.get("traits") or []
@@ -1424,9 +1426,11 @@ def state(e):
     sel="true" if any(str(t).strip().lower()=="selected" for t in tr) else "false"
     v=norm(str(e.get("AXValue") or "")).lower()
     t=(str(e.get("type") or "")+" "+str(e.get("role_description") or "")).lower()
-    if v=="checked" or ("switch" in t and v=="1"): chk="true"
-    elif v=="unchecked" or ("switch" in t and v=="0"): chk="false"
-    elif v=="mixed": chk="mixed"
+    words=[p for p in (x.strip() for x in v.split(",")) if p in ("checked","unchecked","mixed")]
+    w=words[0] if len(words)==1 else ""
+    if w=="checked" or ("switch" in t and v=="1"): chk="true"
+    elif w=="unchecked" or ("switch" in t and v=="0"): chk="false"
+    elif w=="mixed": chk="mixed"
     else: chk="none"
     return sel,chk
 best=None; best_el=None; best_score=-1; zero=None; off=None

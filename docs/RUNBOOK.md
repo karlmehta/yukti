@@ -683,9 +683,14 @@ before the run. Android reads the node's `selected` and `checked` attributes,
 which React Native sets from `accessibilityState`; `checked` counts only on a
 node marked `checkable`, so a plain view fails `"checked": false` by name
 (`has no checked state`) instead of passing it. iOS reads the `Selected` trait
-and, for checked, the English word React Native writes into the value (checked,
-unchecked, mixed) or a switch's 1 and 0; a value in another language reads as no
-state. The iOS half is written from the idb and React Native sources and has not
+and, for checked, the part of the value React Native builds from the role and
+the state (`checkbox, checked`, `radio button, unchecked`) that is checked,
+unchecked or mixed, or a switch's 1 and 0; a value in another language reads as
+no state. A mixed checkbox is `partly checked` on iOS and has no checked state
+on Android, where React Native marks only true and false as checkable.
+`"selected": false` passes on any element that carries no selected state - a
+wrapper with the id while the state sits on a child, too - so it proves
+something only next to a `"selected": true` on its neighbour. The iOS half is written from the idb and React Native sources and has not
 been run on a simulator yet.
 
 The step sees only what outlives one poll - the sleep plus the lookup itself,
