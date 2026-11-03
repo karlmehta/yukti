@@ -726,7 +726,7 @@ in reach of a tap. `turnWheel` turns one by a number of rows:
 `{"do":"turnWheel","wheel":2,"value":-1}` is one row up on the second wheel.
 Wheels are counted top to bottom, then left to right; in an en_US date picker 1,
 2 and 3 are month, day and year. Minus is up, towards the earlier rows, plus is
-down; 0 and more than 500 are refused before the run. Both may come from
+down; 0 and more than 150 are refused before the run. Both may come from
 variables, so a flow can carry the distance its preconditions worked out:
 `"value": "${DAY_BY}"`.
 

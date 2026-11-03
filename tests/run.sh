@@ -2948,11 +2948,11 @@ flow_file "$case_dir/flow.json" '{ "do": "turnWheel", "value": -1, "wheel": 0 }'
 expect "check: wheel 0 is refused" 1 \
   "\"wheel\" is '0' - it has to be a whole number from 1" check "$case_dir/flow.json"
 
-for r in 0 '"19 Oct"' '""' 501 '"-2.5"'; do
+for r in 0 '"19 Oct"' '""' 151 '"-2.5"' '" -2"' '"2 "'; do
   new_case wheel-rows
   flow_file "$case_dir/flow.json" "{ \"do\": \"turnWheel\", \"wheel\": 1, \"value\": $r }"
   expect "check: turnWheel by $r rows is refused" 1 \
-    "turnWheel takes the number of rows to turn the wheel, minus for up, plus for down, not 0 and at most 500" check "$case_dir/flow.json"
+    "turnWheel takes the number of rows to turn the wheel, minus for up, plus for down, not 0 and at most 150" check "$case_dir/flow.json"
 done
 
 new_case wheel-var
@@ -2994,6 +2994,38 @@ begin "turnWheel: a tap that does not move the wheel stops the step and says whe
 status_is 1; has out.txt "turnWheel: wheel 2 went from '18' to '18' on row 2 of 3 - it did not move"; taps_are "300 1250|300 1250|"
 verdict
 
+dev_case wheel-empty-then-moves
+wheel_screens 17 "" 18 19
+flow_file "$case_dir/flow.json" '{ "do": "turnWheel", "wheel": 2, "value": 2 }'
+run_flow "$case_dir/flow.json"
+begin "turnWheel: a read with no value is read again, not counted as a row"
+status_is 0; has out.txt "wheel 2 turned 2 rows, '17' to '19'"; taps_are "300 1250|300 1250|"
+verdict
+
+dev_case wheel-empty-then-same
+wheel_screens 17 "" 17
+flow_file "$case_dir/flow.json" '{ "do": "turnWheel", "wheel": 2, "value": 2 }'
+run_flow "$case_dir/flow.json"
+begin "turnWheel: an empty read between two equal values does not pass as a move"
+status_is 1; has out.txt "wheel 2 went from '17' to '17' on row 1 of 2 - it did not move"; taps_are "300 1250|"
+verdict
+
+dev_case wheel-empty
+wheel_screens 17 "" "" ""
+flow_file "$case_dir/flow.json" '{ "do": "turnWheel", "wheel": 2, "value": 2 }'
+run_flow "$case_dir/flow.json"
+begin "turnWheel: a wheel that keeps showing no value fails by name"
+status_is 1; has out.txt "turnWheel: wheel 2 shows no value after row 1 of 2 - nothing to count the rows by"
+verdict
+
+dev_case wheel-none
+screen "$case_dir/adb/dump-1.xml" "$(node TextView title Today)"
+flow_file "$case_dir/flow.json" '{ "do": "turnWheel", "wheel": 1, "value": 1 }'
+run_flow "$case_dir/flow.json"
+begin "turnWheel: a screen with no wheels says so"
+status_is 1; has out.txt "turnWheel: there are no wheels on the screen"
+verdict
+
 dev_case wheel-absent
 screen "$case_dir/adb/dump-1.xml" "$(npick 0 Nov)"
 flow_file "$case_dir/flow.json" '{ "do": "turnWheel", "wheel": 2, "value": 1 }'
@@ -3026,6 +3058,22 @@ flow_file "$case_dir/flow.json" '{ "do": "turnWheel", "wheel": 2, "value": 1 }'
 run_ios "$case_dir/flow.json"
 begin "turnWheel on iOS: a row the picker refuses is a failure by name"
 status_is 1; has out.txt "wheel 2 went from '4993' to '4993' on row 1 of 1 - it did not move"
+verdict
+
+ios_case ios-wheel-no-value
+iwheel_screens 4993 null null null
+flow_file "$case_dir/flow.json" '{ "do": "turnWheel", "wheel": 2, "value": -1 }'
+run_ios "$case_dir/flow.json"
+begin "turnWheel on iOS: a wheel with no value is not counted as a row"
+status_is 1; has out.txt "wheel 2 shows no value after row 1 of 1"
+verdict
+
+ios_case ios-wheel-text
+iwheel_screens '"October"' '"September"'
+flow_file "$case_dir/flow.json" '{ "do": "turnWheel", "wheel": 2, "value": -1 }'
+run_ios "$case_dir/flow.json"
+begin "turnWheel on iOS: a wheel that reports text has to change it"
+status_is 0; has out.txt "wheel 2 turned -1 rows, 'October' to 'September'"
 verdict
 
 ios_case ios-wheel-jump
