@@ -2116,6 +2116,124 @@ assert_box(){
   [ -z "$bad" ] || die "assert FAILED: $what '$q' is $where - expected ${bad#, }"
   ok "assert box: $what '$q' is $where"
 }
+# ── turnWheel: turn a wheel picker by a number of rows (#120) ────────────────
+# A wheel has no id, and only the rows next to the selected one are in reach: a
+# tap on one moves the wheel by one row. So the step finds the wheels on the
+# screen, takes the n-th (top to bottom, then left to right), and taps the row
+# above or below once per row, reading the wheel after every tap.
+#
+# It counts rows instead of looking for a value because iOS does not show the
+# value: a wheel is a slider whose value is the number of its row (measured on
+# an iOS 26.5 simulator, karlmehta/yukti#120: a date's month wheel said 5002 for
+# November, the day 4993 for the 3rd, the year 2025 for 2026; a UIPickerView the
+# row). There every tap must move that number by exactly one in the direction
+# asked - a picker that refuses a row (a date past its maximum) jumps back, and
+# the step says so instead of counting the tap. Android shows the value, the
+# text of the NumberPicker's EditText, and a tap must change it. What the wheel
+# ends on is the flow's to check, on the screen the picker writes to.
+#
+# One line per wheel: "x1 y1 x2 y2<TAB>value". Android: NumberPicker nodes
+# (spinner date and time pickers, number pickers); the rows next to the selected
+# one are a third of its height away.
+awheels(){ apaths; aui | "$PY" -c '
+import sys,re,html
+xml=sys.stdin.read()
+if not xml.strip(): sys.exit(1)
+B=r"bounds=\"\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]\""
+def a(tag,n):
+    m=re.search(n+r"=\"([^\"]*)\"",tag); return " ".join(html.unescape(m.group(1)).split()) if m else ""
+wheels=[]; texts=[]
+for m in re.finditer(r"<node\b[^>]*>", xml):
+    t=m.group(0); b=re.search(B,t)
+    if not b: continue
+    box=tuple(map(int,b.groups()))
+    if not (box[2]>box[0] and box[3]>box[1]): continue
+    cls=a(t,"class")
+    if cls.endswith("NumberPicker"): wheels.append(box)
+    elif cls.endswith("EditText"): texts.append((box,a(t,"text")))
+# A row of wheels is the wheels whose tops are within 20 px of the first.
+rows=[]
+for w in sorted(wheels,key=lambda b:b[1]):
+    if not rows or w[1]-rows[-1][0][1]>20: rows.append([])
+    rows[-1].append(w)
+for w in [w for r in rows for w in sorted(r,key=lambda b:b[0])]:
+    v=[x for bx,x in texts if w[0]<=(bx[0]+bx[2])//2<w[2] and w[1]<=(bx[1]+bx[3])//2<w[3]]
+    print("%d %d %d %d\t%s" % (w+(v[0] if v else "",)))
+'; }
+# iOS: elements with the PickerElement trait - each wheel of a UIDatePicker or a
+# UIPickerView is one, a slider with no id and no label; a plain slider is not.
+# The selected row is in the middle of the frame and the next one 32 points away
+# (rows about 31 high, measured on the same simulator).
+iwheels(){ paths; ui | "$PY" -c '
+import json,sys
+raw=sys.stdin.read().strip()
+if not raw: sys.exit(1)
+try: els=json.loads(raw)
+except ValueError: sys.exit(2)
+def g(b,*ks):
+    for k in ks:
+        if b.get(k) is not None:
+            try: return float(b[k])
+            except (TypeError,ValueError): return 0.0
+    return 0.0
+out=[]
+for e in els:
+    tr=e.get("traits") or []
+    if isinstance(tr,str): tr=tr.replace(","," ").split()
+    if not any(str(t).strip()=="PickerElement" for t in tr): continue
+    b=e.get("frame") or {}
+    x,y,w,h=g(b,"X","x"),g(b,"Y","y"),g(b,"Width","width"),g(b,"Height","height")
+    if not (w>0 and h>0): continue
+    out.append((int(y),int(x),int(x+w),int(y+h)," ".join(str(e.get("AXValue") if e.get("AXValue") is not None else "").split())))
+rows=[]
+for o in sorted(out):
+    if not rows or o[0]-rows[-1][0][0]>8: rows.append([])
+    rows[-1].append(o)
+for y,x,x2,y2,v in [o for r in rows for o in sorted(r,key=lambda o:o[1])]: print("%d %d %d %d\t%s" % (x,y,x2,y2,v))
+'; }
+IWHEEL_ROW=32
+wheels(){ if is_android; then awheels; else iwheels; fi; }
+turn_wheel(){ local n="$1" rows="$2" all cnt line cur first x1 y1 x2 y2 row dir=1 k i=0 st empty=0
+  [ -n "$n" ] && [ -n "$rows" ] || die "turnWheel needs a wheel number and a number of rows"
+  case "$rows" in -*) dir=-1; k="${rows#-}";; *) k="${rows#+}";; esac; k=$((10#$k))
+  [ "$k" -gt 0 ] || die "turnWheel: $rows rows is no turn at all"
+  while :; do
+    st=0; all="$(wheels)" || st=$?
+    [ "$st" -eq 0 ] || die "turnWheel: $(lookup_err "$st")"
+    cnt="$(printf '%s' "$all" | grep -c .)"
+    if [ "$n" -gt "$cnt" ]; then
+      [ "$cnt" = 0 ] && die "turnWheel: there are no wheels on the screen"
+      [ "$cnt" = 1 ] && die "turnWheel: no wheel $n on the screen, there is 1"
+      die "turnWheel: no wheel $n on the screen, there are $cnt"
+    fi
+    line="$(printf '%s\n' "$all" | sed -n "${n}p")"; read -r x1 y1 x2 y2 <<<"${line%%$'\t'*}"
+    # A wheel that shows nothing cannot be told from a wheel that did not move,
+    # and "changed" would count it as a row. Read twice more, then say so.
+    if [ -z "${line#*$'\t'}" ]; then
+      empty=$((empty+1)); [ "$empty" -lt 3 ] || die "turnWheel: wheel $n shows no value$([ "$i" -eq 0 ] || echo " after row $i of $k") - nothing to count the rows by"
+      sleep 0.5; continue
+    fi
+    empty=0
+    if [ "$i" -eq 0 ]; then first="${line#*$'\t'}"
+    else
+      wheel_moved "$cur" "${line#*$'\t'}" "$dir" || \
+        die "turnWheel: wheel $n went from '$cur' to '${line#*$'\t'}' on row $i of $k - $(wheel_miss "$cur" "${line#*$'\t'}")"
+    fi
+    cur="${line#*$'\t'}"
+    [ "$i" -lt "$k" ] || { ok "turnWheel: wheel $n turned $rows rows, '$first' to '$cur'"; return 0; }
+    if is_android; then row=$(( (y2-y1)/3 )); else row="$IWHEEL_ROW"; fi
+    tap "$(( (x1+x2)/2 ))" "$(( (y1+y2)/2 + dir*row ))" || die "turnWheel: the tap on wheel $n was refused"
+    i=$((i+1))
+  done; }
+# Did one tap move the wheel by one row? iOS: the row number, by exactly one in
+# the direction asked. Android, or an iOS wheel that does not report a number:
+# the value changed - a number there can wrap (31 to 1) or step by more than one
+# (minutes by 5), so its direction is not checked.
+wheel_moved(){ if ! is_android && is_num "$1" && is_num "$2"; then [ "$((10#$2))" -eq "$((10#$1 + $3))" ]; else [ "$1" != "$2" ]; fi; }
+wheel_miss(){ if [ "$1" = "$2" ]; then echo "it did not move: the end of the wheel, or the tap missed it"
+  else echo "not the next row: the picker did not take that row (a date past its minimum or maximum?) or the tap moved it further"; fi; }
+is_num(){ case "$1" in ''|*[!0-9]*) return 1;; *) return 0;; esac; }
+
 # The same emptying, addressed by id. Coordinates were the only way to name the
 # field, so a flow that addresses everything else by id had no way to clear one
 # at all - and `type` appends: typed into a field that already holds text it
@@ -3700,7 +3818,7 @@ PY
 # step keys: include[with]|launch|stopApp|clearState|wait|waitFor[timeout,match]|waitForId[timeout]|screenshot|
 #            openUrl|tap[x,y]|tapText[timeout]|optionalTapText|tapId|type|clearText[x,y]|clearTextId|pressKey|hideKeyboard|
 #            scroll|scrollToText[direction,edges,timeout]|dismiss|assertText[match]|assertId|assertNotText[match]|assertNotId|
-#            assertBox[box]|assertBoxId[box]
+#            assertBox[box]|assertBoxId[box]|turnWheel[wheel]
 #            any step, and an include, may carry "when": {visible|notVisible|
 #            visibleId|notVisibleId|zeroSizeId|platform} - all of them have to hold;
 #            waitForId may carry "optional": true - a timeout skips it instead
@@ -3786,7 +3904,7 @@ cond_words(){ local spec="$1" pair kind val out=""
     esac
   done
   printf '%s' "$out"; }
-FLOW_VERBS="launch stopApp clearState openUrl wait waitFor waitForId screenshot tap tapText optionalTapText tapId type clearText clearTextId pressKey hideKeyboard scroll scrollToText dismiss assertText assertId assertNotText assertNotId assertBox assertBoxId"
+FLOW_VERBS="launch stopApp clearState openUrl wait waitFor waitForId screenshot tap tapText optionalTapText tapId type clearText clearTextId pressKey hideKeyboard scroll scrollToText dismiss assertText assertId assertNotText assertNotId assertBox assertBoxId turnWheel"
 # The steps a condition switched off. They keep their numbers - the numbering is
 # end to end, and a skipped step that gave its number away would move every step
 # after it - they say so on the console, and they land in the report as `skipped`
@@ -3877,7 +3995,9 @@ BOX_KINDS = ("maxHeight", "maxWidth", "maxX", "maxY",
 # "selected" and "checked" ask an element found by id for its state (#103).
 STATE_KEYS = ("selected", "checked")
 STATE_VERBS = ("assertId", "waitForId")
-STEP_KEYS = set(KEYS) | {"when", "box", "title", "optional", "in", "shows"} | set(STATE_KEYS)
+# "wheel" is the number of the wheel turnWheel turns, top to bottom, then
+# left to right (#120).
+STEP_KEYS = set(KEYS) | {"when", "box", "title", "optional", "in", "shows", "wheel"} | set(STATE_KEYS)
 IN_VERBS = ("assertText", "assertNotText", "waitFor")
 INCLUDE_KEYS = {"do", "value", "with", "when"}
 # One condition is a kind and a value; several in one `when` all have to hold.
@@ -4037,6 +4157,37 @@ def shows_of(step, at, scope, src):
         fail('%s: "shows" contains a character the runner separates fields with' % at)
     return v
 
+WHEEL_MAX = 150
+
+def wheel_of(step, at, scope, src):
+    verb = step.get("do", "")
+    if "wheel" not in step:
+        # Wheels have no ids, so the number is the only way to say which one:
+        # a step without it would turn whichever wheel came first.
+        if verb == "turnWheel":
+            fail('%s: turnWheel needs a "wheel" - its number on the screen, top '
+                 "to bottom, then left to right, from 1" % at)
+        return ""
+    if verb != "turnWheel":
+        fail('%s: step \'%s\' does not take "wheel" - only turnWheel does' % (at, verb))
+    v = step["wheel"]
+    if v is None or isinstance(v, (dict, list, bool)):
+        fail('%s: "wheel" is the number of the wheel on the screen, from 1' % at)
+    v = fill(v if isinstance(v, str) else str(v), scope, at, bool(src)).strip()
+    # A whole number from 1, normalised as box numbers are: "02" is octal in the
+    # shell arithmetic that picks the wheel.
+    if not v.isdigit() or int(v) < 1:
+        fail('%s: "wheel" is \'%s\' - it has to be a whole number from 1, the '
+             "wheels counted top to bottom, then left to right" % (at, v))
+    # How many rows to turn it: the wheel shows no value iOS can read (#120), so
+    # the step counts rows. Up is minus. Zero would pass without touching it.
+    r = fill(str(step.get("value", "")), scope, at, bool(src))
+    if not re.match(r"\A[+-]?[0-9]+\Z", r) or int(r) == 0 or abs(int(r)) > WHEEL_MAX:
+        fail('%s: "value" is \'%s\' - turnWheel takes the number of rows to turn '
+             "the wheel, minus for up, plus for down, not 0 and at most %d"
+             % (at, r, WHEEL_MAX))
+    return str(int(v))
+
 def box_spec(step, at, scope, src):
     verb = step.get("do", "")
     if "box" not in step:
@@ -4184,6 +4335,7 @@ def build(path, shown, src, scope, chain, depth, pre=""):
         fields.append(in_of(step, at, scope, src))
         fields.append(shows_of(step, at, scope, src))
         fields.append(state_of(step, at))
+        fields.append(wheel_of(step, at, scope, src))
         if cond: recs.append(guard(cond, 1, src, idx))
         recs.append(SEP.join(fields))
 
@@ -4250,7 +4402,7 @@ PY
   # still reported PASS). Reading `<&3` also keeps the loop in THIS shell (not a
   # pipe subshell), so a step's `die` (exit 1) aborts the whole flow with a
   # non-zero status instead of being lost.
-  while IFS=$'\x1f' read -r -d '' do_ val x y mtch tmo dir edg src sidx wcond wspan bspec ttl opt inid shw stt <&3; do
+  while IFS=$'\x1f' read -r -d '' do_ val x y mtch tmo dir edg src sidx wcond wspan bspec ttl opt inid shw stt whl <&3; do
       # A guard is not a step: it takes no number of its own, and when it holds
       # the run says nothing about it - the steps that follow simply run. When it
       # does not hold, its whole group is read off the stream and every step in it
@@ -4344,6 +4496,7 @@ PY
         assertId)    assert_id "$val" "$stt";;
         assertBox)   assert_box "$val" assert "$bspec";;
         assertBoxId) assert_box "$val" id "$bspec";;
+        turnWheel)   turn_wheel "$whl" "$val";;
         launch)      launch "$val";;
         stopApp)     stop_app "$val";;
         clearState)  clear_state "$val";;
@@ -4462,7 +4615,7 @@ ${B}yukti v$YUKTI_VERSION${R} — YUKTI — smart mobile-app QA automation for R
   yukti assert-not-id "<id>"
                             assert no element with this id is on the current screen
 
-  flow steps: wait · waitFor · waitForId · screenshot · tap · tapText · optionalTapText · tapId · scroll · scrollToText · dismiss · type · clearText · clearTextId · pressKey · hideKeyboard · assertText · assertId · assertNotText · assertNotId · assertBox · assertBoxId · launch · stopApp · clearState · openUrl · include
+  flow steps: wait · waitFor · waitForId · screenshot · tap · tapText · optionalTapText · tapId · scroll · scrollToText · dismiss · type · clearText · clearTextId · pressKey · hideKeyboard · assertText · assertId · assertNotText · assertNotId · assertBox · assertBoxId · turnWheel · launch · stopApp · clearState · openUrl · include
               (clearText · clearTextId · pressKey · hideKeyboard · assertBox · assertBoxId: measured on Android, iOS not yet run)
               stopApp force-stops the app, clearState wipes its data (Android only); both take the variant name
               openUrl takes the key of a screen, not an address: the address is the variant's "urlBase" plus the key
