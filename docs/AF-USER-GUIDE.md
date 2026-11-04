@@ -128,7 +128,7 @@ A flow is `{ "name": "...", "steps": [ ... ] }`. Common step verbs:
 | `{"do":"assertId","value":"weight_card"}` | verify an element with this id is on screen |
 | `{"do":"assertBox","value":"Reconnect","box":{"minX":16,"maxX":"95%"}}` | verify the box of the element with this label: `minWidth`, `minHeight`, `maxWidth`, `maxHeight` for the size, `minX`, `minY`, `maxX`, `maxY` for the edges. Pixels (`48`), dp (`"48dp"`) or a share of the screen (`"5%"`) |
 | `{"do":"assertBoxId","value":"primary-cta","box":{"minWidth":"48dp","minHeight":"48dp"}}` | the same check, matching the id exactly - here the touch-target minimum |
-| `{"do":"assertBoxId","value":"ask-sam-pill","box":{"above":"tab-bar"}}` | the box against another element, named by its id: `above`, `below`, `leftOf`, `rightOf`, or `apart` (the two do not overlap) |
+| `{"do":"assertBoxId","value":"chat-pill","box":{"above":"tab-bar"}}` | the box against another element, named by its id: `above`, `below`, `leftOf`, `rightOf`, or `apart` (the two do not overlap) |
 | `{"do":"assertNotText","value":"Wrong password"}` | verify the text is NOT on the screen as it is now (no scroll). Same matching as `assertText`, `"match":"contains"` and `"in"` included |
 | `{"do":"assertNotId","value":"paywall"}` | verify no element with this id is on the screen as it is now |
 | `{"do":"screenshot","value":"x.png"}` | capture for review |

@@ -268,7 +268,7 @@ overlap. Where the other element sits depends on the device and the content, so
 phone and not on the next; measured against the bar, it holds on both.
 
 ```json
-{"do":"assertBoxId","value":"ask-sam-pill","box":{"above":"tab-bar"}},
+{"do":"assertBoxId","value":"chat-pill","box":{"above":"tab-bar"}},
 {"do":"assertBoxId","value":"card-b","box":{"below":"card-a","apart":"card-a"}}
 ```
 
@@ -279,6 +279,9 @@ always found by id, for `assertBox` too, and both boxes come from one read of th
 screen. The failure prints both: `expected below 'card-a' (1080x100 at
 [0,500][1080,600])`. A step that compares an element with itself is refused when
 the flow is built.
+Several elements on the screen under one id - the same button in every row -
+are measured by the first of them in the tree, on either side of the
+comparison; a relation between rows needs ids that tell the rows apart.
 
 Discover labels/coords for a screen:
 ```bash

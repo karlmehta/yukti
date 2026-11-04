@@ -3197,5 +3197,15 @@ has out.txt "assert box: id 'card-b' is 360x44 at [20,300][380,344], apart 'card
 has out.txt "assert FAILED: id 'card-a' is 360x44 at [20,200][380,244] - expected below 'card-b' (360x44 at [20,300][380,344])"
 verdict
 
+# One read on iOS too: the second tree holds the cards swapped.
+ios_case ios-box-one-read
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$(istate card-a Button 200 "" '["Button"]')" "$(istate card-b Button 300 "" '["Button"]')"
+tree "$case_dir/idb/desc-2.json" "$IAPP" "$(istate card-a Button 300 "" '["Button"]')" "$(istate card-b Button 200 "" '["Button"]')"
+flow_file "$case_dir/flow.json" '{ "do": "assertBoxId", "value": "card-b", "box": { "below": "card-a", "apart": "card-a" } }'
+run_ios "$case_dir/flow.json"
+begin "assertBoxId below on iOS: both boxes from one read of the tree"
+status_is 0; ireads_are 1; has out.txt "below 'card-a'"
+verdict
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

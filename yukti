@@ -2327,7 +2327,7 @@ lookup_err(){ case "${1:-1}" in
 # By hand the constraints are written name=value: the packed form the runner
 # uses is two control characters, and nobody types those.
 #   yukti assert-box tab-today id minWidth=48 minHeight=48
-#   yukti assert-box ask-sam-pill id above=tab-bar
+#   yukti assert-box chat-pill id above=tab-bar
 assert_box_args(){ local q="${1:-}" kind="${2:-}" spec="" pair
   # Without this, `assert-box email-input minWidth=48` reads the constraint as
   # the name of a lookup and then complains that no constraint was given.
@@ -4246,8 +4246,9 @@ def box_spec(step, at, scope, src):
         fail('%s: "box" is an object of constraints, for instance '
              '{"minWidth": 48, "minHeight": 48}' % at)
     if not b:
-        fail('%s: "box" is empty - name a constraint (%s) or drop the step'
-             % (at, ", ".join(BOX_KINDS)))
+        fail('%s: "box" is empty - name a constraint (%s, or %s with an id) '
+             "or drop the step"
+             % (at, ", ".join(BOX_KINDS), ", ".join(BOX_RELATIONS)))
     pairs = []
     for key in sorted(b):
         if key in BOX_RELATIONS:
