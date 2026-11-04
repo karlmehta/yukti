@@ -2034,6 +2034,15 @@ adpi(){
 #
 # The spec arrives as one field of name/value pairs, packed with the two
 # separators the conditions use - same reason: several of them belong to one step.
+#
+# A constraint can also name another element by id (#127): above, below, leftOf,
+# rightOf, apart. Where that element sits depends on the device and the content,
+# so "the pill is above the tab bar" written as a share of the screen is green by
+# luck on one phone and red on the next; measured against the bar it holds on
+# both. Edges that touch keep the relation, an overlap breaks it. Both boxes come
+# from one read of the screen - two reads could compare two different frames of
+# a screen that moved in between.
+box_die(){ HELD_TREE=""; die "$@"; }
 assert_box(){
   local q="${1:-}" kind="${2:-assert}" spec="${3:-}" what
   [ "$kind" = id ] && what="id" || what="text"
@@ -2041,19 +2050,44 @@ assert_box(){
   # A box assertion with no constraint passes on anything that is on the screen,
   # which is what assertText and assertId already say. The builder refuses it
   # before the run; this is the same door for the command line.
-  [ -n "$spec" ] || die "assertBox needs at least one constraint - minWidth, minHeight, maxWidth, maxHeight, minX, minY, maxX, maxY"
+  [ -n "$spec" ] || die "assertBox needs at least one constraint - minWidth, minHeight, maxWidth, maxHeight, minX, minY, maxX, maxY, or above, below, leftOf, rightOf, apart with an id"
   local dpi=""
+  case "$COND_SEP$spec" in
+    *"${COND_SEP}above$COND_KV"*|*"${COND_SEP}below$COND_KV"*|*"${COND_SEP}leftOf$COND_KV"*|*"${COND_SEP}rightOf$COND_KV"*|*"${COND_SEP}apart$COND_KV"*)
+      HELD_TREE=""; HELD_TREE="$(ui)" || exit 1;;
+  esac
   local out st=0
   out="$(find_el "$q" "$kind" exact box)" || st=$?
-  [ "$st" -eq 0 ] || die "assert FAILED: $(lookup_err "$st")"
-  [ -n "$out" ] || die "assert FAILED: no element with $what '$q'"
+  [ "$st" -eq 0 ] || box_die "assert FAILED: $(lookup_err "$st")"
+  [ -n "$out" ] || box_die "assert FAILED: no element with $what '$q'"
   local x1 y1 x2 y2 sx1 sy1 sx2 sy2
   read -r x1 y1 x2 y2 sx1 sy1 sx2 sy2 <<<"$out"
   local w=$((x2-x1)) h=$((y2-y1)) sw=$((sx2-sx1)) sh=$((sy2-sy1))
-  local where="${w}x${h} at [$x1,$y1][$x2,$y2]" bad="" pair name val px n want
+  local where="${w}x${h} at [$x1,$y1][$x2,$y2]" bad="" good="" pair name val px n want
+  local ox1 oy1 ox2 oy2 there held
   while [ -n "$spec" ]; do
     case "$spec" in *"$COND_SEP"*) pair="${spec%%"$COND_SEP"*}"; spec="${spec#*"$COND_SEP"}";; *) pair="$spec"; spec="";; esac
     name="${pair%%"$COND_KV"*}"; val="${pair#*"$COND_KV"}"
+    case "$name" in
+      above|below|leftOf|rightOf|apart)
+        st=0; out="$(find_el "$val" id exact box)" || st=$?
+        [ "$st" -eq 0 ] || box_die "assert FAILED: $(lookup_err "$st")"
+        [ -n "$out" ] || box_die "assert FAILED: no element with id '$val' to compare $what '$q' with"
+        read -r ox1 oy1 ox2 oy2 _ <<<"$out"
+        there="'$val' ($((ox2-ox1))x$((oy2-oy1)) at [$ox1,$oy1][$ox2,$oy2])"
+        # The test sits left of && so that a relation that does not hold is an
+        # answer, not the end of the step under set -e.
+        held=""
+        case "$name" in
+          above)   [ "$y2" -le "$oy1" ] && held=1;;
+          below)   [ "$y1" -ge "$oy2" ] && held=1;;
+          leftOf)  [ "$x2" -le "$ox1" ] && held=1;;
+          rightOf) [ "$x1" -ge "$ox2" ] && held=1;;
+          apart)   { [ "$x2" -le "$ox1" ] || [ "$x1" -ge "$ox2" ] || [ "$y2" -le "$oy1" ] || [ "$y1" -ge "$oy2" ]; } && held=1;;
+        esac
+        if [ -n "$held" ]; then good="$good, $name '$val'"; else bad="$bad, $name $there"; fi
+        continue;;
+    esac
     case "$val" in
       *%) n="${val%\%}"
           # A share of the screen needs a screen. A dump that does not report its
@@ -2061,20 +2095,20 @@ assert_box(){
           # be answered must not come back as a pass.
           case "$name" in
             minWidth|maxWidth)
-              [ "$sw" -gt 0 ] || die "assert FAILED: '$name' is a share of the screen width, and this screen does not report its own rect"
+              [ "$sw" -gt 0 ] || box_die "assert FAILED: '$name' is a share of the screen width, and this screen does not report its own rect"
               px=$(( sw * n / 100 ));;
             minHeight|maxHeight)
-              [ "$sh" -gt 0 ] || die "assert FAILED: '$name' is a share of the screen height, and this screen does not report its own rect"
+              [ "$sh" -gt 0 ] || box_die "assert FAILED: '$name' is a share of the screen height, and this screen does not report its own rect"
               px=$(( sh * n / 100 ));;
             # An edge is a place, not a length: "5% down the screen" is measured
             # from where the screen starts. On Android the root rect starts at
             # 0,0 and the two readings agree; an iOS window need not, and a
             # percentage counted from zero would then point outside it.
             minX|maxX)
-              [ "$sw" -gt 0 ] || die "assert FAILED: '$name' is a share of the screen width, and this screen does not report its own rect"
+              [ "$sw" -gt 0 ] || box_die "assert FAILED: '$name' is a share of the screen width, and this screen does not report its own rect"
               px=$(( sx1 + sw * n / 100 ));;
             *)
-              [ "$sh" -gt 0 ] || die "assert FAILED: '$name' is a share of the screen height, and this screen does not report its own rect"
+              [ "$sh" -gt 0 ] || box_die "assert FAILED: '$name' is a share of the screen height, and this screen does not report its own rect"
               px=$(( sy1 + sh * n / 100 ));;
           esac;;
       *dp) n="${val%dp}"
@@ -2086,7 +2120,7 @@ assert_box(){
               # substitution the cache it fills would die with the subshell, and
               # every dp constraint would go back to the device for a number
               # that cannot change under a run.
-              adpi >/dev/null || die "assert FAILED: '$name' is written in dp and the device did not report its density"
+              adpi >/dev/null || box_die "assert FAILED: '$name' is written in dp and the device did not report its density"
               dpi="$ADPI"
             fi
             px=$(( n * dpi / 160 ))
@@ -2110,11 +2144,12 @@ assert_box(){
       maxX)      [ "$x2" -le "$px" ] || bad="$bad, right edge at $want or less (is $x2)";;
       minY)      [ "$y1" -ge "$px" ] || bad="$bad, top edge at $want or more (is $y1)";;
       maxY)      [ "$y2" -le "$px" ] || bad="$bad, bottom edge at $want or less (is $y2)";;
-      *) die "assertBox does not know the constraint '$name'";;
+      *) box_die "assertBox does not know the constraint '$name'";;
     esac
   done
+  HELD_TREE=""
   [ -z "$bad" ] || die "assert FAILED: $what '$q' is $where - expected ${bad#, }"
-  ok "assert box: $what '$q' is $where"
+  ok "assert box: $what '$q' is $where$good"
 }
 # ── turnWheel: turn a wheel picker by a number of rows (#120) ────────────────
 # A wheel has no id, and only the rows next to the selected one are in reach: a
@@ -2292,6 +2327,7 @@ lookup_err(){ case "${1:-1}" in
 # By hand the constraints are written name=value: the packed form the runner
 # uses is two control characters, and nobody types those.
 #   yukti assert-box tab-today id minWidth=48 minHeight=48
+#   yukti assert-box chat-pill id above=tab-bar
 assert_box_args(){ local q="${1:-}" kind="${2:-}" spec="" pair
   # Without this, `assert-box email-input minWidth=48` reads the constraint as
   # the name of a lookup and then complains that no constraint was given.
@@ -3986,6 +4022,9 @@ WHEN_KINDS = ("notVisible", "notVisibleId", "platform", "visible", "visibleId", 
 # travel in one field rather than eight.
 BOX_KINDS = ("maxHeight", "maxWidth", "maxX", "maxY",
              "minHeight", "minWidth", "minX", "minY")
+# A constraint can also name another element by id: the box is then measured
+# against that element's box, read from the same screen (#127).
+BOX_RELATIONS = ("above", "apart", "below", "leftOf", "rightOf")
 # A title says what a step is for, in the author's words. It is for the reader
 # of a run and nothing else: the step runs the same with it or without it.
 # "optional" lets a waitForId time out without failing the flow; no other step
@@ -4195,8 +4234,9 @@ def box_spec(step, at, scope, src):
         # element that is on the screen - which assertText and assertId already
         # say, more cheaply and more honestly.
         if verb in ("assertBox", "assertBoxId"):
-            fail("%s: %s needs a \"box\" - the constraints are %s"
-                 % (at, verb, ", ".join(BOX_KINDS)))
+            fail("%s: %s needs a \"box\" - the constraints are %s, and %s "
+                 "with the id of another element"
+                 % (at, verb, ", ".join(BOX_KINDS), ", ".join(BOX_RELATIONS)))
         return ""
     if verb not in ("assertBox", "assertBoxId"):
         fail('%s: step \'%s\' does not take a "box" - only assertBox and '
@@ -4206,13 +4246,32 @@ def box_spec(step, at, scope, src):
         fail('%s: "box" is an object of constraints, for instance '
              '{"minWidth": 48, "minHeight": 48}' % at)
     if not b:
-        fail('%s: "box" is empty - name a constraint (%s) or drop the step'
-             % (at, ", ".join(BOX_KINDS)))
+        fail('%s: "box" is empty - name a constraint (%s, or %s with an id) '
+             "or drop the step"
+             % (at, ", ".join(BOX_KINDS), ", ".join(BOX_RELATIONS)))
     pairs = []
     for key in sorted(b):
+        if key in BOX_RELATIONS:
+            v = b[key]
+            if not isinstance(v, str) or not v.strip():
+                fail("%s: '%s' names another element by its id, for instance "
+                     '{"%s": "card-a"}' % (at, key, key))
+            v = fill(v, scope, at, bool(src)).strip()
+            if not v:
+                fail("%s: '%s' came out empty - it needs the id of another "
+                     "element" % (at, key))
+            # Measured against itself the box is always red (above, below,
+            # leftOf, rightOf, apart) - a step that cannot pass is a typo.
+            if verb == "assertBoxId" and v == fill(str(step.get("value", "")),
+                                                   scope, at, bool(src)).strip():
+                fail("%s: '%s' names the element the step measures, '%s' - "
+                     "name the other element" % (at, key, v))
+            pairs.append(key + KV + v)
+            continue
         if key not in BOX_KINDS:
-            fail("%s: '%s' is not a constraint - this version knows %s"
-                 % (at, key, ", ".join(BOX_KINDS)))
+            fail("%s: '%s' is not a constraint - this version knows %s, and %s "
+                 "with an id" % (at, key, ", ".join(BOX_KINDS),
+                                 ", ".join(BOX_RELATIONS)))
         v = b[key]
         if v is None or isinstance(v, (dict, list, bool)):
             fail("%s: constraint '%s' must be a number, for instance 48, "
@@ -4608,7 +4667,9 @@ ${B}yukti v$YUKTI_VERSION${R} — YUKTI — smart mobile-app QA automation for R
   yukti assert-box "<q>" <assert|id> minWidth=48dp minHeight=48dp
                             assert the box of that element: minWidth, minHeight,
                             maxWidth, maxHeight, minX, minY, maxX, maxY, written
-                            in pixels (48), dp ("48dp") or a share ("5%")
+                            in pixels (48), dp ("48dp") or a share ("5%");
+                            above, below, leftOf, rightOf, apart take the id of
+                            another element (above=tab-bar)
   yukti assert-not "<text>" [exact|contains] [<id>]
                             assert the text is NOT on the current screen (no scroll);
                             with an id, NOT in that element, which has to be on screen

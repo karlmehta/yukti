@@ -3084,5 +3084,128 @@ begin "turnWheel on iOS: a wheel that jumps back is not counted as a row"
 status_is 1; has out.txt "wheel 2 went from '4991' to '4993' on row 2 of 2 - not the next row: the picker did not take that row"
 verdict
 
+# A box against another element (#127): above, below, leftOf, rightOf, apart.
+# bnode <id> <x1> <y1> <x2> <y2> - a control with these corners.
+bnode(){ printf '<node index="0" text="" resource-id="com.example:id/%s" class="android.view.ViewGroup" package="com.example" content-desc="" checkable="false" checked="false" clickable="true" enabled="true" focusable="true" focused="false" scrollable="false" long-clickable="false" password="false" selected="false" bounds="[%d,%d][%d,%d]" />' \
+  "$1" "$2" "$3" "$4" "$5"; }
+
+dev_case box-numeric
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(bnode card-b 0 500 1080 600)")"
+flow_file "$case_dir/flow.json" '{ "do": "assertBoxId", "value": "card-b", "box": { "minHeight": 100, "maxWidth": "100%" } }'
+run_flow "$case_dir/flow.json"
+begin "assertBoxId: the size and the edges, as before"
+status_is 0; fake_used; has out.txt "assert box: id 'card-b' is 1080x100 at [0,500][1080,600]"
+verdict
+
+# The second dump holds the two cards swapped: a step that read the screen twice
+# would compare two frames and go red.
+dev_case box-below
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(bnode card-a 0 300 1080 400)" "$(bnode card-b 0 500 1080 600)")"
+screen "$case_dir/adb/dump-2.xml" "$(sroot "$(bnode card-a 0 500 1080 600)" "$(bnode card-b 0 300 1080 400)")"
+flow_file "$case_dir/flow.json" '{ "do": "assertBoxId", "value": "card-b", "box": { "below": "card-a", "apart": "card-a" } }'
+run_flow "$case_dir/flow.json"
+begin "assertBoxId below and apart: B under A, both boxes from one read"
+status_is 0; fake_used; value_is adb/dumps 1
+has out.txt "assert box: id 'card-b' is 1080x100 at [0,500][1080,600], apart 'card-a', below 'card-a'"
+verdict
+
+dev_case box-below-swapped
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(bnode card-a 0 300 1080 400)" "$(bnode card-b 0 500 1080 600)")"
+flow_file "$case_dir/flow.json" '{ "do": "assertBoxId", "value": "card-a", "box": { "below": "card-b" } }'
+run_flow "$case_dir/flow.json"
+begin "assertBoxId below: with A and B swapped the same check is red and prints both boxes"
+status_is 1
+has out.txt "assert FAILED: id 'card-a' is 1080x100 at [0,300][1080,400] - expected below 'card-b' (1080x100 at [0,500][1080,600])"
+verdict
+
+dev_case box-left-right
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(bnode left 0 500 500 600)" "$(bnode right 500 500 1080 600)" "$(bnode bar 0 2200 1080 2400)")"
+flow_file "$case_dir/flow.json" '{ "do": "assertBoxId", "value": "left", "box": { "leftOf": "right", "above": "bar" } }' \
+  '{ "do": "assertBoxId", "value": "right", "box": { "rightOf": "left", "apart": "left" } }' \
+  '{ "do": "assertBoxId", "value": "bar", "box": { "below": "right" } }'
+run_flow "$case_dir/flow.json"
+begin "assertBoxId leftOf, rightOf, above: edges that touch keep the relation"
+status_is 0
+has out.txt "assert box: id 'left' is 500x100 at [0,500][500,600], above 'bar', leftOf 'right'"
+has out.txt "assert box: id 'right' is 580x100 at [500,500][1080,600], apart 'left', rightOf 'left'"
+has out.txt "assert box: id 'bar' is 1080x200 at [0,2200][1080,2400], below 'right'"
+verdict
+
+dev_case box-apart-overlap
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(bnode a 0 500 600 600)" "$(bnode b 500 550 1080 650)")"
+flow_file "$case_dir/flow.json" '{ "do": "assertBoxId", "value": "b", "box": { "apart": "a" } }'
+run_flow "$case_dir/flow.json"
+begin "assertBoxId apart: two boxes that overlap are red"
+status_is 1; has out.txt "assert FAILED: id 'b' is 580x100 at [500,550][1080,650] - expected apart 'a' (600x100 at [0,500][600,600])"
+verdict
+
+dev_case box-mixed
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(bnode card-a 0 300 1080 400)" "$(bnode card-b 0 500 1080 600)")"
+flow_file "$case_dir/flow.json" '{ "do": "assertBoxId", "value": "card-a", "box": { "below": "card-b", "minHeight": 200 } }'
+run_flow "$case_dir/flow.json"
+begin "assertBoxId: a relation and a size that both miss are named in one line"
+status_is 1
+has out.txt "expected below 'card-b' (1080x100 at [0,500][1080,600]), height at least 200 (is 100)"
+verdict
+
+dev_case box-other-missing
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(bnode card-b 0 500 1080 600)")"
+flow_file "$case_dir/flow.json" '{ "do": "assertBoxId", "value": "card-b", "box": { "below": "card-a" } }'
+run_flow "$case_dir/flow.json"
+begin "assertBoxId below: the other element not on the screen is a failure that names it"
+status_is 1; has out.txt "assert FAILED: no element with id 'card-a' to compare id 'card-b' with"
+verdict
+
+dev_case box-cli
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(bnode card-a 0 300 1080 400)" "$(bnode card-b 0 500 1080 600)")"
+env -u ANDROID_SDK_ROOT -u YUKTI_VARIANT -u YUKTI_CONFIG ANDROID_HOME="$ROOT/tests/fake-sdk" YUKTI_PLATFORM=android YUKTI_HELPER=0 \
+  FAKE_ADB_DIR="$case_dir/adb" TMPDIR="$case_dir/tmp" "$YUKTI" assert-box card-b id below=card-a > "$case_dir/out" 2>&1
+run_status=$?; sed $'s/\033\\[[0-9;]*m//g' "$case_dir/out" > "$case_dir/out.txt"
+begin "assert-box by hand: below=<id>"
+status_is 0; has out.txt "below 'card-a'"
+verdict
+
+new_case box-rel-check
+flow_file "$case_dir/flow.json" '{ "do": "assertBoxId", "value": "card-b", "box": { "below": "card-a", "minHeight": "48dp" } }' \
+  '{ "do": "assertBox", "value": "Reconnect", "box": { "above": "tab-bar" } }'
+expect "check: a relation by id builds, alone and next to a number" 0 " - 2 steps" check "$case_dir/flow.json"
+
+new_case box-rel-not-string
+flow_file "$case_dir/flow.json" '{ "do": "assertBoxId", "value": "card-b", "box": { "below": 5 } }'
+expect "check: a relation that is not an id is refused" 1 \
+  "'below' names another element by its id, for instance {\"below\": \"card-a\"}" check "$case_dir/flow.json"
+
+new_case box-rel-self
+flow_file "$case_dir/flow.json" '{ "do": "assertBoxId", "value": "card-a", "box": { "apart": "card-a" } }'
+expect "check: a box measured against itself is refused" 1 \
+  "'apart' names the element the step measures, 'card-a' - name the other element" check "$case_dir/flow.json"
+
+new_case box-rel-unknown
+flow_file "$case_dir/flow.json" '{ "do": "assertBoxId", "value": "card-b", "box": { "belwo": "card-a" } }'
+expect "check: a misspelt relation is refused with the list of both kinds" 1 \
+  "'belwo' is not a constraint - this version knows maxHeight, maxWidth, maxX, maxY, minHeight, minWidth, minX, minY, and above, apart, below, leftOf, rightOf with an id" check "$case_dir/flow.json"
+
+# The same on iOS: frames in points, the other element by AXUniqueId.
+ios_case ios-box-below
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$(istate card-a Button 200 "" '["Button"]')" "$(istate card-b Button 300 "" '["Button"]')"
+flow_file "$case_dir/flow.json" '{ "do": "assertBoxId", "value": "card-b", "box": { "below": "card-a", "apart": "card-a" } }' \
+  '{ "do": "assertBoxId", "value": "card-a", "box": { "below": "card-b" } }'
+run_ios "$case_dir/flow.json"
+begin "assertBoxId below on iOS: B under A passes, swapped is red with both boxes"
+status_is 1
+has out.txt "assert box: id 'card-b' is 360x44 at [20,300][380,344], apart 'card-a', below 'card-a'"
+has out.txt "assert FAILED: id 'card-a' is 360x44 at [20,200][380,244] - expected below 'card-b' (360x44 at [20,300][380,344])"
+verdict
+
+# One read on iOS too: the second tree holds the cards swapped.
+ios_case ios-box-one-read
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$(istate card-a Button 200 "" '["Button"]')" "$(istate card-b Button 300 "" '["Button"]')"
+tree "$case_dir/idb/desc-2.json" "$IAPP" "$(istate card-a Button 300 "" '["Button"]')" "$(istate card-b Button 200 "" '["Button"]')"
+flow_file "$case_dir/flow.json" '{ "do": "assertBoxId", "value": "card-b", "box": { "below": "card-a", "apart": "card-a" } }'
+run_ios "$case_dir/flow.json"
+begin "assertBoxId below on iOS: both boxes from one read of the tree"
+status_is 0; ireads_are 1; has out.txt "below 'card-a'"
+verdict
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

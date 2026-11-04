@@ -128,6 +128,7 @@ A flow is `{ "name": "...", "steps": [ ... ] }`. Common step verbs:
 | `{"do":"assertId","value":"weight_card"}` | verify an element with this id is on screen |
 | `{"do":"assertBox","value":"Reconnect","box":{"minX":16,"maxX":"95%"}}` | verify the box of the element with this label: `minWidth`, `minHeight`, `maxWidth`, `maxHeight` for the size, `minX`, `minY`, `maxX`, `maxY` for the edges. Pixels (`48`), dp (`"48dp"`) or a share of the screen (`"5%"`) |
 | `{"do":"assertBoxId","value":"primary-cta","box":{"minWidth":"48dp","minHeight":"48dp"}}` | the same check, matching the id exactly - here the touch-target minimum |
+| `{"do":"assertBoxId","value":"chat-pill","box":{"above":"tab-bar"}}` | the box against another element, named by its id: `above`, `below`, `leftOf`, `rightOf`, or `apart` (the two do not overlap) |
 | `{"do":"assertNotText","value":"Wrong password"}` | verify the text is NOT on the screen as it is now (no scroll). Same matching as `assertText`, `"match":"contains"` and `"in"` included |
 | `{"do":"assertNotId","value":"paywall"}` | verify no element with this id is on the screen as it is now |
 | `{"do":"screenshot","value":"x.png"}` | capture for review |
@@ -178,6 +179,14 @@ on this screen.
 A step with no constraint is refused before the run: an assertion that only
 says the element is on the screen is `assertId`, and saying it twice is not a
 stronger test.
+
+`above`, `below`, `leftOf`, `rightOf` and `apart` measure the box against
+another element, found by id, on the same read of the screen. Use them where the
+expected result names two elements - "the pill is above the tab bar", "the cards
+do not overlap": the place of the other element changes with the device and the
+content, and a share of the screen only guesses it. Edges that touch keep the
+relation; `below` says nothing about the horizontal place. The failure prints
+both boxes.
 
 `type`, `clearText`, `clearTextId`, `pressKey` and `hideKeyboard` were measured
 on Android; their iOS halves are written and have not been run on a simulator, so
