@@ -261,6 +261,25 @@ asserted as if it held. Android converts with the density the device reports;
 an iOS frame is already in points, so a dp is a point there. A step without a
 constraint is refused when the flow is built.
 
+A constraint can also be another element. `above`, `below`, `leftOf` and
+`rightOf` take its id and compare the two boxes; `apart` says the two do not
+overlap. Where the other element sits depends on the device and the content, so
+"the pill is above the tab bar" written as a share of the screen holds on one
+phone and not on the next; measured against the bar, it holds on both.
+
+```json
+{"do":"assertBoxId","value":"ask-sam-pill","box":{"above":"tab-bar"}},
+{"do":"assertBoxId","value":"card-b","box":{"below":"card-a","apart":"card-a"}}
+```
+
+`below` means the top edge of this element is at or under the bottom edge of the
+other one, whatever their horizontal place; the other three read the same way.
+Edges that touch keep the relation, an overlap breaks it. The other element is
+always found by id, for `assertBox` too, and both boxes come from one read of the
+screen. The failure prints both: `expected below 'card-a' (1080x100 at
+[0,500][1080,600])`. A step that compares an element with itself is refused when
+the flow is built.
+
 Discover labels/coords for a screen:
 ```bash
 ~/yukti/yukti ui | python3 -m json.tool | less      # accessibility tree
