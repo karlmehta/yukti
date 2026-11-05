@@ -963,6 +963,71 @@ begin "tapId on iOS: no answer from describe-point taps as before, with a warnin
 status_is 0; taps_are 1; has out.txt "could not read what is under 'go' at 200,350"
 verdict
 
+# ── a miss by id says what it saw (#64) ──────────────────────────────────────
+# idnode <id> <x1> <y1> <x2> <y2> - an Android node with these corners. A
+# keyboard collapses the nodes under it: bottom above top.
+idnode(){ printf '<node index="0" text="" resource-id="com.example:id/%s" class="android.widget.EditText" package="com.example" content-desc="" clickable="true" enabled="true" focusable="true" focused="false" scrollable="false" password="false" selected="false" bounds="[%d,%d][%d,%d]" />' "$1" "$2" "$3" "$4" "$5"; }
+IDROOT='<node index="0" text="" resource-id="" class="android.widget.FrameLayout" package="com.example" content-desc="" bounds="[0,0][1080,2400]" />'
+
+dev_case id-miss-zero
+screen "$case_dir/adb/dump-1.xml" "$IDROOT" "$(idnode password-input 116 974 564 954)"
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "password-input" }'
+run_flow "$case_dir/flow.json"
+begin "tapId: an id on a node with no area says so, with the frame, nothing tapped"
+status_is 1; fake_used; lacks adb/log "input tap"
+has out.txt "no element with id 'password-input' on the screen - it is in the tree at zero size [116,974][564,954] (pixels), which is what a keyboard over it looks like"
+verdict
+
+dev_case id-miss-off
+screen "$case_dir/adb/dump-1.xml" "$IDROOT" "$(idnode footer 0 2500 1080 2600)"
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "footer" }'
+run_flow "$case_dir/flow.json"
+begin "assertId: an id on a node outside the screen says so, with the frame"
+status_is 1; has out.txt "assert FAILED: no element with id 'footer' on the screen - it is in the tree outside the screen at [0,2500][1080,2600] (pixels)"
+verdict
+
+dev_case id-miss-none
+screen "$case_dir/adb/dump-1.xml" "$IDROOT" "$(idnode email 100 500 900 600)"
+flow_file "$case_dir/flow.json" '{ "do": "clearTextId", "value": "password-input" }'
+run_flow "$case_dir/flow.json"
+begin "clearTextId: an id nowhere in the tree keeps the old words, with nothing added"
+status_is 1; has out.txt "no element with id 'password-input'"; lacks out.txt "in the tree at"
+verdict
+
+dev_case id-miss-zero-clear
+screen "$case_dir/adb/dump-1.xml" "$IDROOT" "$(idnode password-input 116 974 564 954)"
+flow_file "$case_dir/flow.json" '{ "do": "clearTextId", "value": "password-input" }'
+run_flow "$case_dir/flow.json"
+begin "clearTextId: the same words for a node with no area"
+status_is 1; has out.txt "it is in the tree at zero size [116,974][564,954] (pixels)"
+verdict
+
+dev_case id-miss-zero-box
+screen "$case_dir/adb/dump-1.xml" "$IDROOT" "$(idnode password-input 116 974 564 954)" "$(idnode email 100 500 900 600)"
+flow_file "$case_dir/flow.json" '{ "do": "assertBoxId", "value": "password-input", "box": { "minHeight": 10 } }'
+run_flow "$case_dir/flow.json"
+begin "assertBoxId: the same words for a node with no area"
+status_is 1; has out.txt "assert FAILED: no element with id 'password-input' on the screen - it is in the tree at zero size [116,974][564,954] (pixels)"
+verdict
+
+dev_case id-miss-zero-box-other
+screen "$case_dir/adb/dump-1.xml" "$IDROOT" "$(idnode password-input 116 974 564 954)" "$(idnode email 100 500 900 600)"
+flow_file "$case_dir/flow.json" '{ "do": "assertBoxId", "value": "email", "box": { "above": "password-input" } }'
+run_flow "$case_dir/flow.json"
+begin "assertBoxId: an id compared with, on a node with no area, says so"
+status_is 1; has out.txt "assert FAILED: no element with id 'password-input' on the screen to compare id 'email' with - it is in the tree at zero size [116,974][564,954] (pixels), which is what a keyboard over it looks like"
+verdict
+
+ios_case ios-id-miss-zero
+tree "$case_dir/idb/desc-1.json" '{"type":"Application","role_description":"application","AXLabel":"App","frame":{"x":0,"y":0,"width":402,"height":874}}' \
+  '{"type":"Button","role_description":"button","AXUniqueId":"go","AXLabel":"Go","frame":{"x":100,"y":300,"width":0,"height":40}}'
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "go" }'
+run_ios "$case_dir/flow.json"
+begin "tapId on iOS: a node with no area is named in points, with no keyboard promised"
+status_is 1; has out.txt "no element with id 'go' on the screen - it is in the tree at zero size [100,300][100,340] (points)"
+lacks out.txt "keyboard over it"; taps_are 0
+verdict
+
 ios_case ios-taptext-other-id-inside
 tree "$case_dir/idb/desc-1.json" "$(ibutton go)"
 ipoint date-day 180 320 40 64

@@ -2082,13 +2082,39 @@ assert_text(){ local q="${1:-}" m="${2:-exact}" in="${3:-}" xy st=0
 # segment and match it exactly, or fail. An empty id is a failure, never a match:
 # a flow step with a missing or misspelled `value` must stop the run, not tap a
 # random point. Neither scrolls — use scrollToText first for a target below the fold.
-tap_id(){ local q="${1:-}"; [ -n "$q" ] || die "tapId needs a non-empty id"; local xy st=0; xy="$(find_el "$q" id)" || st=$?; [ "$st" -eq 0 ] || die "$(lookup_err "$st")"; [ -n "$xy" ] || die "no element with id '$q'"; tap_checked "$q" id $xy; }
+# A miss by id says which of two different screens it saw (#64): nothing in the
+# tree carries the id - a wrong id, or not the screen expected - or the id is
+# there on a node that was dropped for having no area or lying off the screen,
+# so the element exists and something clips or hides it. The words begin the
+# same either way; the second case adds the node's frame, in the unit of the
+# platform, worded as waitForId words the same two cases. An Android keyboard
+# collapses the nodes under it to no area (a field reported as
+# [116,974][564,954]), which is what the sentence names; an iOS keyboard covers
+# elements instead and is not promised here. One more read of the screen, made
+# only when the step has already failed - or none, when the step holds its tree.
+# A second argument goes right after the id: what the id was wanted for.
+id_miss(){ local q="$1" for="${2:-}" w unit
+  # The step has failed already, on a read that worked: a second read that does
+  # not work - the device gone in between - leaves the words as they were rather
+  # than turning the miss into a device error, so its noise is not shown.
+  w="$(find_el "$q" id exact why 2>/dev/null)" || w=""
+  is_android && unit=pixels || unit=points
+  case "$w" in
+    zero\ *) set -- $w
+      printf "no element with id '%s' on the screen%s - it is in the tree at zero size [%s,%s][%s,%s] (%s)" "$q" "$for" "$2" "$3" "$4" "$5" "$unit"
+      if is_android; then printf ', which is what a keyboard over it looks like'; fi;;
+    off\ *) set -- $w
+      printf "no element with id '%s' on the screen%s - it is in the tree outside the screen at [%s,%s][%s,%s] (%s)" "$q" "$for" "$2" "$3" "$4" "$5" "$unit";;
+    *) printf "no element with id '%s'%s" "$q" "$for";;
+  esac
+  return 0; }
+tap_id(){ local q="${1:-}"; [ -n "$q" ] || die "tapId needs a non-empty id"; local xy st=0; xy="$(find_el "$q" id)" || st=$?; [ "$st" -eq 0 ] || die "$(lookup_err "$st")"; [ -n "$xy" ] || die "$(id_miss "$q")"; tap_checked "$q" id $xy; }
 assert_id(){ local q="${1:-}" want="${2:-}"; [ -n "$q" ] || die "assertId needs a non-empty id"; local xy st=0 miss
   [ -z "$want" ] || { xy="$(find_el "$q" id exact state)" || st=$?; [ "$st" -eq 0 ] || die "assert FAILED: $(lookup_err "$st")"
-    [ -n "$xy" ] || die "assert FAILED: no element with id '$q'"
+    [ -n "$xy" ] || die "assert FAILED: $(id_miss "$q")"
     miss="$(state_miss "$q" "$want" $xy)"; [ -z "$miss" ] || die "assert FAILED: $miss"
     set -- $xy; ok "assert id: '$q' on screen at $1 $2, $(state_words "$want")"; return 0; }
-  xy="$(find_el "$q" id)" || st=$?; [ "$st" -eq 0 ] || die "assert FAILED: $(lookup_err "$st")"; [ -n "$xy" ] && ok "assert id: '$q' on screen at $xy" || die "assert FAILED: no element with id '$q'"; }
+  xy="$(find_el "$q" id)" || st=$?; [ "$st" -eq 0 ] || die "assert FAILED: $(lookup_err "$st")"; [ -n "$xy" ] && ok "assert id: '$q' on screen at $xy" || die "assert FAILED: $(id_miss "$q")"; }
 # The state a step asks of an element (#103): "selected=true checked=false", as
 # the flow builder writes it. state_miss <id> <want> <cx> <cy> <selected>
 # <checked> prints what does not hold, in words, or nothing; state_words says
@@ -2170,7 +2196,10 @@ assert_box(){
   local out st=0
   out="$(find_el "$q" "$kind" exact box)" || st=$?
   [ "$st" -eq 0 ] || box_die "assert FAILED: $(lookup_err "$st")"
-  [ -n "$out" ] || box_die "assert FAILED: no element with $what '$q'"
+  if [ -z "$out" ]; then
+    [ "$what" = id ] && box_die "assert FAILED: $(id_miss "$q")"
+    box_die "assert FAILED: no element with $what '$q'"
+  fi
   local x1 y1 x2 y2 sx1 sy1 sx2 sy2
   read -r x1 y1 x2 y2 sx1 sy1 sx2 sy2 <<<"$out"
   local w=$((x2-x1)) h=$((y2-y1)) sw=$((sx2-sx1)) sh=$((sy2-sy1))
@@ -2183,7 +2212,7 @@ assert_box(){
       above|below|leftOf|rightOf|apart)
         st=0; out="$(find_el "$val" id exact box)" || st=$?
         [ "$st" -eq 0 ] || box_die "assert FAILED: $(lookup_err "$st")"
-        [ -n "$out" ] || box_die "assert FAILED: no element with id '$val' to compare $what '$q' with"
+        [ -n "$out" ] || box_die "assert FAILED: $(id_miss "$val" " to compare $what '$q' with")"
         read -r ox1 oy1 ox2 oy2 _ <<<"$out"
         there="'$val' ($((ox2-ox1))x$((oy2-oy1)) at [$ox1,$oy1][$ox2,$oy2])"
         # The test sits left of && so that a relation that does not hold is an
@@ -2394,7 +2423,7 @@ clear_id(){ local q="${1:-}"; [ -n "$q" ] || die "clearTextId needs a non-empty 
   HELD_TREE=""; HELD_TREE="$(ui)" || exit 1
   xy="$(find_el "$q" id)" || st=$?
   [ "$st" -eq 0 ] || { HELD_TREE=""; die "$(lookup_err "$st")"; }
-  [ -n "$xy" ] || { HELD_TREE=""; die "no element with id '$q'"; }
+  [ -n "$xy" ] || { xy="$(id_miss "$q")"; HELD_TREE=""; die "$xy"; }
   clear_field $xy "clearTextId '$q'"; }
 # A lookup answers with coordinates, with "no such element", or with no answer at
 # all - and "no answer" comes in two flavours the caller has to tell apart: the
