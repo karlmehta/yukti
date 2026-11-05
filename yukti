@@ -618,8 +618,18 @@ if mode in ("assert","id") and not (SX2>SX1 and SY2>SY1): sys.exit(3)
 # element is status 4: the screen was read and the element the check is about
 # is not on it, which is neither "the text is missing" nor "unreadable". The iOS
 # path does the same by frame.
-scope=(sys.argv[6].lower() if len(sys.argv)>6 else ""); sbox=None
-if scope and mode=="assert":
+# tapText takes the same "in" (#146): a link that is part of a longer text is
+# looked for inside the element that holds the text. With "in" a candidate is
+# an element whose whole text or label is the value; one that only contains it
+# is a longer text, and its centre is not the link, wherever the id sits - on
+# the text itself or on a view around it. When such texts are the only places
+# the words are, status 11 says so (10 belongs to kb_before_swipe, a number no lookup
+# returns): the words have no element of their own
+# (React Native gives a nested Text one only with accessibilityRole="link"),
+# and a tap on a centre would prove nothing.
+scope=(sys.argv[6].lower() if len(sys.argv)>6 else ""); sbox=None; part=False
+if scope and mode=="text" and not (SX2>SX1 and SY2>SY1): sys.exit(3)
+if scope and mode in ("assert","text"):
     for m in re.finditer(r"<node\b[^>]*>", xml):
         tag=m.group(0)
         r=re.search(r"resource-id=\"([^\"]*)\"",tag)
@@ -710,6 +720,9 @@ for m in re.finditer(r"<node\b[^>]*>", xml):
         continue
     # Outside the element named by "in": not a candidate, not even a near miss.
     if sbox and not (sbox[0]<=x1 and sbox[1]<=y1 and x2<=sbox[2] and y2<=sbox[3]): continue
+    if sbox and mode=="text" and q not in (text,desc):
+        if q in text or q in desc: part=True
+        continue
     if not (x2>x1 and y2>y1):   # zero-area node: in the tree, not on the screen
         if zero is None: zero=(x1,y1,x2,y2)
         continue
@@ -736,6 +749,7 @@ elif best:
     elif out=="why": print("on",best[0],best[1])
     elif out=="state": print(best[0],best[1],*best_state)
     else: print(best[0],best[1])
+elif part and not (zero or off): sys.exit(11)
 elif out=="why":
     if zero: print("zero",*zero)
     elif off: print("off",*off)
@@ -1398,8 +1412,11 @@ if mode in ("assert","id") and not (SW>0 and SH>0): sys.exit(3)   # 3 = read, no
 # "in" (#102), the same contract as the Android path: the element tapId would
 # tap - the first with that accessibility identifier, of real size, its centre
 # in the window - and only what lies within its frame counts; none is status 4.
-scope=(sys.argv[5].lower() if len(sys.argv)>5 else ""); sbox=None
-if scope and mode=="assert":
+# tapText takes it too (#146), with the Android rule: only a whole match counts,
+# and only one on the screen - inside the element, nothing is searched for.
+scope=(sys.argv[5].lower() if len(sys.argv)>5 else ""); sbox=None; part=False
+if scope and mode=="text" and not (SW>0 and SH>0): sys.exit(3)
+if scope and mode in ("assert","text"):
     for e in els:
         if str(e.get("AXUniqueId") or e.get("identifier") or "").lower()!=scope: continue
         if centre(e) is None: continue
@@ -1493,6 +1510,19 @@ for e in els:
     # scroll_to needs their coordinates to know which way to scroll - but a
     # candidate that is actually on screen outranks one that is not, so a namesake
     # further down a list can no longer take the tap away from the visible one.
+    if sbox:
+        if not (sbox[0]<=x and sbox[1]<=y and x+w<=sbox[2] and y+h<=sbox[3]): continue
+        if q not in (label,value,title):
+            if q in label or q in value or q in title: part=True
+            continue
+        # A link of no size has its element and is not on the screen, as on
+        # Android: not a missing role.
+        if not (w>0 and h>0):
+            if zero is None: zero=(int(x),int(y),int(x+w),int(y+h))
+            continue
+        if centre(e) is None:
+            if off is None: off=(int(x),int(y),int(x+w),int(y+h))
+            continue
     if not (w>0 and h>0): continue
     if centre(e) is not None: score+=2
     # A tie goes to the element that lies inside the current winner, as on
@@ -1505,6 +1535,7 @@ for e in els:
         if not inside((x,y,x+w,y+h),(bx,by,bx+bw,by+bh)): continue
     best=(int(x+w/2),int(y+h/2)); best_el=e; best_score=score
 if best: emit(best_el,best)
+elif part and not (zero or off): sys.exit(11)
 elif out=="why":
     if zero: print("zero",*zero)
     elif off: print("off",*off)
@@ -1559,19 +1590,19 @@ if not hit and len(box)>=4 and not ident:
 if hit: print("ok")
 else: print("covered", el.get("AXUniqueId") or el.get("identifier") or (str(el.get("type") or "element")+" (no id)"))
 '
-ihit(){ local q="$1" mode="$2" x="$3" y="$4" pt v box
+ihit(){ local q="$1" mode="$2" x="$3" y="$4" in="${5:-}" pt v box
   is_android && { echo ok; return 0; }
   paths; pt="$(idb ui describe-point --udid "$(U)" "$x" "$y" 2>/dev/null)" || pt=""
   v="$(YUKTI_PT="$pt" "$PY" -c "$IHIT_PY" "$q" "$mode")" || v=unknown
   case "$v" in covered*)
-    box="$(find_el "$q" "$mode" exact box 2>/dev/null)" || box=""
+    box="$(find_el "$q" "$mode" exact box "$in" 2>/dev/null)" || box=""
     [ -n "$box" ] && { v="$(YUKTI_PT="$pt" "$PY" -c "$IHIT_PY" "$q" "$mode" "$box")" || v=unknown; };;
   esac
   printf '%s\n' "${v:-unknown}"; }
 # A tap that must land on its target: covered = the step fails and says by what,
 # instead of tapping the element on top. No answer from idb = the tap goes ahead
 # as it did before this check, with a warning.
-tap_checked(){ local q="$1" mode="$2" x="$3" y="$4" v; v="$(ihit "$q" "$mode" "$x" "$y")"
+tap_checked(){ local q="$1" mode="$2" x="$3" y="$4" v; v="$(ihit "$q" "$mode" "$x" "$y" "${5:-}")"
   case "$v" in
     ok) ;;
     covered*) die "'$q' at $x,$y is covered by ${v#covered } - not tapped, the touch would go to that instead";;
@@ -1589,7 +1620,21 @@ tap_checked(){ local q="$1" mode="$2" x="$3" y="$4" v; v="$(ihit "$q" "$mode" "$
 # there, which is the answer it has always given.
 # The search is scrollToText's, wait at the end of the list included, so the
 # step's "timeout" sets that wait here as well.
-tap_text(){ local xy st=0 grow="${2:-$SCROLL_GROW_WAIT}"
+# With an "in" id (#146) there is no search: one read, the words looked for
+# inside that element, the tap on the element whose whole text or label they
+# are. Like tapId it does not scroll. Words that are only a part of a longer
+# text have no place of their own to tap, and that is a failure by name, not a
+# tap on the centre of the text.
+tap_text(){ local xy st=0 grow="${2:-$SCROLL_GROW_WAIT}" in="${3:-}"
+  [ -z "$in" ] || { xy="$(find_el "$1" text exact centre "$in")" || st=$?
+    case "$st" in
+      0) ;;
+      4) die "$(lookup_err 4 "$in")";;
+      11) die "'$1' is part of a longer text in the element with id '$in' and has no element of its own to tap - a link inside a text gets one when the app marks it as a link (accessibilityRole=\"link\")";;
+      *) lookup_die "$st";;
+    esac
+    [ -n "$xy" ] || die "no element matching '$1' on the screen in the element with id '$in'"
+    tap_checked "$1" text $xy "$in"; return; }
   case "$grow" in ''|*[!0-9]*|0) die "tapText: timeout must be a whole number of seconds greater than zero, got '$grow'";; esac
   xy="$(scroll_to "$1" down "" tapText "$grow")" || st=$?
   case "$st" in 0) ;; 5) die "no element matching '$1'";; 6|7|8) die "no element matching '$1' - $(scroll_miss "$st" "$1" down "$grow")";; *) lookup_die "$st";; esac
@@ -4037,7 +4082,7 @@ STATE_VERBS = ("assertId", "waitForId")
 # "wheel" is the number of the wheel turnWheel turns, top to bottom, then
 # left to right (#120).
 STEP_KEYS = set(KEYS) | {"when", "box", "title", "optional", "in", "shows", "wheel"} | set(STATE_KEYS)
-IN_VERBS = ("assertText", "assertNotText", "waitFor")
+IN_VERBS = ("assertText", "assertNotText", "waitFor", "tapText")
 INCLUDE_KEYS = {"do", "value", "with", "when"}
 # One condition is a kind and a value; several in one `when` all have to hold.
 # These two characters separate them inside the single field that carries them.
@@ -4155,8 +4200,9 @@ def optional_of(step, at):
 def in_of(step, at, scope, src):
     if "in" not in step: return ""
     verb = step.get("do", "")
-    # The text checks and nothing else: a step that ignored the key would tell
-    # the author its lookup was limited to an element when it was not.
+    # The text checks and tapText (#146) and nothing else: a step that ignored
+    # the key would tell the author its lookup was limited to an element when
+    # it was not.
     if verb not in IN_VERBS:
         fail('%s: step \'%s\' does not take "in" - only %s do'
              % (at, verb, ", ".join(IN_VERBS)))
@@ -4509,6 +4555,9 @@ PY
       # direction in "value", the way it always has.
       [ -z "$dir" ] || case "$do_" in scrollToText) ;; *) die "step $FLOW_IDX '$do_' does not take a \"direction\" - only scrollToText does; scroll takes its direction as its \"value\"";; esac
       [ -z "$edg" ] || case "$do_" in scrollToText) ;; *) die "step $FLOW_IDX '$do_' does not take an \"edges\" - only scrollToText does";; esac
+      # tapText with "in" reads the screen once and does not scroll, so the wait
+      # at the end of a list that "timeout" sets is not there to set (#146).
+      [ "$do_" != tapText ] || [ -z "$inid" ] || [ -z "$tmo" ] || die "step $FLOW_IDX 'tapText' takes \"in\" or \"timeout\", not both - with \"in\" it does not scroll, and the timeout is the wait at the end of a scroll"
       # Same rule, the other way round: hideKeyboard closes whatever keyboard is
       # up and has nothing to read a value with. Carrying one means the author
       # meant pressKey, and a key silently ignored is a flow that believes it
@@ -4538,7 +4587,7 @@ PY
                      [ -n "$FLOW_ART" ] || die "screenshot produced no file"
                      ok "shot → $FLOW_ART";;
         tap)         tap $(scale_xy "$x" "$y");;
-        tapText)     say "tap '$val'"; tap_text "$val" "$tmo";;
+        tapText)     say "tap '$val'${inid:+ in '$inid'}"; tap_text "$val" "$tmo" "$inid";;
         optionalTapText) tap_text_optional "$val";;
         scroll)      scroll_step "${val:-down}";;
         scrollToText) scroll_to_step "$val" "${dir:-down}" "$edg" "$tmo" >/dev/null;;
@@ -4687,6 +4736,9 @@ ${B}yukti v$YUKTI_VERSION${R} — YUKTI — smart mobile-app QA automation for R
               assertText matches the whole label as written; "match":"contains" asks for a substring
               assertText, assertNotText and waitFor take "in": "<id>" - only the element tapId would tap
               and what lies within its bounds count; that element missing fails as "no element with id"
+              tapText takes "in" too: a link inside a longer text is tapped on its own element, found inside
+              the one named by id by its whole words; one read, no scroll, no "timeout"; words that are only
+              part of a longer text fail by name
               type takes "shows": the text a field that filters its input holds once the value is typed
               ("value":"12a!","shows":"12" in a digits-only field); the read-back and its retries check that
               assertId and waitForId take "selected" and "checked" (true or false): the element found by the id has
