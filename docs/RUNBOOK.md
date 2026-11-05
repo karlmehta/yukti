@@ -125,8 +125,8 @@ Flows are JSON in `flows/`. Steps: `wait`, `waitFor`, `waitForId`,
 `waitForNotText`, `waitForNotId`, `screenshot`,
 `tap {x,y}`, `tapText`, `optionalTapText`, `tapId`, `type`, `clearText {x,y}`,
 `clearTextId`, `pressKey`, `hideKeyboard`, `scroll`, `swipe {x,y,toX,toY}`, `scrollToText`,
-`dismiss`, `assertText`, `assertId`, `assertBox`, `assertBoxId`, `swipeId`,
-`swipeText`, `launch`,
+`dismiss`, `assertText`, `assertId`, `assertBox`, `assertBoxId`, `assertCount`,
+`assertCountId`, `swipeId`, `swipeText`, `launch`,
 `stopApp`, `clearState`, `include`. Recorded coordinates are
 **points**
 (iPhone 16 Pro = 402×874), scaled to the screen the run is on; a coordinate may
@@ -176,7 +176,8 @@ The element is the one `tapId` would tap: the first with that id, of real size,
 on the screen - the last segment of `resource-id` on Android, the accessibility
 identifier on iOS. When it is not there the step says `no element with id` in
 the words of `tapId`; when it is there without the text, `not in the element
-with id`. `assertText`, `assertNotText` and `waitFor` take the key; `waitFor`
+with id`. `assertText`, `assertNotText`, `waitFor`, `assertCount` and
+`assertCountId` take the key; `waitFor`
 keeps polling while the element is missing and while it is there without the
 text. `assertNotText` with `"in"` fails
 when the element is missing, since nothing can be absent from what is not on
@@ -347,7 +348,81 @@ screen. The failure prints both: `expected below 'card-a' (1080x100 at
 the flow is built.
 Several elements on the screen under one id - the same button in every row -
 are measured by the first of them in the tree, on either side of the
-comparison; a relation between rows needs ids that tell the rows apart.
+comparison, unless the step names one with `"index"` (below); the index picks
+the element measured, never the one it is compared with, so a relation between
+rows still needs ids that tell the rows apart.
+
+### One of several matches: `index`, and how many: `assertCount`
+
+A form of three fields with no captions of their own, a grid of equal cards, a
+list where every row repeats the same options under the same ids: the lookup
+finds them all and acts on one, so no wording of `tapText` or `tapId` reaches
+the second. `"index"` names which one, counting from 0 (#46):
+
+```json
+{"do":"tapId","value":"card-input","index":1},
+{"do":"tapText","value":"Continue","index":2}
+```
+
+The count runs in the order of the screen, not of the tree: rows top to bottom,
+then left to right by the centre of the frame. Two elements are one row when
+their vertical centres differ by less than half the height of the smaller one,
+measured from the first element of the row. Dump order was the other candidate
+and is not used, because the two platforms disagree on it: uiautomator returns
+a tree, idb a flat list in traversal order. What is counted is what the step
+would have chosen from: the matches that rank equally best, on the screen, of
+real size, and inside the `"in"` element when the step has one. For `tapText`
+the rank is the one it always had - an exact label over a partial one, a field
+or a button over a plain caption - so a caption next to a button is not counted
+next to it; the miss says how many matched less closely and were left out. A
+match that holds another match within it is the frame around that control and
+is not counted, and two matches with the same box count once: a React Native
+row labelled on itself and on the text inside it is one row, on Android as on
+iOS, where the two arrive merged.
+
+An index past the last match stops the step and says how many there were, 0
+included -
+`index 3 is out of range: 3 elements match 'Continue' as closely as the best
+match on the screen` - rather than tapping the first one. `waitFor` and `waitForId` keep polling until that
+match appears and say the same on timeout; `optionalTapText` skips. `tapText`
+with an index does not scroll: a swipe changes what the index counts, so put
+`scrollToText` in front of it when the rows are below the fold. The verbs that
+take it are `tapText`, `optionalTapText`, `tapId`, `clearTextId`, `assertText`,
+`assertId`, `assertBox`, `assertBoxId`, `waitFor` and `waitForId`. Without the
+key every step looks up exactly as before. The index is a key of a flow step
+only: `yukti tap-text`, `tap-id`, `assert`, `assert-id`, `clear-id` and
+`wait-for` take the arguments they took before it.
+
+With `"in"` the index counts inside that element only. `"in"` names the first
+element with its id, though, so "option 2 of the lowest row" is reached by
+counting down the whole screen - two rows of two options make it index 3 -
+not by naming the lowest row.
+
+`assertCount` and `assertCountId` count the same list and compare it with a
+number (#47):
+
+```json
+{"do":"assertCount","value":"Item","op":"atLeast","count":2},
+{"do":"assertCountId","value":"result-row","op":"exact","count":5}
+```
+
+`"op"` is `atLeast`, `exact` or `atMost`. `atLeast` is the guard that a list
+filled - `assertText` passes on a list of one, which is the case such a check is
+written to catch - and `atLeast` 0 is refused, since it passes on any screen.
+`assertCount` matches the text as `assertText` does, `"match":"contains"`
+included; `assertCountId` takes the id exactly. Elements off the screen and of
+zero size are not counted, on either platform. The number found is in the line
+whichever way it ends: `2 elements match 'Item' on the screen, expected at
+least 3`, and the failure carries it into the JUnit file. With `"in"` the count
+is taken inside that element - the options of one row, by id:
+`{"do":"assertCountId","value":"opt","in":"row","op":"exact","count":2}`. As
+with the index, `"in"` names the first element with its id. Neither verb scrolls,
+and neither waits for the count to change (#92).
+
+On iOS a container marked `accessible` merges its children into one element, so
+three cards can arrive as one; that difference is #88, and until it is settled
+a count on iOS is the count of what the accessibility tree reports. The iOS
+half of both keys is written from the code and run against the fake `idb` only.
 
 Discover labels/coords for a screen:
 ```bash
@@ -363,13 +438,20 @@ inside a verb could stop a run - `adb` refusing a tap, a launch of a package
 that is not installed, a `clearText` on a dead device all reported PASS, and the
 JUnit file said `failures="0"`.
 
-Nineteen more ways a flow stops, the first four of them typos that used to pass:
+Twenty-two more ways a flow stops, the first four of them typos that used to pass:
 
 - a step name the runner does not know;
 - a `"match"` value that is neither `exact` nor `contains`;
 - a `"match"` key on a step that does not take one;
-- an `"in"` key on a step other than `assertText`, `assertNotText`, `waitFor` and `tapText`, or one that is empty;
+- an `"in"` key on a step other than `assertText`, `assertNotText`, `waitFor`,
+  `tapText`, `assertCount` and `assertCountId`, or one that is empty;
 - a `tapText` with both `"in"` and `"timeout"` - with `"in"` it does not scroll;
+- an `"index"` on a step that does not look one element up, or one that is not a
+  whole number from 0; and an index past the last match, which names how many
+  matched;
+- an `"op"` or a `"count"` on a step other than `assertCount` and
+  `assertCountId`, one of the two missing there, an op other than `atLeast`,
+  `exact` or `atMost`, a count that is not a whole number from 0, or `atLeast` 0;
 - a `wait` whose value is not a number - `sleep` refuses it;
 - a `"value"` on a `hideKeyboard`, which has nothing to read one with;
 - a `pressKey` naming a key the tool does not have;
