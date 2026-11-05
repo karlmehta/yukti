@@ -668,8 +668,8 @@ if scope and mode=="text" and not (SX2>SX1 and SY2>SY1): sys.exit(3)
 if scope and mode in ("assert","text"):
     for m in re.finditer(r"<node\b[^>]*>", xml):
         tag=m.group(0)
-        r=re.search(r"resource-id=\"([^\"]*)\"",tag)
-        if not r or norm(html.unescape(r.group(1))).split("/")[-1].lower()!=scope: continue
+        r=re.search(r"resource-id=(?:\"([^\"]*)\"|\x27([^\x27]*)\x27)",tag)
+        if not r or norm(html.unescape(r.group(1) if r.group(1) is not None else r.group(2))).split("/")[-1].lower()!=scope: continue
         b=re.search(r"bounds=\"\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]\"",tag)
         if not b: continue
         x1,y1,x2,y2=map(int,b.groups())
@@ -706,11 +706,13 @@ def inside(a,b): return b[0]<=a[0] and b[1]<=a[1] and a[2]<=b[2] and a[3]<=b[3] 
 for m in re.finditer(r"<node\b[^>]*>", xml):
     tag=m.group(0)
     def a(n):
-        # uiautomator escapes &, <, > and the quote characters. Unescaped,
-        # assertText "Terms & Conditions" fails on the very screen that shows it,
-        # and assertText "amp" passes on any screen with an ampersand - markup
-        # matching through the back door.
-        mm=re.search(n+r"=\"([^\"]*)\"",tag); return norm(html.unescape(mm.group(1))) if mm else ""
+        # uiautomator escapes &, < and >. Unescaped, assertText "Terms &
+        # Conditions" fails on the very screen that shows it, and assertText
+        # "amp" passes on any screen with an ampersand - markup matching through
+        # the back door. A value that holds a " is not escaped: uiautomator
+        # quotes it with single quotes instead (#100), so both forms are read.
+        mm=re.search(n+r"=(?:\"([^\"]*)\"|\x27([^\x27]*)\x27)",tag)
+        return norm(html.unescape(mm.group(1) if mm.group(1) is not None else mm.group(2))) if mm else ""
     text_raw=a("text"); desc_raw=a("content-desc")
     text=text_raw.lower(); desc=desc_raw.lower()
     rid=a("resource-id"); rid_seg=rid.split("/")[-1].lower()  # com.app:id/email -> email
@@ -951,24 +953,21 @@ for m in re.finditer(r"<node[^>]*?>", xml):
     if not b: continue
     x1,y1,x2,y2=map(int,b.groups())
     if not (x2>x1 and y2>y1): continue
-    cls=re.search(r"class=\"([^\"]*)\"", tag)
-    txt=re.search(r"text=\"([^\"]*)\"", tag)
-    enb=re.search(r"enabled=\"([^\"]*)\"", tag)
-    fcb=re.search(r"focusable=\"([^\"]*)\"", tag)
-    res=re.search(r"resource-id=\"([^\"]*)\"", tag)
-    foc=re.search(r"focused=\"([^\"]*)\"", tag)
-    pwd=re.search(r"password=\"([^\"]*)\"", tag)
-    cls=cls.group(1) if cls else ""; edit="EditText" in cls
+    # Both quote forms: a value that holds a " comes in single quotes (#100), and
+    # read only in "..." the field that holds it was not there at all.
+    def at(n):
+        mm=re.search(n+r"=(?:\"([^\"]*)\"|\x27([^\x27]*)\x27)", tag)
+        return "" if mm is None else (mm.group(1) if mm.group(1) is not None else mm.group(2))
+    cls=at("class"); edit="EditText" in cls
     if mode in ("focused","typed"):
-        if not (edit and foc and foc.group(1)=="true"): continue
+        if not (edit and at("focused")=="true"): continue
     else:
         if not (x1<=x0<x2 and y1<=y0<y2): continue
     area=(x2-x1)*(y2-y1)
     # The field wins over the row that contains it; among equals, the smaller.
     if best is None or (edit and not best_edit) or (edit==best_edit and area<best_area):
-        best=(cls, (enb.group(1) if enb else ""), (fcb.group(1) if fcb else ""),
-              (res.group(1) if res else ""), "%d %d %d %d"%(x1,y1,x2,y2),
-              txt.group(1) if txt else "", (pwd.group(1) if pwd else ""))
+        best=(cls, at("enabled"), at("focusable"), at("resource-id"),
+              "%d %d %d %d"%(x1,y1,x2,y2), at("text"), at("password"))
         best_area=area; best_edit=edit
 if best is None: sys.exit(3)
 if mode=="typed":
@@ -2257,7 +2256,9 @@ xml=sys.stdin.read()
 if not xml.strip(): sys.exit(1)
 B=r"bounds=\"\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]\""
 def a(tag,n):
-    m=re.search(n+r"=\"([^\"]*)\"",tag); return " ".join(html.unescape(m.group(1)).split()) if m else ""
+    # Both quote forms, as everywhere else on this path (#100).
+    m=re.search(n+r"=(?:\"([^\"]*)\"|\x27([^\x27]*)\x27)",tag)
+    return " ".join(html.unescape(m.group(1) if m.group(1) is not None else m.group(2)).split()) if m else ""
 wheels=[]; texts=[]
 for m in re.finditer(r"<node\b[^>]*>", xml):
     t=m.group(0); b=re.search(B,t)
@@ -3637,7 +3638,8 @@ def mask_android(xml):
     def node(m):
         tag = m.group(0)
         secret = 'password="true"' in tag
-        edit = "EditText" in (re.search(r'class="([^"]*)"', tag) or [None, ""])[1]
+        cm = re.search(r'class=(?:"([^"]*)"|\'([^\']*)\')', tag)
+        edit = "EditText" in ((cm.group(1) if cm.group(1) is not None else cm.group(2)) if cm else "")
         # uiautomator quotes an attribute with ' when its value holds a ",
         # so both forms are read; what is written back is always "...".
         def attr(a):
