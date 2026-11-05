@@ -127,7 +127,8 @@ Every step reads the screen at least once. `uiautomator dump` takes about 2.4 s
 a read and refuses a screen that is still moving, so on Android a flow reads
 through a resident helper instead: [appium-uiautomator2-server](https://github.com/appium/appium-uiautomator2-server),
 two APKs from its GitHub release, pinned by version and sha256, downloaded once
-into `${XDG_CACHE_HOME:-~/.cache}/yukti/` and installed with `adb install -r -g`.
+into `${XDG_CACHE_HOME:-~/.cache}/yukti/` (with no `HOME` set, into a private
+`yukti-<uid>` directory in `$TMPDIR`) and installed with `adb install -r -g`.
 A read then takes a fraction of a second - tens of milliseconds on a still
 screen - and the helper waits at most half a second for the screen to settle.
 Nothing else of Appium is used. Taps, typing and the `scroll` step still go

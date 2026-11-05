@@ -19,7 +19,12 @@ YUKTI_VERSION="0.1.0"
 CONFIG="${YUKTI_CONFIG:-yukti.config.json}"
 PY="/usr/bin/python3"                       # system python: reliable expat + json
 NODE22="/opt/homebrew/opt/node@22/bin"      # RN/Metro pins node 22; sys node may be broken
-IDB_BIN="$HOME/Library/Python/3.9/bin"      # fb-idb CLI install location
+# HOME may be unset - env -i, a container, a service unit - and under set -u a
+# bare $HOME here stopped the script on this line, help and flow --check
+# included, with "HOME: unbound variable" and nothing about why (#58). Each path
+# built from it falls back to nothing, and the step that needs the tool then
+# says the tool is missing.
+IDB_BIN="${HOME:+$HOME/Library/Python/3.9/bin}"   # fb-idb CLI install location
 
 # ── pretty ───────────────────────────────────────────────────────────────────
 c(){ printf '\033[%sm' "$1"; }; R=$(c 0); B=$(c '1;36'); G=$(c '1;32'); Y=$(c '1;33'); E=$(c '1;31')
@@ -71,7 +76,9 @@ PY
 }
 
 app_dir(){ ROOT="$(cfg projectRoot .)"; cd "$ROOT" 2>/dev/null || die "projectRoot '$ROOT' not found"; }
-paths(){ export PATH="$NODE22:$IDB_BIN:/opt/homebrew/bin:$PATH"; }
+# IDB_BIN is empty with no HOME (#58), and an empty entry in PATH is the current
+# directory: a ./idb or ./xcrun in the project would run in place of the real one.
+paths(){ export PATH="$NODE22:${IDB_BIN:+$IDB_BIN:}/opt/homebrew/bin:$PATH"; }
 udid_file(){ echo "${TMPDIR:-/tmp}/yukti-udid"; }
 booted(){ xcrun simctl list devices 2>/dev/null | grep -m1 Booted | grep -oE '[0-9A-F-]{36}' || true; }
 # The platform of this run, resolved once before the command runs (bottom of the
@@ -127,7 +134,7 @@ resolve_platform(){
 # Android debug APKs are auto-signed with the debug key — none of the iOS signing/
 # keychain/arch pain applies. Config per variant: platform:"android", package,
 # gradleTask (default assembleDebug); global android.avd for the emulator.
-ANDROID_SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-$HOME/Library/Android/sdk}}"
+ANDROID_SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-${HOME:+$HOME/Library/Android/sdk}}}"
 apaths(){ export PATH="$NODE22:$ANDROID_SDK/platform-tools:$ANDROID_SDK/emulator:$ANDROID_SDK/cmdline-tools/latest/bin:/opt/homebrew/bin:$PATH"; }
 
 build_android(){ local V="$1"; app_dir; apaths
@@ -254,7 +261,19 @@ UIA2_PKG="io.appium.uiautomator2.server"
 UIA2_TEST_PKG="io.appium.uiautomator2.server.test"
 UIA2_PORT=6790
 HELPER_WHY=""
-helper_cache(){ printf '%s/yukti/uia2-%s' "${XDG_CACHE_HOME:-$HOME/.cache}" "$UIA2_VER"; }
+# With neither XDG_CACHE_HOME nor HOME the cache goes under this user's own name
+# in the temporary directory, not under the filesystem root. That name can be
+# guessed, and in a shared /tmp another user could make it first, with links in
+# it where the logs are written: the directory is made private here and used
+# only if it is this user's own. Otherwise there is no cache, and the helper
+# is not started, saying why.
+helper_cache(){ local b="${XDG_CACHE_HOME:-${HOME:+$HOME/.cache}}" t
+  if [ -n "$b" ]; then printf '%s/yukti/uia2-%s' "$b" "$UIA2_VER"; return 0; fi
+  t="${TMPDIR:-/tmp}/yukti-$(id -u)"; mkdir -m 700 "$t" 2>/dev/null
+  # An empty answer, not a failed one: under set -e a failed c="$(helper_cache)"
+  # would end the run.
+  [ -d "$t" ] && [ ! -L "$t" ] && [ -O "$t" ] || return 0
+  printf '%s/uia2-%s' "$t" "$UIA2_VER"; }
 # The serial names the files a device's state lives in, and picks its forward
 # out of `adb forward --list`, which lists every device on the machine. adb
 # itself is never told a serial here: it takes ANDROID_SERIAL like every other
@@ -347,7 +366,9 @@ helper_force_stop(){ adb shell "am force-stop $UIA2_PKG; am force-stop $UIA2_TES
 helper_may_start(){ local d c f n; d="$(run_dir)"
   [ -n "${YUKTI_STEP_ERR:-}" ] || return 1
   [ ! -e "$d/helper-tried" ] || { HELPER_WHY="it stopped answering, and this run has already started it once"; return 1; }
-  c="$(helper_cache)"; f="$c/start-fail-$(helper_key "$(helper_serial)")"
+  c="$(helper_cache)"
+  [ -n "$c" ] || { HELPER_WHY="it has no cache directory - neither XDG_CACHE_HOME nor HOME is set, and ${TMPDIR:-/tmp}/yukti-$(id -u) is not this user's own"; return 1; }
+  f="$c/start-fail-$(helper_key "$(helper_serial)")"
   n="$(cat "$f" 2>/dev/null || true)"
   if [ "${n:-0}" -ge 2 ] 2>/dev/null && [ -n "$(find "$f" -mmin -1440 2>/dev/null)" ]; then
     HELPER_WHY="it failed to start twice in a row on this device - 'yukti helper stop' clears that, YUKTI_HELPER=0 turns it off"
@@ -513,7 +534,7 @@ helper_stop(){ local s p c k; apaths; command -v adb >/dev/null 2>&1 || return 0
   for p in $(adb forward --list 2>/dev/null | awk -v s="$s" -v r="tcp:$UIA2_PORT" '$1==s && $3==r {print $2}' || true); do
     adb forward --remove "$p" >/dev/null 2>&1 || true
   done
-  c="$(helper_cache)"; k="$(helper_key "$s")"; rm -f "$c/session-$k" "$c/start-fail-$k" 2>/dev/null || true; }
+  c="$(helper_cache)"; k="$(helper_key "$s")"; [ -z "$c" ] || rm -f "$c/session-$k" "$c/start-fail-$k" 2>/dev/null || true; }
 # At the end of the run that started it, unless the caller asked to keep it.
 helper_release(){ [ -n "${YUKTI_RUN_DIR:-}" ] && [ -e "$YUKTI_RUN_DIR/helper-ours" ] || return 0
   [ "${YUKTI_HELPER_KEEP:-}" = 1 ] && return 0

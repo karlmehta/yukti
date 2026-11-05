@@ -117,6 +117,14 @@ expect "include: the value of a parameter reaches the fourth block" 1 \
   "step 1 'waitFor' of block 'b4.json': \"value\" contains a character the runner separates fields with" \
   env -u YUKTI_TEST_DEEP "$YUKTI" flow --check "$case_dir/flow.json"
 
+# ── no HOME in the environment (#58) ─────────────────────────────────────────
+# Under set -u a bare $HOME at the top of the script stopped it before anything
+# ran, help and --check included, with "HOME: unbound variable".
+new_case no-home
+flow_file "$case_dir/flow.json" '{ "do": "wait", "value": "1" }'
+expect "no HOME: help runs" 0 "yukti v" env -i PATH="$PATH" "$YUKTI" help
+expect "no HOME: flow --check runs" 0 " - 1 steps" env -i PATH="$PATH" "$YUKTI" flow --check "$case_dir/flow.json"
+
 # ── a failing step on a device (#94) ─────────────────────────────────────────
 # The device is tests/fake-sdk/platform-tools/adb, put first in PATH through
 # ANDROID_HOME (the engine derives its SDK path from it). Each case gets its own
@@ -275,6 +283,15 @@ run_flow "$case_dir/flow.json"
 begin "results: a step four blocks down is named with its block"
 status_is 1; fake_used; has res/flow.xml "[b4.json] waitForId missing"
 verdict
+
+# And a flow on a device with no HOME: the SDK comes from ANDROID_HOME, the
+# helper's cache from the temporary directory.
+dev_case no-home-run
+screen "$case_dir/adb/dump-1.xml" "$(node TextView greeting Hello)"
+flow_file "$case_dir/flow.json" '{ "do": "assertText", "value": "Hello" }'
+expect "no HOME: a flow runs on a device" 0 "assert (exact): 'Hello' on screen" \
+  env -u HOME -u ANDROID_SDK_ROOT -u YUKTI_VARIANT -u YUKTI_CONFIG ANDROID_HOME="$ROOT/tests/fake-sdk" YUKTI_PLATFORM=android YUKTI_HELPER=0 \
+    FAKE_ADB_DIR="$case_dir/adb" YUKTI_RESULTS_DIR="$case_dir/res" TMPDIR="$case_dir/tmp" "$YUKTI" flow "$case_dir/flow.json"
 
 # ── fix the app, or restart the device (#96) ─────────────────────────────────
 # What the engine knows for sure is the device's - a screen that could not be
@@ -1042,6 +1059,29 @@ status_is 0; fake_used; file_absent adb/dumps
 has adb/settings '"waitForIdleTimeout":500'; count_is adb/http-log "/source" 2
 lacks adb/log "am instrument"; lacks adb/log "force-stop"
 has out.txt "· read helper"; has out.txt "screen reads: 2 by the helper, 0 by uiautomator dump, 0 fallback(s)"
+verdict; helper_done
+
+# With no HOME and no XDG_CACHE_HOME (#58) the cache is this user's own
+# directory in TMPDIR; one made by somebody else - here a link - is not used.
+helper_case helper-no-home
+NH_CACHE="tmp/yukti-$(id -u)/${CACHE_SUB#yukti/}"
+mkdir -p -m 700 "$case_dir/tmp/yukti-$(id -u)"; mkdir -p "$case_dir/$NH_CACHE"
+cp "$case_dir/$CACHE/installed-emulator-5554" "$case_dir/$NH_CACHE/"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hnode TextView title Today)"
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "title" }'
+run_helper flow "$case_dir/flow.json" -- HOME= XDG_CACHE_HOME=
+begin "helper: no HOME - the cache in the user's own directory in TMPDIR is used"
+status_is 0; fake_used; has adb/log "am instrument"; has out.txt "screen reads: 1 by the helper, 0 by uiautomator dump"
+verdict; helper_done
+
+helper_case helper-no-home-foreign
+mkdir -p "$case_dir/elsewhere"; mkdir -p "$case_dir/tmp"; ln -s "$case_dir/elsewhere" "$case_dir/tmp/yukti-$(id -u)"
+screen "$case_dir/adb/dump-1.xml" "$(node TextView title Today)"
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "title" }'
+run_helper flow "$case_dir/flow.json" -- HOME= XDG_CACHE_HOME=
+begin "helper: no HOME - a cache directory that is not the user's own is not used, the read falls back to the dump"
+status_is 0; has out.txt "it has no cache directory"; lacks adb/log "am instrument"
+[ -z "$(ls -A "$case_dir/elsewhere")" ] || no "something was written into the linked directory"
 verdict; helper_done
 
 helper_case helper-start-fails
