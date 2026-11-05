@@ -143,8 +143,10 @@ A flow is `{ "name": "...", "steps": [ ... ] }`. Common step verbs:
 | `{"do":"waitForId","value":"chat-button","timeout":20,"optional":true}` | the same wait, but a timeout skips the step instead of failing the flow, with the same words |
 | `{"do":"scroll","value":"down"}` | one swipe: `up`, `down`, `left` or `right` |
 | `{"do":"wait","value":3}` / `{"do":"dismiss"}` | sleep a fixed time (prefer `waitFor`) / dismiss a modal |
-| `{"do":"tap","x":201,"y":812}` | tap raw coordinates (last resort — brittle) |
-| `{"do":"clearText","x":201,"y":400}` | empty the field at those coordinates, and fail if it is not empty afterwards (Android 12+) |
+| `{"do":"tap","x":201,"y":812}` | tap raw coordinates (last resort — brittle); recorded pixels are scaled from the screen they were recorded on |
+| `{"do":"tap","x":"50%","y":"80%"}` | tap a place on the screen rather than a control - here the middle of the width, four fifths down. A share is taken of the screen the run is on (pixels on Android, points on iOS) and does not depend on the recording basis or `YUKTI_TAP_SCALE`, as pixels do; `x` and `y` may mix the two forms. Not yet run on an emulator or a simulator |
+| `{"do":"swipe","x":"50%","y":"25%","toX":"50%","toY":"70%"}` | one swipe from a point to a point, each pixels or a share of the screen - a gesture with no element under it and none of the four directions, such as pulling a list down from its top. The finger moves at the speed of `scroll`, with a set duration on both platforms (a drag on iOS; on Android it lets go at that speed); a keyboard that is up is closed first; a start at the very edge triggers a system gesture instead. Not yet run on an emulator or a simulator |
+| `{"do":"clearText","x":201,"y":400}` | empty the field at those coordinates (pixels or a share of the screen, as for `tap`), and fail if it is not empty afterwards (Android 12+) |
 | `{"do":"clearTextId","value":"email-input"}` | empty the field with this id, and fail if it is not empty afterwards (Android 12+) |
 | `{"do":"pressKey","value":"enter"}` | press one key: `back`, `enter`, `home`, `delete`, `tab`, `escape` (`back` is Android only) |
 | `{"do":"hideKeyboard"}` | close the keyboard and fail if it is still up — a form longer than one field needs this between fields on Android |
@@ -196,6 +198,8 @@ both boxes.
 `type`, `clearText`, `clearTextId`, `pressKey` and `hideKeyboard` were measured
 on Android; their iOS halves are written and have not been run on a simulator, so
 treat an iOS failure in them as a bug in the tool before doubting the app.
+`swipe` and a share of the screen in `x`/`y` have not been run on either
+platform yet, only against the engine's fake devices.
 
 A step that fails now fails the flow, and the message names the step. Three
 exceptions stay, and they are narrow: `dismiss` and `optionalTapText` tolerate a

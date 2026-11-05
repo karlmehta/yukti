@@ -118,6 +118,7 @@ yukti up    <variant>   build + boot + install + launch
 yukti flow  <file>      run a deterministic flow (Talos engine) → yukti-results/<flow>.xml
 yukti flow --check <file>  build the flow and stop — no device, nothing performed
 yukti shot | ui | find "<label>" | tap <x> <y> | type "<text>" | clear <x> <y>
+yukti swipe <x> <y> <toX> <toY>   x and y: pixels (200) or a share of the screen ("50%")
 yukti helper stop       Android: stop the resident screen helper (below)
 ```
 

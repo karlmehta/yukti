@@ -124,12 +124,13 @@ breaks several steps later on an assert about something unrelated.
 Flows are JSON in `flows/`. Steps: `wait`, `waitFor`, `waitForId`,
 `waitForNotText`, `waitForNotId`, `screenshot`,
 `tap {x,y}`, `tapText`, `optionalTapText`, `tapId`, `type`, `clearText {x,y}`,
-`clearTextId`, `pressKey`, `hideKeyboard`, `scroll`, `scrollToText`,
+`clearTextId`, `pressKey`, `hideKeyboard`, `scroll`, `swipe {x,y,toX,toY}`, `scrollToText`,
 `dismiss`, `assertText`, `assertId`, `assertBox`, `assertBoxId`, `swipeId`,
 `swipeText`, `launch`,
-`stopApp`, `clearState`, `include`. Coordinates are
+`stopApp`, `clearState`, `include`. Recorded coordinates are
 **points**
-(iPhone 16 Pro = 402×874). Prefer `tapText` (finds by accessibility label) over
+(iPhone 16 Pro = 402×874), scaled to the screen the run is on; a coordinate may
+also be a share of the screen (`"50%"`), see "A place on the screen, and a swipe". Prefer `tapText` (finds by accessibility label) over
 raw coords so flows survive layout changes. `${VARS}` in `value` expand from env,
 and a variable that is not set stops the flow before its first step, naming it -
 the value used to be typed in as written, sixteen literal characters of
@@ -845,6 +846,70 @@ Measured on an iOS 26.5 simulator (iPhone 17 Pro) on a date picker and a
 and the screen read back, a row past the end or the maximum refused by name. A
 row cost about ten seconds on that simulator and one to two on that emulator,
 most of it the read.
+
+### A place on the screen, and a swipe
+
+Most steps name an element. A few have no element to name: a tap outside a
+dialog to close it, a swipe down from the top of a list to refresh it. Those
+take a point, and a point is written in one of two ways:
+
+- pixels, `{"do":"tap","x":201,"y":812}` - a point recorded on a screen. It is
+  scaled from the screen it was recorded on (402x874 points unless
+  `YUKTI_DEVICE_PT_W`/`H` say otherwise) to the one the run is on, in
+  proportion. `YUKTI_TAP_SCALE=0` replays it as written. A number taken from
+  an Android dump is scaled all the same: 540 on a 1080 px screen lands at 1450.
+- a share of the screen, `{"do":"tap","x":"50%","y":"80%"}` - a point
+  described, written by hand. It is taken of the screen the run is on, pixels on
+  Android and points on iOS, and never depends on the recording basis or on
+  `YUKTI_TAP_SCALE`. `100%` is the last pixel (point on iOS), not the one past
+  the edge.
+
+Both are proportional to the screen, so neither keeps a point on a control that
+is laid out at a fixed distance from an edge - for that, name the control.
+
+The two may be mixed in one point (`"x":"50%","y":300`). A share is a whole
+number from 0 to 100; `"150%"`, `"12.5%"`, `"abc"` or a missing `y` are refused
+before the run, with the key and what was written. `tap` and `clearText` read a
+point this way, and so does `swipe`:
+
+    {"do":"swipe","x":"50%","y":"25%","toX":"50%","toY":"70%"}
+
+is one swipe from the first point to the second - here down the middle, from a
+quarter of the height to seven tenths, a pull that refreshes a list whose top is
+in view. `scroll` has four fixed directions and `scrollToText` swipes until a
+text is in view; `swipe` is the gesture that is neither, and it does not look
+at the screen before or after. A swipe that starts and ends at the same point is
+refused: that is a press. Keep it off the edges: a swipe from `0%` or `100%`,
+or from the strips along the sides, starts a system gesture (back, the
+notification shade, home) instead of reaching the app.
+
+The finger moves at the speed `scroll` uses, and the duration is always given to
+the tool rather than left to it. On Android it is 3 ms for every 4 pixels, and
+never less than 300 ms; `input swipe` lets go at the speed it moved, so the
+list may run on after it. On iOS it is `YUKTI_IOS_SWIPE_PT_S` points a second
+(150), at least 0.3 s, the speed `scroll` uses there: left to idb a swipe often
+did not move the list at all, and one faster than about 175 points a second
+flings it. So the same step is a drag on iOS and may fling a little on Android.
+A flick - a sheet thrown away, a carousel flung past one page - cannot be
+written yet; a duration can be added when a step needs one. A keyboard that is
+up is closed first, as for `scroll`, because its keys would take the touch;
+closing it can move what is under the point. The line in the
+run says where the finger went and for how long: `swipe 540,600 -> 540,1680 in
+810 ms`.
+
+From the command line, `yukti tap 50% 80%` and `yukti swipe 50% 25% 50% 70%`
+take the same forms; there, pixels are the device's own and are not scaled, as
+`yukti tap` always took them. A share there is new: the command line never
+scaled, so it had no way to say "the middle" on an unknown screen.
+
+When the screen size cannot be read, a share is of the recording basis (402x874)
+and the run warns once; on Android that puts `"50%"` at 201 pixels.
+
+There is no named pull-to-refresh step: where the pull has to start - below a
+header, inside the list - differs from app to app, and the swipe above says it.
+
+Covered by the engine's tests against a fake adb and a fake idb; not run on an
+emulator or a simulator yet. The iOS half is written from idb's documentation.
 
 ### Starting a flow from a known state
 

@@ -26,6 +26,8 @@
 #                  holding a number: from that y
 #   drag-closes    present: a `ui swipe` closes the keyboard or the keypad
 #   return-closes  present: the Return key (`ui key 40`) closes it
+#   screen         "<width> <height>": `describe --json` answers with this screen,
+#                  in points; absent: the verb is refused, as before
 import json, os, sys
 
 d = os.environ["FAKE_IDB_DIR"]
@@ -94,6 +96,9 @@ elif ops[:2] == ["ui", "describe-point"] and has("point.json"):
     # What is under a tap point: point.json, written by the case. Without it the
     # verb is refused, as before, and the engine's tap check answers "unknown".
     sys.stdout.write(read("point.json"))
+elif ops[:1] == ["describe"] and has("screen"):
+    w, h = read("screen").split()
+    sys.stdout.write(json.dumps({"screen_dimensions": {"width_points": int(w), "height_points": int(h)}}))
 elif ops[:2] == ["ui", "tap"] or ops[:1] == ["connect"]:
     pass
 else:
