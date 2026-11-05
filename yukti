@@ -15,6 +15,14 @@
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
+# The environment as the user handed it over, taken before this script assigns
+# a single variable of its own (#101). A flow fills ${NAME} from the
+# environment, and an exported variable that shares its name with one of the
+# script's - CONFIG, PY, HELD_TREE, once the colours E and R - was overwritten
+# here and stayed exported, so the step got the script's value. The flow
+# builder lays these values over what the environment has become by then.
+_yk_env0="$(/usr/bin/python3 -c "import json,os; print(json.dumps(dict(os.environ)))" 2>/dev/null)" || _yk_env0=""
+
 YUKTI_VERSION="0.1.0"
 CONFIG="${YUKTI_CONFIG:-yukti.config.json}"
 PY="/usr/bin/python3"                       # system python: reliable expat + json
@@ -22,13 +30,20 @@ NODE22="/opt/homebrew/opt/node@22/bin"      # RN/Metro pins node 22; sys node ma
 IDB_BIN="$HOME/Library/Python/3.9/bin"      # fb-idb CLI install location
 
 # ── pretty ───────────────────────────────────────────────────────────────────
-c(){ printf '\033[%sm' "$1"; }; R=$(c 0); B=$(c '1;36'); G=$(c '1;32'); Y=$(c '1;33'); E=$(c '1;31')
-say(){ printf '%s▸%s %s\n' "$B" "$R" "$*"; }
-ok(){  printf '%s✓%s %s\n' "$G" "$R" "$*"; }
-warn(){ printf '%s!%s %s\n' "$Y" "$R" "$*"; }
+# The colours live under names no flow is likely to use (#101). They were R, B,
+# G, Y and E: a variable of that name exported by the user was overwritten here,
+# stayed exported, and the step builder - which fills ${NAME} from the
+# environment - typed the escape sequence where the user's value belonged.
+# Not exported either, so a name inherited from outside does not carry the
+# colour to the processes this script starts.
+c(){ printf '\033[%sm' "$1"; }; _yk_R=$(c 0); _yk_B=$(c '1;36'); _yk_G=$(c '1;32'); _yk_Y=$(c '1;33'); _yk_E=$(c '1;31')
+export -n _yk_R _yk_B _yk_G _yk_Y _yk_E
+say(){ printf '%s▸%s %s\n' "$_yk_B" "$_yk_R" "$*"; }
+ok(){  printf '%s✓%s %s\n' "$_yk_G" "$_yk_R" "$*"; }
+warn(){ printf '%s!%s %s\n' "$_yk_Y" "$_yk_R" "$*"; }
 # A step a condition switched off. Not a warning (nothing went wrong) and not a
 # pass (nothing was done), so it gets its own mark in the run.
-skipped(){ printf '%s~%s %s\n' "$Y" "$R" "$*"; }
+skipped(){ printf '%s~%s %s\n' "$_yk_Y" "$_yk_R" "$*"; }
 # The last words of a failing step are also the message its result entry needs,
 # so keep a copy when a flow is running. The console output is unchanged.
 #
@@ -43,7 +58,7 @@ skipped(){ printf '%s~%s %s\n' "$Y" "$R" "$*"; }
 # no step at all, `no flow file 'x.json' (stale from parent)`.
 YUKTI_STEP_SRC=""
 die(){ local m="$*"; if [ -n "${YUKTI_STEP_SRC:-}" ]; then m="$m ($YUKTI_STEP_SRC)"; fi
-  printf '%s✗%s %s\n' "$E" "$R" "$m" >&2; [ -n "${YUKTI_STEP_ERR:-}" ] && printf '%s' "$m" > "$YUKTI_STEP_ERR"; exit 1; }
+  printf '%s✗%s %s\n' "$_yk_E" "$_yk_R" "$m" >&2; [ -n "${YUKTI_STEP_ERR:-}" ] && printf '%s' "$m" > "$YUKTI_STEP_ERR"; exit 1; }
 # A failure of the device or of the engine itself, not of the app: the screen
 # could not be read, the screenshot was not taken. Marked beside the step's
 # message, in a file for the same reason - the reads that fail run in
@@ -3996,7 +4011,7 @@ flow(){
   # and the run still ended with "flow complete".
   local steps gerr gmsg
   steps="$(mktemp)"; gerr="$(mktemp)"
-  if ! "$PY" - "$f" > "$steps" 2> "$gerr" <<'PY'
+  if ! YUKTI_ENV0="$_yk_env0" "$PY" - "$f" > "$steps" 2> "$gerr" <<'PY'
 import json, os, re, sys
 
 def fail(msg):
@@ -4445,7 +4460,12 @@ def include(step, at, base, src, scope, chain, depth):
           depth + 1, "%s: " % at)
 
 flow = sys.argv[1]
-build(flow, "flow file", "", dict(os.environ),
+# What the user exported wins over what the script assigned since (#101); a
+# variable the script added and the user never set is still there.
+env = dict(os.environ)
+try: env.update(json.loads(env.pop("YUKTI_ENV0", "") or "{}"))
+except ValueError: pass
+build(flow, "flow file", "", env,
       [(os.path.realpath(flow), os.path.basename(flow))], 0)
 
 sys.stdout.write(END.join(recs) + (END if recs else ""))
@@ -4619,7 +4639,7 @@ JSON
   ok "wrote $CONFIG — edit it, then 'yukti doctor' and 'yukti up qa'"; }
 
 usage(){ cat <<EOF
-${B}yukti v$YUKTI_VERSION${R} — YUKTI — smart mobile-app QA automation for React Native / Expo
+${_yk_B}yukti v$YUKTI_VERSION${_yk_R} — YUKTI — smart mobile-app QA automation for React Native / Expo
 
   yukti doctor              check/guide the toolchain (Xcode, node@22, cocoapods, idb)
   yukti init                write a starter yukti.config.json

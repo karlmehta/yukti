@@ -159,6 +159,22 @@ fake_used(){ [ -s "$case_dir/adb/log" ] || no "the fake adb was never called"; }
 verdict(){ if [ -z "$why" ]; then pass=$((pass + 1)); printf 'ok   %s\n' "$case_name"
   else fail=$((fail + 1)); printf 'FAIL %s%s\n     output:\n%s\n' "$case_name" "$why" "$(sed 's/^/       /' "$case_dir/out.txt" 2>/dev/null)"; fi; }
 
+# ── a flow variable named like an internal one (#101) ────────────────────────
+# The console colours used to be the shell variables R, B, G, Y and E: an
+# exported E reached the flow as an escape sequence. Any other variable the
+# script assigns did the same - CONFIG with the config file's name, PY with the
+# path of python, HELD_TREE emptied. The fake screen holds the user's value, so
+# the assertion passes only if the value arrived as exported.
+for v in E R B G Y CONFIG PY NODE22 UIA2_PORT HELPER_WHY HELD_TREE; do
+  dev_case colour-name-$v
+  screen "$case_dir/adb/dump-1.xml" "$(node TextView greeting myvalue)"
+  flow_file "$case_dir/flow.json" "{ \"do\": \"assertText\", \"value\": \"\${$v}\" }"
+  run_flow "$case_dir/flow.json" $v=myvalue
+  begin "a flow variable named $v keeps the value the user exported"
+  status_is 0; fake_used; has out.txt "assert (exact): 'myvalue' on screen"
+  verdict
+done
+
 MARK="Synthetic marker text"   # on every screen, never secret: a mask that
                                # blanked the whole tree must not pass
 
