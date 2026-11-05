@@ -865,6 +865,71 @@ currently covers any refusal from `simctl`, a simulator that is not booted
 included, so read a warning there as "not stopped, reason unknown". The iOS half
 of both steps has not been exercised on a Mac.
 
+### Permissions before the app starts
+
+A permission is the first branch of an app that asks for one, and a run used to
+meet whichever state the device was left in - a pass did not say which branch it
+took, and a suite that grants everything up front cannot reach the denied one
+(#51). `setPermission` sets one permission of the app of this run
+(`$YUKTI_VARIANT`, as for `openUrl`) before it starts:
+
+```json
+{"do":"stopApp","value":"qa"},
+{"do":"setPermission","value":"notifications","state":"denied"},
+{"do":"setPermission","value":"camera","state":"granted"},
+{"do":"launch","value":"qa"}
+```
+
+`"state"` is `granted` (allowed, no dialog), `denied` (refused, and the system
+does not ask again) or `unset` (not asked yet: the app's request brings the
+dialog up). The permission has one name for both platforms: `notifications`,
+`camera`, `microphone`, `location`, `photos`, `contacts`, `calendar`, `motion`,
+`reminders`, `health`.
+
+- **Android**: `pm grant` / `pm revoke`, and for `denied` the `user-set` and
+  `user-fixed` flags, which is what "don't ask again" leaves; `granted` and
+  `unset` clear them. Only the permissions the app's manifest asks for are set:
+  `location` is fine and coarse, and an app that asks for fine only gets fine;
+  `photos` from Android 13 is images and video.
+  None asked for is a failure - the app has no such permission to be in any
+  state. After the calls the state is read back from `dumpsys package` (granted,
+  and the flags, for User 0, the user pm acts on), and a permission that did
+  not take it is a failure: pm's silence is not proof. A device with several
+  users is not measured yet. The flags came with Android 13 (API 33); before it only
+  `granted` is set, and `denied` and `unset` are skipped as below. `health`
+  sets every Health Connect permission the app asks for (Android 14 and later;
+  that pm sets those is from the sources and not measured yet). A name with a
+  dot is Android's own, which is how a partial grant is written - under a
+  platform condition, next to the iOS step, so that one suite runs on both:
+
+  ```json
+  {"do":"setPermission","value":"android.permission.health.READ_STEPS","state":"granted","when":{"platform":"android"}},
+  {"do":"setPermission","value":"android.permission.health.READ_HEART_RATE","state":"denied","when":{"platform":"android"}},
+  {"do":"setPermission","value":"health","state":"granted","when":{"platform":"ios"}}
+  ```
+- **iOS**: `xcrun simctl privacy grant|revoke|reset` for photos, location,
+  contacts, calendar, microphone, motion and reminders. Camera, notifications
+  and health are not among them, and go through `applesimutils`, an optional
+  tool that `yukti doctor` reports on (`brew tap wix/brew && brew install
+  applesimutils`); without it those three stop with that hint. applesimutils
+  restarts SpringBoard to apply the change, which takes a few seconds before the
+  launch, and its health setting covers all of Health at once. On iOS the state
+  is not read back yet: the step trusts the exit status of simctl and
+  applesimutils.
+
+A permission the platform or its version does not have - notifications before
+Android 13, reminders on Android, an Android name on iOS - is not a failure:
+the step and the rest of the flow are skipped, each with a `skipped` message
+that starts with `platform:`, and the run ends with `flow skipped from step N`
+instead of `flow complete`. The exit status is still 0 and the JUnit file has
+no failures: a flow-level "skipped" status is #55, and until it lands a report
+that counts only failures shows such a flow as green - read the skipped count.
+Revoking a permission kills a running app on both platforms, and on iOS
+applesimutils restarts SpringBoard whatever the state, so the step goes before
+`launch`; such a step is also what a failure after it names as the one that
+stopped the app, where a grant on Android is not. Both halves are
+written from the platform documentation and not measured on a device yet.
+
 `openUrl` opens a screen of the app under test by its key - `home`, `cart` -
 instead of walking to it. It is the cheap way back to a known screen:
 measured on one app on one Android 15 emulator, two runs each, an address reaches

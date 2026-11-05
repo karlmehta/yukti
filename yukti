@@ -1080,6 +1080,8 @@ doctor(){
   command -v node >/dev/null && ok "node $(node -v)" || { warn "node@22 missing"; bad=1; echo "   brew install node@22"; }
   command -v pod  >/dev/null && ok "cocoapods $(pod --version)" || { warn "cocoapods missing"; bad=1; echo "   brew install cocoapods"; }
   command -v idb  >/dev/null && ok "idb (UI driver)" || { warn "idb missing"; bad=1; echo "   brew trust facebook/fb && brew install idb-companion && $PY -m pip install --user fb-idb"; }
+  # Optional: setPermission needs it for camera, notifications and health (#51).
+  command -v applesimutils >/dev/null && ok "applesimutils (setPermission: camera, notifications, health)" || { warn "applesimutils missing - setPermission cannot set camera, notifications or health"; echo "   brew tap wix/brew && brew install applesimutils"; }
   [ "$(cfg easEnabled false)" = "True" -o "$(cfg easEnabled false)" = "true" ] && { command -v npx >/dev/null && ok "npx (for EAS adapter)"; }
   [ $bad -eq 0 ] && ok "ready" || die "install the tools above, then re-run 'yukti doctor'"
 }
@@ -1255,6 +1257,149 @@ clear_state(){ local V="${1:-}" plat; [ -n "$V" ] || die "clearState needs a var
   case "$out" in
     Success*) ok "cleared $pkg - the app is stopped now, launch it before the next step";;
     *) die "clearState: pm clear refused '$pkg': ${out:-no output}";;
+  esac; }
+# setPermission (#51): one named permission of the app of this run, set before
+# it starts. Nothing else decided what a run starts with: the device kept what
+# the run before it left, a suite that grants everything up front cannot reach
+# the denied branch, and a pass did not say which state it ran in. The app is
+# the one of $YUKTI_VARIANT, as for openUrl; the flow names the permission by
+# one name for both platforms and the engine translates it:
+#   granted  allowed, no dialog
+#   denied   refused, and the system does not ask again (Android: user-fixed)
+#   unset    not asked yet: the app's request brings the dialog up
+# Android: `pm grant` / `pm revoke` and the user-set / user-fixed flags, on the
+# permissions the app's manifest asks for - a name that maps to several (location
+# is fine and coarse) sets every one the app asks for, and none asked for is a
+# failure: the app has no such permission to be in any state. A name with a dot
+# is the platform's own (android.permission.health.READ_HEART_RATE), which is
+# how a partial grant of Health Connect is written. iOS: `simctl privacy` for
+# what it covers; camera, notifications and health through applesimutils, an
+# optional tool that doctor reports on - without it those stop with a hint.
+# A permission the platform or its version does not have is not a failure: the
+# flow is skipped from this step with a "platform:" reason, out loud and in the
+# report. The run itself still ends with status 0 - a flow-level "skipped" is
+# #55. Android before 13 (API 33) has no pm *-permission-flags, so there only
+# granted is set; denied and unset are skipped the same way. On Android the
+# state is read back from dumpsys after it is set, and a permission that did not
+# take the state is a failure, never a skip. Revoking kills a running app on
+# both platforms, so the step goes before launch. Written from the platform
+# documentation and sources, not measured on a device yet.
+FLOW_PLAT_SKIP=""
+set_permission(){ local name="${1:-}" state="${2:-}" V plat
+  state="${state#state=}"
+  [ -n "$name" ] || die "setPermission needs a permission, for instance \"notifications\""
+  case "$state" in granted|denied|unset) ;; *) die "setPermission: \"state\" is granted, denied or unset, got '$state'";; esac
+  V="${YUKTI_VARIANT:-}"
+  [ -n "$V" ] || die "setPermission: this run does not know which app '$name' is for - set \$YUKTI_VARIANT to the variant in $CONFIG"
+  [ -n "$(cfg "variants.$V")" ] || die "setPermission: there is no variant '$V' in $CONFIG"
+  plat="$(step_platform "$V")"
+  if [ "$plat" = android ]; then set_permission_android "$V" "$name" "$state"; else set_permission_ios "$V" "$name" "$state"; fi; }
+set_permission_android(){ local V="$1" name="$2" state="$3" pkg="" api="" want="" have="" req="" p="" out="" shown="" n=0
+  apaths; pkg="$(cfg variants.$V.package)"
+  [ -n "$pkg" ] || die "setPermission: variant '$V' has no 'package' in $CONFIG"
+  api="$(adb shell getprop ro.build.version.sdk 2>/dev/null | tr -d '\r ')"
+  case "$api" in ''|*[!0-9]*) device_fault; die "setPermission: the device did not say its Android version";; esac
+  local A=android.permission
+  case "$name" in
+    notifications) [ "$api" -ge 33 ] || { FLOW_PLAT_SKIP="platform: notifications are a permission from Android 13 (API 33), this device is API $api"; return 0; }
+                   want="$A.POST_NOTIFICATIONS";;
+    camera)        want="$A.CAMERA";;
+    microphone)    want="$A.RECORD_AUDIO";;
+    location)      want="$A.ACCESS_FINE_LOCATION $A.ACCESS_COARSE_LOCATION";;
+    photos)        if [ "$api" -ge 33 ]; then want="$A.READ_MEDIA_IMAGES $A.READ_MEDIA_VIDEO"; else want="$A.READ_EXTERNAL_STORAGE"; fi;;
+    contacts)      want="$A.READ_CONTACTS $A.WRITE_CONTACTS";;
+    calendar)      want="$A.READ_CALENDAR $A.WRITE_CALENDAR";;
+    motion)        [ "$api" -ge 29 ] || { FLOW_PLAT_SKIP="platform: motion is a permission from Android 10 (API 29), this device is API $api"; return 0; }
+                   want="$A.ACTIVITY_RECOGNITION";;
+    health)        [ "$api" -ge 34 ] || { FLOW_PLAT_SKIP="platform: health is a permission of the system from Android 14 (API 34), this device is API $api"; return 0; }
+                   want="health";;
+    reminders)     FLOW_PLAT_SKIP="platform: Android has no reminders permission"; return 0;;
+    *.*)           want="$name";;
+    *)             die "setPermission: unknown permission '$name'";;
+  esac
+  # What the manifest asks for: `pm grant` refuses the rest, and a name that
+  # maps to two permissions is set on the ones the app has.
+  req="$(adb shell dumpsys package "$pkg" 2>/dev/null | tr -d '\r' | "$PY" -c '
+import sys
+on=False; ind=0
+for line in sys.stdin:
+    s=line.strip(); i=len(line)-len(line.lstrip())
+    if s=="requested permissions:": on=True; ind=i; continue
+    if on:
+        if not s or i<=ind: break
+        print(s.split(":")[0])
+')" || req=""
+  [ -n "$req" ] || die "setPermission: the device lists no permissions for '$pkg' - is it installed?"
+  if [ "$want" = health ]; then have="$(printf '%s\n' "$req" | grep '^android\.permission\.health\.' | tr '\n' ' ')"
+  else for p in $want; do printf '%s\n' "$req" | grep -qxF "$p" && have="$have$p "; done; fi
+  [ "$want" = "$name" ] && shown="" || shown=" ($want)"
+  [ -n "$have" ] || die "setPermission: '$pkg' does not ask for $name$shown - its manifest has no such permission, so it cannot be in any state"
+  # pm set-permission-flags and clear-permission-flags came with Android 13.
+  # Before it a grant is all pm can do: "denied, not asked again" and "not
+  # asked yet" both live in those flags, and a revoke alone would leave
+  # whatever flags the run before it set.
+  if [ "$api" -lt 33 ]; then
+    [ "$state" = granted ] || { FLOW_PLAT_SKIP="platform: $state needs pm set-permission-flags, from Android 13 (API 33), this device is API $api"; return 0; }
+    for p in $have; do
+      out="$(adb shell "pm grant $pkg $p" 2>&1 | tr -d '\r')" || die "setPermission: the device refused $p for '$pkg': ${out:-no output}"
+      case "$out" in *[Ee]xception*|*Error*|*"Unknown"*) die "setPermission: the device refused $p for '$pkg': $(printf '%s' "$out" | head -1)";; esac
+      n=$((n+1))
+    done
+    perm_read_back "$pkg" "$state" "$have"
+    ok "permission $name $state for $pkg ($n: ${have% })"; return 0
+  fi
+  for p in $have; do
+    case "$state" in
+      granted) out="$(adb shell "pm clear-permission-flags $pkg $p user-set user-fixed; pm grant $pkg $p" 2>&1 | tr -d '\r')";;
+      denied)  out="$(adb shell "pm revoke $pkg $p; pm set-permission-flags $pkg $p user-set user-fixed" 2>&1 | tr -d '\r')";;
+      unset)   out="$(adb shell "pm revoke $pkg $p; pm clear-permission-flags $pkg $p user-set user-fixed" 2>&1 | tr -d '\r')";;
+    esac || die "setPermission: the device refused $p for '$pkg': ${out:-no output}"
+    # pm answers nothing on success and an exception in words on a refusal,
+    # with an exit status that does not agree across versions (see clearState).
+    case "$out" in *[Ee]xception*|*Error*|*"Unknown"*) die "setPermission: the device refused $p for '$pkg': $(printf '%s' "$out" | head -1)";; esac
+    n=$((n+1))
+  done
+  perm_read_back "$pkg" "$state" "$have"
+  ok "permission $name $state for $pkg ($n: ${have% })"; }
+# The state as the device holds it now: an answer without words from pm is not
+# proof (its exit status does not agree across versions), and a permission that
+# did not take the state is a failure. dumpsys lists a runtime permission as
+# "<name>: granted=true|false, flags=[ USER_SET|USER_FIXED|... ]", once per
+# user; the first is User 0, the one pm without --user acts on. A device with a
+# work profile lists User 10 after it, and that one is not read. Several users
+# are not measured on a device.
+perm_read_back(){ local pkg="$1" state="$2" have="$3" got
+  got="$(adb shell dumpsys package "$pkg" 2>/dev/null | tr -d '\r' | "$PY" -c '
+import sys,re
+state=sys.argv[1]; want=sys.argv[2].split(); seen={}
+for line in sys.stdin:
+    m=re.match(r"\s*([\w.]+): granted=(true|false)(?:, flags=\[([^\]]*)\])?", line)
+    if m and m.group(1) in want and m.group(1) not in seen: seen[m.group(1)]=(m.group(2)=="true", set(m.group(3).replace("|"," ").split()) if m.group(3) else set())
+for p in want:
+    if p not in seen: print("%s: not listed" % p); continue
+    g,fl=seen[p]
+    if state=="granted" and not g: print("%s: not granted" % p)
+    elif state=="denied" and (g or "USER_FIXED" not in fl): print("%s: %s" % (p, "still granted" if g else "not marked user-fixed"))
+    elif state=="unset" and (g or fl & {"USER_SET","USER_FIXED"}): print("%s: %s" % (p, "still granted" if g else "still marked as answered"))
+' "$state" "$have")" || got="the state could not be read"
+  [ -z "$got" ] || die "setPermission: the device does not hold $state for '$pkg' after the step - $(printf '%s' "$got" | tr '\n' ';' | sed 's/;$//; s/;/; /g')"; }
+set_permission_ios(){ local V="$1" name="$2" state="$3" u b svc act val out
+  paths; u="$(cat "$(udid_file)" 2>/dev/null)" || true
+  [ -n "$u" ] || die "setPermission: no simulator recorded in $(udid_file) - run 'yukti up <variant>' first"
+  b="$(cfg variants.$V.bundleId)"
+  [ -n "$b" ] || die "setPermission: variant '$V' has no 'bundleId' in $CONFIG"
+  case "$name" in
+    photos|location|contacts|calendar|microphone|motion|reminders)
+      svc="$name"; case "$state" in granted) act=grant;; denied) act=revoke;; unset) act=reset;; esac
+      out="$(xcrun simctl privacy "$u" "$act" "$svc" "$b" 2>&1)" || die "setPermission: the simulator refused $act $svc for '$b': ${out:-no output}"
+      ok "permission $name $state for $b";;
+    camera|notifications|health)
+      command -v applesimutils >/dev/null 2>&1 || die "setPermission: $name on iOS needs applesimutils, which simctl privacy does not cover - brew tap wix/brew && brew install applesimutils ('yukti doctor' reports it)"
+      case "$state" in granted) val=YES;; denied) val=NO;; unset) val=unset;; esac
+      out="$(applesimutils --byId "$u" --bundle "$b" --setPermissions "$name=$val" 2>&1)" || die "setPermission: applesimutils refused $name=$val for '$b': ${out:-no output}"
+      ok "permission $name $state for $b";;
+    *.*) FLOW_PLAT_SKIP="platform: '$name' is an Android permission name, and this run is iOS"; return 0;;
+    *)   die "setPermission: unknown permission '$name'";;
   esac; }
 # A flow could reach a screen only by walking to it: open the app, find the tab,
 # find the card. Walking is the test when the test is about navigation, and pure
@@ -3611,7 +3756,8 @@ for line in read(rec).split("\n"):
     # step that ran. The eighth is the block the step was written in, empty for
     # the flow file itself. The ninth is the step's title. The tenth is
     # "optional" when the seventh is not a condition but what an optional wait
-    # found when it ended. Older records have six to nine fields.
+    # found when it ended, "platform" when it is what the platform cannot do
+    # (#51). Older records have six to nine fields.
     skip = parts[6] if len(parts) > 6 else ""
     src = parts[7] if len(parts) > 7 else ""
     title = parts[8] if len(parts) > 8 else ""
@@ -3798,10 +3944,25 @@ def keep_crash(body, ext):
 def stopped_by():
     # The flow stopped the app itself when the last step that starts or stops it
     # was a stop: no crash to look for.
+    # setPermission is a stop when it kills a running app (#51): a revoke does,
+    # denied and unset, and on iOS applesimutils restarts SpringBoard for camera,
+    # notifications and health whatever the state. A grant leaves the app
+    # running, so a crash after it is still looked for. The record holds the
+    # step as "<name> <state>". The step that failed counts when it is one, and
+    # a failed setPermission always does: it goes before launch, so the app is
+    # not expected to be running, and a revoke may have gone through before the
+    # step failed.
+    def stops(x):
+        if x["verb"] in ("stopApp", "clearState"): return True
+        if x["verb"] != "setPermission": return False
+        if x is failing: return True
+        f = x["value"].split()
+        return f[-1:] in (["denied"], ["unset"]) or \
+            (plat == "ios" and f[:1] in (["camera"], ["notifications"], ["health"]))
     last = None
-    for x in steps:
-        if not x["skip"] and x["verb"] in ("launch", "openUrl", "stopApp", "clearState"): last = x
-    return last["i"] if last and last["verb"] in ("stopApp", "clearState") else 0
+    for x in steps + ([failing] if failing else []):
+        if not x["skip"] and (x["verb"] in ("launch", "openUrl") or stops(x)): last = x
+    return last["i"] if last and stops(last) else 0
 
 def android_state(app):
     st_, out = ask(["adb", "shell", "pidof", app])
@@ -3959,8 +4120,13 @@ for step in steps:
         # with the condition in the message: a reader of the file can see which
         # part of the flow was switched off and by what. An optional wait that
         # ended without its element did run, and says so in other words.
-        why = ("optional wait ended, the flow went on: " if step.get("kind") == "optional"
-               else "condition not met: ") + step["skip"]
+        # A step the platform cannot do (#51) carries its reason as it is: the
+        # message starts with the reason word, "platform:", and no condition
+        # was involved.
+        if step.get("kind") == "platform": why = step["skip"]
+        else:
+            why = ("optional wait ended, the flow went on: " if step.get("kind") == "optional"
+                   else "condition not met: ") + step["skip"]
         cases.append('    <testcase classname=%s name=%s time="%.3f">\n'
                      '      <skipped message=%s/>\n'
                      '    </testcase>'
@@ -4032,7 +4198,7 @@ PY
 # ── deterministic flow runner: a JSON list of steps ──────────────────────────
 # step keys: include[with]|launch|stopApp|clearState|wait|waitFor[timeout,match]|waitForId[timeout]|
 #            waitForNotText[timeout,match]|waitForNotId[timeout]|screenshot|
-#            openUrl|tap[x,y]|tapText[timeout]|optionalTapText|tapId|type|clearText[x,y]|clearTextId|pressKey|hideKeyboard|
+#            openUrl|setPermission[state]|tap[x,y]|tapText[timeout]|optionalTapText|tapId|type|clearText[x,y]|clearTextId|pressKey|hideKeyboard|
 #            scroll|scrollToText[direction,edges,timeout]|dismiss|assertText[match]|assertId|assertNotText[match]|assertNotId|
 #            assertBox[box]|assertBoxId[box]|turnWheel[wheel]
 #            any step, and an include, may carry "when": {visible|notVisible|
@@ -4120,7 +4286,7 @@ cond_words(){ local spec="$1" pair kind val out=""
     esac
   done
   printf '%s' "$out"; }
-FLOW_VERBS="launch stopApp clearState openUrl wait waitFor waitForId waitForNotText waitForNotId screenshot tap tapText optionalTapText tapId type clearText clearTextId pressKey hideKeyboard scroll scrollToText dismiss assertText assertId assertNotText assertNotId assertBox assertBoxId turnWheel"
+FLOW_VERBS="launch stopApp clearState openUrl setPermission wait waitFor waitForId waitForNotText waitForNotId screenshot tap tapText optionalTapText tapId type clearText clearTextId pressKey hideKeyboard scroll scrollToText dismiss assertText assertId assertNotText assertNotId assertBox assertBoxId turnWheel"
 # The steps a condition switched off. They keep their numbers - the numbering is
 # end to end, and a skipped step that gave its number away would move every step
 # after it - they say so on the console, and they land in the report as `skipped`
@@ -4133,9 +4299,10 @@ flow_skip(){ local n="${1:-1}" why="$2" i=0 d v xx yy mm tt dd ee ss si wc ws bx
     if [ "$d" = "__when" ]; then continue; fi
     FLOW_IDX=$((FLOW_IDX+1)); t="$(now)"
     skipped "step $FLOW_IDX '$d'${tl:+ \"$tl\"} skipped: $why"
-    printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' "$FLOW_IDX" "$d" "${v//[$'\n\r']/ }" "$t" "$t" "" "$why" "${ss//[$'\n\r']/ }" "$tl" >> "$FLOW_REC"
+    printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' "$FLOW_IDX" "$d" "${v//[$'\n\r']/ }" "$t" "$t" "" "$why" "${ss//[$'\n\r']/ }" "$tl" "${FLOW_SKIP_KIND:-}" >> "$FLOW_REC"
   done; }
 flow(){
+  FLOW_CUT=""
   # --check builds the flow and stops there: every step is read, resolved and
   # validated, and not one of them is performed. It needs no simulator and no
   # emulator, which is what makes it the only part of a flow a CI runner can
@@ -4216,7 +4383,12 @@ STATE_KEYS = ("selected", "checked")
 STATE_VERBS = ("assertId", "waitForId")
 # "wheel" is the number of the wheel turnWheel turns, top to bottom, then
 # left to right (#120).
-STEP_KEYS = set(KEYS) | {"when", "box", "title", "optional", "in", "shows", "wheel"} | set(STATE_KEYS)
+# "state" is the state setPermission sets a permission to (#51), and the
+# permission is named once for both platforms; a name with a dot is Android's own.
+PERM_STATES = ("granted", "denied", "unset")
+PERM_NAMES = ("notifications", "camera", "microphone", "location", "photos",
+              "contacts", "calendar", "motion", "reminders", "health")
+STEP_KEYS = set(KEYS) | {"when", "box", "title", "optional", "in", "shows", "wheel", "state"} | set(STATE_KEYS)
 IN_VERBS = ("assertText", "assertNotText", "waitFor", "tapText")
 INCLUDE_KEYS = {"do", "value", "with", "when"}
 # One condition is a kind and a value; several in one `when` all have to hold.
@@ -4317,6 +4489,26 @@ def state_of(step, at):
             fail('%s: "%s" is true or false, got %s' % (at, k, json.dumps(v)))
         out.append("%s=%s" % (k, "true" if v else "false"))
     return " ".join(out)
+
+def perm_of(step, at, scope, src):
+    verb = step.get("do", "")
+    if verb != "setPermission":
+        if "state" in step:
+            fail('%s: step \'%s\' does not take "state" - only setPermission does' % (at, verb))
+        return ""
+    v = step.get("value")
+    if not isinstance(v, str) or not v.strip():
+        fail('%s: "value" is the permission to set, one of %s, or an Android '
+             'permission name with a dot' % (at, ", ".join(PERM_NAMES)))
+    v = fill(v.strip(), scope, at, bool(src))
+    if v not in PERM_NAMES and "." not in v:
+        fail("%s: '%s' is not a permission the engine knows - one of %s, or an "
+             "Android permission name with a dot" % (at, v, ", ".join(PERM_NAMES)))
+    st = step.get("state")
+    if st not in PERM_STATES:
+        fail('%s: "state" is %s, got %s' % (at, ", ".join(PERM_STATES),
+             json.dumps(st) if "state" in step else "nothing"))
+    return "state=" + st
 
 def optional_of(step, at):
     if "optional" not in step: return ""
@@ -4574,7 +4766,8 @@ def build(path, shown, src, scope, chain, depth, pre=""):
         fields.append(optional_of(step, at))
         fields.append(in_of(step, at, scope, src))
         fields.append(shows_of(step, at, scope, src))
-        fields.append(state_of(step, at))
+        perm = perm_of(step, at, scope, src)
+        fields.append(state_of(step, at) or perm)
         fields.append(wheel_of(step, at, scope, src))
         if cond: recs.append(guard(cond, 1, src, idx))
         recs.append(SEP.join(fields))
@@ -4676,8 +4869,11 @@ PY
       if [ -n "$src" ]; then export YUKTI_STEP_SRC="block '$src', step $sidx"
       elif [ "$sidx" != "$FLOW_IDX" ]; then export YUKTI_STEP_SRC="step $sidx of this flow file"
       else export YUKTI_STEP_SRC=""; fi
+      # setPermission is recorded with its state: the report tells a grant,
+      # which leaves the app running, from a revoke, which stops it.
+      rval="${val//[$'\n\r']/ }"; [ "$do_" = setPermission ] && rval="$rval ${stt#state=}"
       if [ "$chk" = 0 ]; then
-        printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' "$FLOW_IDX" "$do_" "${val//[$'\n\r']/ }" "$FLOW_S0" "${src//[$'\n\r']/ }" "$ttl" > "$FLOW_CUR"
+        printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' "$FLOW_IDX" "$do_" "$rval" "$FLOW_S0" "${src//[$'\n\r']/ }" "$ttl" > "$FLOW_CUR"
         : > "$FLOW_ERR"; rm -f "$FLOW_ERR.kind"
       fi
       # The name first, the keys after it, because the order decides what a typo
@@ -4751,6 +4947,7 @@ PY
         stopApp)     stop_app "$val";;
         clearState)  clear_state "$val";;
         openUrl)     open_url "$val";;
+        setPermission) set_permission "$val" "$stt";;
         # A name the dispatcher does not know is a typo in the flow file, and a
         # typo must not pass: `warn` returns zero, so this case has to die on its
         # own - reading the status below would not catch it.
@@ -4768,16 +4965,28 @@ PY
       # to tolerate.
       case "$do_" in dismiss|optionalTapText) st=0;; esac
       [ "$st" -eq 0 ] || die "step $FLOW_IDX '$do_'${ttl:+ \"$ttl\"} failed (exit $st)"
+      # A permission this platform or its version does not have (#51): the flow
+      # is skipped from this step, out loud and in the report - a flow about the
+      # denied branch that went on without it would prove nothing.
+      if [ -n "$FLOW_PLAT_SKIP" ]; then
+        skipped "step $FLOW_IDX '$do_'${ttl:+ \"$ttl\"} skipped: $FLOW_PLAT_SKIP - the rest of the flow is skipped with it"
+        printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' "$FLOW_IDX" "$do_" "$rval" "$FLOW_S0" "$(now)" "" "$FLOW_PLAT_SKIP" "${src//[$'\n\r']/ }" "$ttl" platform >> "$FLOW_REC"
+        FLOW_CUT="step $FLOW_IDX: $FLOW_PLAT_SKIP"
+        FLOW_SKIP_KIND=platform flow_skip 1000000 "$FLOW_PLAT_SKIP"; FLOW_PLAT_SKIP=""
+        continue
+      fi
       # The eighth field is the block the step was written in, empty for the flow
       # file itself; the seventh stays empty, because this step ran - unless it
       # was an optional wait that ended without its element: then the seventh
       # holds what the wait found and the tenth says it was that kind of skip.
       # The ninth is the step's title, empty when it has none.
-      printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' "$FLOW_IDX" "$do_" "${val//[$'\n\r']/ }" "$FLOW_S0" "$(now)" "$FLOW_ART" "${FLOW_OPT_MISS//[$'\n\r']/ }" "${src//[$'\n\r']/ }" "$ttl" "${FLOW_OPT_MISS:+optional}" >> "$FLOW_REC"
+      printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' "$FLOW_IDX" "$do_" "$rval" "$FLOW_S0" "$(now)" "$FLOW_ART" "${FLOW_OPT_MISS//[$'\n\r']/ }" "${src//[$'\n\r']/ }" "$ttl" "${FLOW_OPT_MISS:+optional}" >> "$FLOW_REC"
   done
   exec 3<&-
   export YUKTI_STEP_SRC=""
-  if [ "$chk" = 1 ]; then ok "flow checks out: $f - $FLOW_IDX steps"; else ok "flow complete: $f"; fi
+  if [ "$chk" = 1 ]; then ok "flow checks out: $f - $FLOW_IDX steps"
+  elif [ -n "${FLOW_CUT:-}" ]; then skipped "flow skipped from $FLOW_CUT - not a pass: the steps after it did not run"
+  else ok "flow complete: $f"; fi
 }
 
 init(){ [ -f "$CONFIG" ] && die "$CONFIG exists"
@@ -4871,9 +5080,13 @@ ${_yk_B}yukti v$YUKTI_VERSION${_yk_R} — YUKTI — smart mobile-app QA automati
   yukti assert-not-id "<id>"
                             assert no element with this id is on the current screen
 
-  flow steps: wait · waitFor · waitForId · waitForNotText · waitForNotId · screenshot · tap · tapText · optionalTapText · tapId · scroll · scrollToText · dismiss · type · clearText · clearTextId · pressKey · hideKeyboard · assertText · assertId · assertNotText · assertNotId · assertBox · assertBoxId · turnWheel · launch · stopApp · clearState · openUrl · include
+  flow steps: wait · waitFor · waitForId · waitForNotText · waitForNotId · screenshot · tap · tapText · optionalTapText · tapId · scroll · scrollToText · dismiss · type · clearText · clearTextId · pressKey · hideKeyboard · assertText · assertId · assertNotText · assertNotId · assertBox · assertBoxId · turnWheel · launch · stopApp · clearState · openUrl · setPermission · include
               (clearText · clearTextId · pressKey · hideKeyboard · assertBox · assertBoxId: measured on Android, iOS not yet run)
               stopApp force-stops the app, clearState wipes its data (Android only); both take the variant name
+              setPermission sets one permission of the app of \$YUKTI_VARIANT before it starts: "value" is
+              notifications, camera, microphone, location, photos, contacts, calendar, motion, reminders,
+              health, or an Android name with a dot; "state" is granted, denied or unset. A permission the
+              platform does not have skips the rest of the flow with the reason
               openUrl takes the key of a screen, not an address: the address is the variant's "urlBase" plus the key
               (or plus its path from a "urls" table), so a flow says where to go and never in which environment.
               Cheaper than a restart and it resets every tab, but it promises delivery only - an address the app does

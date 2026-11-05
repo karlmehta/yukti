@@ -3275,6 +3275,289 @@ begin "tapText in on iOS: a link of no size is not on the screen, and the messag
 status_is 1; has out.txt "no element matching 'Terms of Use' on the screen in the element with id 'consent-note'"; lacks out.txt "accessibilityRole"; lacks idb/log "ui tap "
 verdict
 
+# ── setPermission (#51) ─────────────────────────────────────────────────────
+# perm_case <name> - an Android case with a config whose variant "app" is
+# com.example, and a manifest that asks for notifications, camera and fine
+# location; a case rewrites `requested` or `sdk` when it needs another device.
+perm_case(){ dev_case "$1"
+  printf '%s' '{"platform":"android","variants":{"app":{"platform":"android","package":"com.example"}}}' > "$case_dir/cfg.json"
+  printf '%s\n' android.permission.INTERNET android.permission.POST_NOTIFICATIONS android.permission.CAMERA \
+    android.permission.ACCESS_FINE_LOCATION android.permission.health.READ_STEPS android.permission.health.READ_HEART_RATE > "$case_dir/adb/requested"; }
+run_perm(){ run_flow "$1" YUKTI_VARIANT=app YUKTI_CONFIG="$case_dir/cfg.json"; }
+
+perm_case perm-denied
+flow_file "$case_dir/flow.json" '{ "do": "setPermission", "value": "notifications", "state": "denied" }'
+run_perm "$case_dir/flow.json"
+begin "setPermission: denied revokes and marks it user-fixed, so the app is not asked again"
+status_is 0; has out.txt "permission notifications denied for com.example"
+has adb/log "shell pm revoke com.example android.permission.POST_NOTIFICATIONS; pm set-permission-flags com.example android.permission.POST_NOTIFICATIONS user-set user-fixed"
+verdict
+
+perm_case perm-granted
+flow_file "$case_dir/flow.json" '{ "do": "setPermission", "value": "camera", "state": "granted" }'
+run_perm "$case_dir/flow.json"
+begin "setPermission: granted clears the flags and grants"
+status_is 0; has adb/log "shell pm clear-permission-flags com.example android.permission.CAMERA user-set user-fixed; pm grant com.example android.permission.CAMERA"
+verdict
+
+perm_case perm-unset
+flow_file "$case_dir/flow.json" '{ "do": "setPermission", "value": "camera", "state": "unset" }'
+run_perm "$case_dir/flow.json"
+begin "setPermission: unset revokes and clears the flags, so the dialog comes up again"
+status_is 0; has adb/log "shell pm revoke com.example android.permission.CAMERA; pm clear-permission-flags com.example android.permission.CAMERA user-set user-fixed"
+verdict
+
+# Location is fine and coarse; the app asks for fine only, and only fine is set.
+perm_case perm-several
+flow_file "$case_dir/flow.json" '{ "do": "setPermission", "value": "location", "state": "granted" }'
+run_perm "$case_dir/flow.json"
+begin "setPermission: a name of several permissions sets the ones the manifest asks for"
+status_is 0; has adb/log "pm grant com.example android.permission.ACCESS_FINE_LOCATION"; lacks adb/log "ACCESS_COARSE_LOCATION"
+verdict
+
+# The partial grant of the issue: steps allowed, heart rate refused.
+perm_case perm-partial
+flow_file "$case_dir/flow.json" '{ "do": "setPermission", "value": "android.permission.health.READ_STEPS", "state": "granted" }' \
+  '{ "do": "setPermission", "value": "android.permission.health.READ_HEART_RATE", "state": "denied" }'
+run_perm "$case_dir/flow.json"
+begin "setPermission: Android names with a dot write a partial grant"
+status_is 0; has adb/log "pm grant com.example android.permission.health.READ_STEPS"; has adb/log "pm revoke com.example android.permission.health.READ_HEART_RATE"
+verdict
+
+perm_case perm-health
+flow_file "$case_dir/flow.json" '{ "do": "setPermission", "value": "health", "state": "granted" }'
+run_perm "$case_dir/flow.json"
+begin "setPermission: health sets every Health Connect permission the app asks for"
+status_is 0; has out.txt "(2: android.permission.health.READ_STEPS android.permission.health.READ_HEART_RATE)"
+verdict
+
+perm_case perm-not-asked
+flow_file "$case_dir/flow.json" '{ "do": "setPermission", "value": "microphone", "state": "denied" }'
+run_perm "$case_dir/flow.json"
+begin "setPermission: a permission the manifest does not ask for fails by name"
+status_is 1; has out.txt "setPermission: 'com.example' does not ask for microphone (android.permission.RECORD_AUDIO)"; lacks adb/log "pm revoke"
+verdict
+
+perm_case perm-refused
+printf '%s\n' 'Exception occurred while executing: java.lang.SecurityException: grant' > "$case_dir/adb/pm-refuses"
+flow_file "$case_dir/flow.json" '{ "do": "setPermission", "value": "camera", "state": "granted" }'
+run_perm "$case_dir/flow.json"
+begin "setPermission: pm's refusal in words is a failure, whatever its exit status"
+status_is 1; has out.txt "the device refused android.permission.CAMERA for 'com.example': Exception occurred"
+verdict
+
+perm_case perm-old-android
+echo 31 > "$case_dir/adb/sdk"
+flow_file "$case_dir/flow.json" '{ "do": "setPermission", "value": "notifications", "state": "denied" }' '{ "do": "launch", "value": "app" }'
+run_perm "$case_dir/flow.json"
+begin "setPermission: a permission older Android does not have skips the rest of the flow, out loud"
+status_is 0; has out.txt "skipped: platform: notifications are a permission from Android 13 (API 33), this device is API 31 - the rest of the flow is skipped with it"
+has out.txt "step 2 'launch' skipped: platform:"; lacks adb/log "pm revoke"; lacks adb/log "monkey"
+has res/flow.xml '<skipped message="platform: notifications are a permission'; lacks res/flow.xml "condition not met"
+has out.txt "flow skipped from step 1: platform:"; lacks out.txt "flow complete"
+verdict
+
+# Before Android 13 pm has no permission flags: a grant still works...
+perm_case perm-old-granted
+echo 31 > "$case_dir/adb/sdk"
+flow_file "$case_dir/flow.json" '{ "do": "setPermission", "value": "camera", "state": "granted" }'
+run_perm "$case_dir/flow.json"
+begin "setPermission: before Android 13 a grant is a plain pm grant"
+status_is 0; has adb/log "shell pm grant com.example android.permission.CAMERA"; lacks adb/log "permission-flags"
+verdict
+
+# ...and denied, which lives in those flags, is skipped by name.
+perm_case perm-old-denied
+echo 32 > "$case_dir/adb/sdk"
+flow_file "$case_dir/flow.json" '{ "do": "setPermission", "value": "camera", "state": "denied" }'
+run_perm "$case_dir/flow.json"
+begin "setPermission: before Android 13 denied is skipped, not half done"
+status_is 0; has out.txt "platform: denied needs pm set-permission-flags, from Android 13 (API 33), this device is API 32"; lacks adb/log "pm revoke"
+verdict
+
+perm_case perm-reminders
+flow_file "$case_dir/flow.json" '{ "do": "setPermission", "value": "reminders", "state": "granted" }'
+run_perm "$case_dir/flow.json"
+begin "setPermission: reminders on Android is a platform skip"
+status_is 0; has res/flow.xml 'message="platform: Android has no reminders permission"'
+verdict
+
+# The state is read back: a pm that answers nothing and changes nothing fails.
+perm_case perm-not-taken
+: > "$case_dir/adb/pm-ignores"
+flow_file "$case_dir/flow.json" '{ "do": "setPermission", "value": "camera", "state": "granted" }'
+run_perm "$case_dir/flow.json"
+begin "setPermission: a permission that did not take the state is a failure, read back from the device"
+status_is 1; has out.txt "setPermission: the device does not hold granted for 'com.example' after the step - android.permission.CAMERA: not granted"
+lacks res/flow.xml "AppGone"
+verdict
+
+# A denied permission set to unset loses its flags as well as its grant.
+perm_case perm-denied-then-unset
+flow_file "$case_dir/flow.json" '{ "do": "setPermission", "value": "camera", "state": "denied" }' '{ "do": "setPermission", "value": "camera", "state": "unset" }'
+run_perm "$case_dir/flow.json"
+begin "setPermission: unset after denied clears what denied left"
+status_is 0; has out.txt "permission camera unset for com.example"
+verdict
+
+# A work profile lists the app's permissions again under User 10; pm without
+# --user acts on User 0, and that is the one read back.
+perm_case perm-work-profile
+: > "$case_dir/adb/user10"
+flow_file "$case_dir/flow.json" '{ "do": "setPermission", "value": "camera", "state": "granted" }'
+run_perm "$case_dir/flow.json"
+begin "setPermission: the read back is User 0, not a work profile listed after it"
+status_is 0; has out.txt "permission camera granted for com.example"
+verdict
+
+perm_case perm-health-old
+echo 33 > "$case_dir/adb/sdk"
+flow_file "$case_dir/flow.json" '{ "do": "setPermission", "value": "health", "state": "granted" }' '{ "do": "launch", "value": "app" }'
+run_perm "$case_dir/flow.json"
+begin "setPermission: health before Android 14 skips the rest of the flow"
+status_is 0; has out.txt "platform: health is a permission of the system from Android 14 (API 34), this device is API 33"
+has out.txt "flow skipped from step 1"; lacks adb/log "pm grant"; lacks adb/log "monkey"
+verdict
+
+perm_case perm-motion-old
+echo 28 > "$case_dir/adb/sdk"
+flow_file "$case_dir/flow.json" '{ "do": "setPermission", "value": "motion", "state": "granted" }'
+run_perm "$case_dir/flow.json"
+begin "setPermission: motion before Android 10 is a platform skip"
+status_is 0; has out.txt "platform: motion is a permission from Android 10 (API 29), this device is API 28"
+verdict
+
+perm_case perm-not-installed
+: > "$case_dir/adb/requested"
+flow_file "$case_dir/flow.json" '{ "do": "setPermission", "value": "camera", "state": "granted" }'
+run_perm "$case_dir/flow.json"
+begin "setPermission: a package the device lists no permissions for asks whether it is installed"
+status_is 1; has out.txt "the device lists no permissions for 'com.example' - is it installed?"
+verdict
+
+perm_case perm-health-not-asked
+printf '%s\n' android.permission.INTERNET android.permission.CAMERA > "$case_dir/adb/requested"
+flow_file "$case_dir/flow.json" '{ "do": "setPermission", "value": "health", "state": "granted" }'
+run_perm "$case_dir/flow.json"
+begin "setPermission: health the app does not ask for is named once"
+status_is 1; has out.txt "'com.example' does not ask for health - its manifest"; lacks out.txt "health (health)"
+verdict
+
+perm_case perm-skip-in-include
+flow_file "$case_dir/inc.json" '{ "do": "setPermission", "value": "reminders", "state": "granted" }' '{ "do": "wait", "value": "1" }'
+flow_file "$case_dir/flow.json" '{ "do": "include", "value": "inc.json" }' '{ "do": "wait", "value": "1", "when": { "platform": "android" } }' '{ "do": "launch", "value": "app" }'
+run_perm "$case_dir/flow.json"
+begin "setPermission: a platform skip inside a block skips the rest of the flow, numbered through"
+status_is 0; has out.txt "step 2 'wait' skipped: platform:"; has out.txt "step 3 'wait' skipped: platform:"
+has out.txt "step 4 'launch' skipped: platform:"; has out.txt "flow skipped from step 1"; lacks adb/log "monkey"
+verdict
+
+# A grant leaves a running app running: a failure after it still looks for a
+# crash. A revoke stops the app, and the failure names that step instead.
+perm_case perm-grant-not-a-stop
+flow_file "$case_dir/flow.json" '{ "do": "launch", "value": "app" }' '{ "do": "setPermission", "value": "camera", "state": "granted" }' '{ "do": "waitForId", "value": "missing", "timeout": 1 }'
+run_perm "$case_dir/flow.json"
+begin "setPermission: a grant after launch is not where the app stopped"
+status_is 1; lacks res/flow.xml "stopped by step"; has res/flow.xml "it was gone when the step failed"
+verdict
+
+perm_case perm-revoke-is-a-stop
+flow_file "$case_dir/flow.json" '{ "do": "launch", "value": "app" }' '{ "do": "setPermission", "value": "camera", "state": "denied" }' '{ "do": "waitForId", "value": "missing", "timeout": 1 }'
+run_perm "$case_dir/flow.json"
+begin "setPermission: denied after launch is where the app stopped, not a crash"
+status_is 1; has res/flow.xml "app: com.example not running - stopped by step 2"; lacks res/flow.xml "it was gone"
+verdict
+
+perm_case perm-state-on-assert
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "week", "selected": true, "state": "granted" }'
+expect "check: a state on another step is refused even next to selected" 1 \
+  "step 'assertId' does not take \"state\" - only setPermission does" check "$case_dir/flow.json"
+
+perm_case perm-no-variant
+flow_file "$case_dir/flow.json" '{ "do": "setPermission", "value": "camera", "state": "denied" }'
+run_flow "$case_dir/flow.json" YUKTI_CONFIG="$case_dir/cfg.json"
+begin "setPermission: a run with no variant does not know whose permission it is"
+status_is 1; has out.txt "setPermission: this run does not know which app 'camera' is for"
+verdict
+
+new_case perm-check-state
+flow_file "$case_dir/flow.json" '{ "do": "setPermission", "value": "camera", "state": "allowed" }'
+expect "check: a state that is not granted, denied or unset is refused" 1 \
+  "\"state\" is granted, denied, unset, got \"allowed\"" check "$case_dir/flow.json"
+
+new_case perm-check-name
+flow_file "$case_dir/flow.json" '{ "do": "setPermission", "value": "camra", "state": "granted" }'
+expect "check: a permission the engine does not know is refused" 1 \
+  "'camra' is not a permission the engine knows" check "$case_dir/flow.json"
+
+new_case perm-check-no-state
+flow_file "$case_dir/flow.json" '{ "do": "setPermission", "value": "camera" }'
+expect "check: setPermission without a state is refused" 1 \
+  "\"state\" is granted, denied, unset, got nothing" check "$case_dir/flow.json"
+
+new_case perm-check-wrong-step
+flow_file "$case_dir/flow.json" '{ "do": "launch", "value": "app", "state": "granted" }'
+expect "check: a state on another step is refused" 1 \
+  "step 'launch' does not take \"state\" - only setPermission does" check "$case_dir/flow.json"
+
+# iOS: simctl privacy for what it covers, applesimutils for camera,
+# notifications and health. Written from the documentation, not measured.
+iperm_case(){ ios_case "$1"; mkdir -p "$case_dir/xcrun"
+  printf '%s' '{"platform":"ios","variants":{"app":{"platform":"ios","bundleId":"com.example.app"}}}' > "$case_dir/cfg.json"; }
+run_iperm(){ local f="$1" bin="$2"; run_ios "$f" PATH="$ROOT/tests/fake-sdk/xcrun-bin:$bin$ROOT/tests/fake-sdk/idb-bin:$PATH" \
+  FAKE_XCRUN_DIR="$case_dir/xcrun" YUKTI_VARIANT=app YUKTI_CONFIG="$case_dir/cfg.json"; }
+
+iperm_case ios-perm-privacy
+flow_file "$case_dir/flow.json" '{ "do": "setPermission", "value": "photos", "state": "denied" }'
+run_iperm "$case_dir/flow.json" ""
+begin "setPermission on iOS: photos goes through simctl privacy, denied is revoke"
+status_is 0; has xcrun/log "simctl privacy FAKE-UDID revoke photos com.example.app"
+verdict
+
+iperm_case ios-perm-asu
+flow_file "$case_dir/flow.json" '{ "do": "setPermission", "value": "notifications", "state": "granted" }'
+run_iperm "$case_dir/flow.json" "$ROOT/tests/fake-sdk/applesimutils-bin:"
+begin "setPermission on iOS: notifications go through applesimutils"
+status_is 0; has xcrun/log "applesimutils --byId FAKE-UDID --bundle com.example.app --setPermissions notifications=YES"
+verdict
+
+iperm_case ios-perm-no-asu
+flow_file "$case_dir/flow.json" '{ "do": "setPermission", "value": "camera", "state": "denied" }'
+run_iperm "$case_dir/flow.json" ""
+begin "setPermission on iOS: without applesimutils, camera stops with a hint"
+status_is 1; has out.txt "setPermission: camera on iOS needs applesimutils"; has out.txt "brew install applesimutils"
+verdict
+
+iperm_case ios-perm-asu-refuses
+printf '%s\n' 'Unable to find simulator' > "$case_dir/xcrun/asu-refuses"
+flow_file "$case_dir/flow.json" '{ "do": "setPermission", "value": "camera", "state": "granted" }'
+run_iperm "$case_dir/flow.json" "$ROOT/tests/fake-sdk/applesimutils-bin:"
+begin "setPermission on iOS: a refusal of applesimutils is a failure with its words"
+status_is 1; has out.txt "setPermission: applesimutils refused camera=YES for 'com.example.app': Unable to find simulator"
+verdict
+
+iperm_case ios-perm-unset
+flow_file "$case_dir/flow.json" '{ "do": "setPermission", "value": "location", "state": "unset" }'
+run_iperm "$case_dir/flow.json" ""
+begin "setPermission on iOS: unset is simctl privacy reset"
+status_is 0; has xcrun/log "simctl privacy FAKE-UDID reset location com.example.app"
+verdict
+
+iperm_case ios-perm-refused
+printf '%s\n' 'Invalid service' > "$case_dir/xcrun/privacy-refuses"
+flow_file "$case_dir/flow.json" '{ "do": "setPermission", "value": "motion", "state": "granted" }'
+run_iperm "$case_dir/flow.json" ""
+begin "setPermission on iOS: a refusal of simctl privacy is a failure with its words"
+status_is 1; has out.txt "the simulator refused grant motion for 'com.example.app': Invalid service"
+verdict
+
+iperm_case ios-perm-android-name
+flow_file "$case_dir/flow.json" '{ "do": "setPermission", "value": "android.permission.health.READ_STEPS", "state": "granted" }'
+run_iperm "$case_dir/flow.json" ""
+begin "setPermission on iOS: an Android permission name skips the rest of the flow"
+status_is 0; has out.txt "skipped: platform: 'android.permission.health.READ_STEPS' is an Android permission name, and this run is iOS"
+verdict
+
 # ── turnWheel (#120) ─────────────────────────────────────────────────────────
 new_case wheel-missing-key
 flow_file "$case_dir/flow.json" '{ "do": "turnWheel", "value": -1 }'
