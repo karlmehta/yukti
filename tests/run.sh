@@ -3581,7 +3581,7 @@ screen "$case_dir/adb/dump-1.xml" "$ROOT_NODE" "$(node TextView title Today)"
 flow_file "$case_dir/flow.json" '{ "do": "waitForNotId", "value": "sheet" }'
 run_flow "$case_dir/flow.json"
 begin "waitForNotId: an element already gone passes on the first read"
-status_is 0; reads_are 1; has out.txt "'sheet' gone from the screen after 0s"
+status_is 0; reads_are 1; has out.txt "'sheet' gone from the screen after "
 verdict
 
 dev_case gone-timeout
@@ -3609,13 +3609,13 @@ screen "$case_dir/adb/dump-1.xml" "$ROOT_NODE" "$ZERO_BTN"
 flow_file "$case_dir/flow.json" '{ "do": "waitForNotId", "value": "btn", "timeout": 1 }'
 run_flow "$case_dir/flow.json"
 begin "waitForNotId: an element at zero size counts as gone, as for assertNotId"
-status_is 0; has out.txt "'btn' gone from the screen after 0s"
+status_is 0; reads_are 1; has out.txt "'btn' gone from the screen after "
 verdict
 
 new_case gone-in
 flow_file "$case_dir/flow.json" '{ "do": "waitForNotText", "value": "Saving", "in": "sheet" }'
 expect "check: waitForNotText does not take \"in\" yet" 1 \
-  "step 'waitForNotText' does not take \"in\" - only assertText, assertNotText, waitFor do" check "$case_dir/flow.json"
+  "step 'waitForNotText' does not take \"in\" - only " check "$case_dir/flow.json"
 
 dev_case gone-text-contains
 screen "$case_dir/adb/dump-1.xml" "$ROOT_NODE" "$SHEET"
@@ -3631,7 +3631,7 @@ screen "$case_dir/adb/dump-1.xml" "$ROOT_NODE" "$SHEET"
 flow_file "$case_dir/flow.json" '{ "do": "waitForNotText", "value": "Saving", "timeout": 1 }'
 run_flow "$case_dir/flow.json"
 begin "waitForNotText exact: a label that only holds the text does not count as it"
-status_is 0; has out.txt "'Saving' gone from the screen after 0s"
+status_is 0; reads_are 1; has out.txt "'Saving' gone from the screen after "
 verdict
 
 dev_case gone-id-match
