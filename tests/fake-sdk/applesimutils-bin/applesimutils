@@ -1,0 +1,10 @@
+#!/usr/bin/env python3
+# A stand-in for applesimutils (#51): every call is logged to $FAKE_XCRUN_DIR/log
+# next to the xcrun calls, and the answer is yes - unless $FAKE_XCRUN_DIR has
+# `asu-refuses`: then that goes to stderr and the status is 1.
+import os, sys
+d = os.environ["FAKE_XCRUN_DIR"]
+with open(os.path.join(d, "log"), "a") as fh:
+    fh.write("applesimutils " + " ".join(sys.argv[1:]) + "\n")
+if os.path.exists(os.path.join(d, "asu-refuses")):
+    sys.stderr.write(open(os.path.join(d, "asu-refuses")).read()); sys.exit(1)

@@ -42,6 +42,13 @@
 #   crash          what `logcat -b crash` prints; "hang": never answers;
 #                  "fail": status 1
 #
+# Permissions (#51): `sdk` is what getprop answers for the API level (35 when
+# absent), `requested` the permissions the app's manifest asks for, `perms`
+# their runtime state as the pm calls leave it, `pm-refuses` what pm grant /
+# revoke / *-permission-flags print instead of nothing, and `pm-ignores` a pm
+# that answers nothing and changes nothing. `user10` adds a work profile after
+# User 0, every permission there not granted and not answered.
+#
 # `dumpsys input_method` answers that no keyboard is up, unless the file
 # `keyboard` is there; the escape key (111) removes it.
 import os, sys, time
@@ -95,7 +102,47 @@ elif args[:3] == ["shell", "input", "keyevent"]:
             else: typed = typed[:-1]
     write("typed", typed)
 elif line == "shell getprop ro.build.version.sdk":
-    print("35")
+    print(read("sdk").strip() or "35")
+elif args[:3] == ["shell", "dumpsys", "package"] and len(args) == 4:
+    # The permissions the app asks for (#51), one per line in `requested`, in
+    # the shape dumpsys prints them, and their runtime state from `perms`: one
+    # "<name> <granted true|false> <flags>" line each, kept by the pm calls.
+    st = {}
+    for l in read("perms").splitlines():
+        f = l.split()
+        if len(f) >= 2: st[f[0]] = (f[1], f[2] if len(f) > 2 else "")
+    print("Packages:\n  Package [%s] (abc):\n    requested permissions:" % args[3])
+    for p in read("requested").split():
+        print("      " + p)
+    print("    install permissions:\n      android.permission.INTERNET: granted=true")
+    print("    User 0: ceDataInode=1 installed=true\n      runtime permissions:")
+    for p in read("requested").split():
+        if p == "android.permission.INTERNET": continue
+        g, fl = st.get(p, ("false", ""))
+        print("        %s: granted=%s, flags=[ %s]" % (p, g, (fl.replace(",", "|") + " ") if fl else ""))
+    if has("user10"):
+        print("    User 10: ceDataInode=2 installed=true\n      runtime permissions:")
+        for p in read("requested").split():
+            if p != "android.permission.INTERNET": print("        %s: granted=false, flags=[ ]" % p)
+elif len(args) == 2 and args[0] == "shell" and args[1].startswith("pm ") and ("permission-flags" in args[1] or "pm grant " in args[1] or "pm revoke " in args[1]):
+    # A pm refusal is words on stdout (`pm-refuses`), as on a real device;
+    # `pm-ignores` answers nothing and changes nothing - the case a read back
+    # exists for. Otherwise the calls change `perms`.
+    sys.stdout.write(read("pm-refuses"))
+    if not has("pm-refuses") and not has("pm-ignores"):
+        st = {}
+        for l in read("perms").splitlines():
+            f = l.split()
+            if len(f) >= 2: st[f[0]] = [f[1], set(f[2].split(",")) if len(f) > 2 and f[2] else set()]
+        for cmd in args[1].split(";"):
+            f = cmd.split()
+            if len(f) < 4: continue
+            e = st.setdefault(f[3], ["false", set()])
+            if f[1] == "grant": e[0] = "true"
+            elif f[1] == "revoke": e[0] = "false"
+            elif f[1] == "set-permission-flags": e[1] |= {x.upper().replace("-", "_") for x in f[4:]}
+            elif f[1] == "clear-permission-flags": e[1] -= {x.upper().replace("-", "_") for x in f[4:]}
+        write("perms", "".join("%s %s %s\n" % (k, v[0], ",".join(sorted(v[1]))) for k, v in st.items()))
 elif args[:3] == ["shell", "input", "tap"]:
     sys.exit(1 if has("tap-fails") else 0)
 elif args[:2] == ["exec-out", "screencap"]:
