@@ -1859,6 +1859,18 @@ press_key(){ local name="${1:-}" u
 # own button says "Delete") and at least nine one-character buttons (a number
 # pad has ten). With "geom" it also prints where to drag to close it: the
 # middle of the keys, and the top of their highest row.
+# A numeric keypad labels its key "Delete", capital D (iPhone 17 Pro simulator,
+# iOS 26.5, #145), so the lower-case rule missed it and hideKeyboard said no
+# keyboard was up with the keypad over half the form. "Delete" counts only next
+# to the shape of a keypad: the ten digits as buttons, of one height give or
+# take 2 points, all in the bottom 40% of the window, and that "Delete" in the
+# same band. An app screen with a "Delete" button and a row of one-character
+# buttons of its own does not have that shape. The window is taken as find_el
+# takes it - idb also lists elements parked outside it, and the lowest of them
+# is not the bottom of the screen. Two limits of the shape, known and not
+# solved: an app that draws its own PIN pad - ten digits and a "Delete" low on
+# the screen - reads as a keyboard, and a keypad in landscape, taller than 40%
+# of the window, does not.
 ikb_shown(){ paths; ui | "$PY" -c '
 import json,sys
 try: els=json.loads(sys.stdin.read())
@@ -1867,13 +1879,32 @@ def frame(e):
     b=e.get("frame") or {}
     g=lambda *k: float(next((b[n] for n in k if n in b), 0) or 0)
     return g("x","X"), g("y","Y"), g("width","Width"), g("height","Height")
-kb=None; keys=[]; delete=False
+kb=None; keys=[]; delete=False; caps=[]; digs=[]; scr=None; rank=(0,-1.0)
 for e in els:
     t=(str(e.get("type") or "")+" "+str(e.get("role_description") or "")).lower()
     label=str(e.get("AXLabel") or "")
-    if "keyboard" in t: kb=frame(e)
+    f=frame(e)
+    if f[2]>0 and f[3]>0:
+        r=(1 if ("application" in t or "window" in t) else 0, f[2]*f[3])
+        if r>rank: rank=r; scr=f
+    if "keyboard" in t: kb=f
     if "button" in t and label=="delete": delete=True
-    if "button" in t and len(label)==1: keys.append(frame(e))
+    if "button" in t and label=="Delete": caps.append(f)
+    if "button" in t and len(label)==1: keys.append(f)
+    if "button" in t and len(label)==1 and label.isdigit(): digs.append((label,f))
+def keypad():
+    if not caps or scr is None: return False
+    top=scr[1]+scr[3]*0.6; end=scr[1]+scr[3]
+    band=lambda f: top<=f[1] and f[1]+f[3]<=end+1
+    pad=dict((l,f) for l,f in digs if band(f))
+    if len(pad)<10: return False
+    hs=[f[3] for f in pad.values()]
+    if max(hs)-min(hs)>2 or not any(band(f) for f in caps): return False
+    return list(pad.values())+[f for f in caps if band(f)]
+# On a keypad the drag is measured from its keys alone: a one-character button
+# of the app higher up would move the top of the keys onto the form.
+pk=keypad()
+if pk: delete=True; keys=pk
 if kb is None and not (delete and len(keys)>=9): sys.exit(1)
 if len(sys.argv)>1:
     x,y,w,h = kb if kb else (min(k[0] for k in keys), min(k[1] for k in keys),

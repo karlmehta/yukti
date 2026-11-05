@@ -797,6 +797,54 @@ lacks out.txt "a drag did not"; lacks out.txt "after a drag"
 lacks idb/log "ui swipe"; lacks idb/log "ui key"
 verdict
 
+KAPP='{"type":"Application","role_description":"application","AXLabel":"App","frame":{"x":0,"y":0,"width":402,"height":874}}'
+# A numeric keypad labels its key "Delete" with a capital D (#145): it is a
+# keyboard when the ten digits around it have the shape of a keypad.
+ios_case ios-hide-keypad
+: > "$case_dir/idb/keypad"; : > "$case_dir/idb/drag-closes"
+tree "$case_dir/idb/desc-1.json" "$KAPP" "$(itext amount 200 '"12"')"
+flow_file "$case_dir/flow.json" '{ "do": "hideKeyboard" }'
+run_ios "$case_dir/flow.json"
+begin "hideKeyboard on iOS: a numeric keypad with its capital Delete is a keyboard, and the drag closes it"
+status_is 0; has out.txt "keyboard closed (drag)"; has idb/log "ui swipe"; lacks out.txt "no keyboard was up"
+verdict
+
+# idb also lists elements parked below the window: the bottom of the screen is
+# the window's, not the lowest frame in the tree.
+ios_case ios-hide-keypad-parked
+: > "$case_dir/idb/keypad"; : > "$case_dir/idb/drag-closes"
+tree "$case_dir/idb/desc-1.json" "$KAPP" "$(itext amount 200 '"12"')" \
+  '{"type":"Button","role_description":"button","AXLabel":"Later","frame":{"x":0,"y":2000,"width":100,"height":40}}'
+flow_file "$case_dir/flow.json" '{ "do": "hideKeyboard" }'
+run_ios "$case_dir/flow.json"
+begin "hideKeyboard on iOS: an element parked below the window does not hide the keypad"
+status_is 0; has out.txt "keyboard closed (drag)"; lacks out.txt "no keyboard was up"
+verdict
+
+# A one-character button of the app above the form does not move the drag:
+# it is measured from the keypad's keys, whose top is at y 583.
+ios_case ios-hide-keypad-app-letter
+: > "$case_dir/idb/keypad"; : > "$case_dir/idb/drag-closes"
+tree "$case_dir/idb/desc-1.json" "$KAPP" "$(itext amount 200 '"12"')" \
+  '{"type":"Button","role_description":"button","AXLabel":"A","frame":{"x":10,"y":150,"width":30,"height":40}}'
+flow_file "$case_dir/flow.json" '{ "do": "hideKeyboard" }'
+run_ios "$case_dir/flow.json"
+begin "hideKeyboard on iOS: the drag over a keypad starts above its keys, not above an app's letter button"
+status_is 0; has out.txt "keyboard closed (drag)"; has idb/log "200 433 200 523"
+verdict
+
+# The same buttons drawn by an app in the top half of its screen: a "Delete"
+# and ten digits of its own are not a keypad.
+ios_case ios-hide-keypad-app-digits
+tree "$case_dir/idb/desc-1.json" "$KAPP" \
+  $(for d in 1 2 3 4 5 6 7 8 9 0; do printf '{"type":"Button","role_description":"button","AXLabel":"%s","frame":{"x":%d,"y":100,"width":30,"height":40}} ' "$d" $(( d * 36 )); done) \
+  '{"type":"Button","role_description":"button","AXLabel":"Delete","frame":{"x":40,"y":300,"width":120,"height":40}}'
+flow_file "$case_dir/flow.json" '{ "do": "hideKeyboard" }'
+run_ios "$case_dir/flow.json"
+begin "hideKeyboard on iOS: an app's Delete and digit buttons high on the screen are not a keypad"
+status_is 0; has out.txt "no keyboard was up"; lacks idb/log "ui swipe"
+verdict
+
 ios_case ios-hide-keyboard-none
 tree "$case_dir/idb/desc-1.json" "$(itext email 200 '"a@b.c"')" \
   '{"type":"Button","role_description":"button","AXLabel":"Delete","frame":{"x":40,"y":300,"width":120,"height":40}}' \
