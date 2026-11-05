@@ -4152,5 +4152,131 @@ begin "swipeId on iOS: no answer from describe-point swipes as before, with a wa
 status_is 0; has out.txt "could not read what is under 'row-1' at 308,222 - swiping as before"; has idb/log "ui swipe"
 verdict
 
+# ── tapId "at": a point inside the element (#129) ────────────────────────────
+new_case at-wrong-step
+flow_file "$case_dir/flow.json" '{ "do": "tapText", "value": "Volume", "at": { "x": "50%" } }'
+expect "check: at on a step other than tapId is refused" 1 \
+  "step 1 'tapText': step 'tapText' does not take \"at\" - only tapId does" check "$case_dir/flow.json"
+
+for a in '{ "x": 50 }' '{ "x": "50" }' '{ "x": "50px" }' '{ "x": "12.5%" }' '{ "x": "-5%" }' '{ "x": "\u00b2%" }'; do
+  new_case at-not-share
+  flow_file "$case_dir/flow.json" "{ \"do\": \"tapId\", \"value\": \"track\", \"at\": $a }"
+  expect "check: at $a is refused - a whole share written with %" 1 \
+    "it has to be a whole share of the element written with %, from \"0%\" to \"100%\"" check "$case_dir/flow.json"
+done
+
+new_case at-over
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "track", "at": { "y": "101%" } }'
+expect "check: a share over 100% is refused" 1 "a point inside the element is at most \"100%\"" check "$case_dir/flow.json"
+
+new_case at-key
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "track", "at": { "left": "50%" } }'
+expect "check: a part of a point other than x and y is refused" 1 "'left' is not a part of a point - \"at\" takes x and y" check "$case_dir/flow.json"
+
+for a in '{}' '"50%"' '[50]'; do
+  new_case at-shape
+  flow_file "$case_dir/flow.json" "{ \"do\": \"tapId\", \"value\": \"track\", \"at\": $a }"
+  expect "check: at $a is refused - it is an object with x or y" 1 "\"at\" is a point inside the element as shares of its box" check "$case_dir/flow.json"
+done
+
+new_case at-var
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "track", "at": { "x": "${STOP}" } }'
+expect "check: a share may come from a variable" 0 " - 1 steps" env STOP=50% "$YUKTI" flow --check "$case_dir/flow.json"
+
+# A track 1000x80 at 40,1000.
+dev_case at-middle
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(bnode track 40 1000 1040 1080)")"
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "track", "at": { "x": "50%" } }' \
+  '{ "do": "tapId", "value": "track", "at": { "x": "25%", "y": "25%" } }' \
+  '{ "do": "tapId", "value": "track", "at": { "x": "0%" } }' \
+  '{ "do": "tapId", "value": "track", "at": { "x": "100%" } }' \
+  '{ "do": "tapId", "value": "track", "at": { "x": "07%" } }'
+run_flow "$case_dir/flow.json"
+begin "tapId at: shares of the box from its left and top edge, the other axis at the centre, 100% the last pixel inside"
+status_is 0; fake_used; taps_are "540 1040|290 1020|40 1040|1039 1040|110 1040|"
+has out.txt "tap id 'track' at 50% x 50% of 1000x80: 540,1040"
+verdict
+
+dev_case at-plain
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(bnode track 40 1000 1040 1080)")"
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "track" }'
+run_flow "$case_dir/flow.json"
+begin "tapId without at taps the centre, as before"
+status_is 0; taps_are "540 1040|"; lacks out.txt "% x "
+verdict
+
+# 2000 wide on a 1080 screen: its centre is on the screen, 90% of it is not.
+dev_case at-off-screen
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(bnode track 0 1000 2000 1080)")"
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "track", "at": { "x": "90%" } }'
+run_flow "$case_dir/flow.json"
+begin "tapId at: a point off the screen fails the step, nothing tapped"
+status_is 1; has out.txt "'track' at 90% x 50% is 1800,1040, off the screen [0,0][1080,2400] - not tapped"; taps_are ""
+verdict
+
+dev_case at-miss
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(bnode track 40 1000 1040 1080)")"
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "slider", "at": { "x": "50%" } }'
+run_flow "$case_dir/flow.json"
+begin "tapId at: a missing element in the words of tapId"
+status_is 1; has out.txt "no element with id 'slider'"; taps_are ""
+verdict
+
+dev_case at-cli
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(bnode track 40 1000 1040 1080)")"
+expect "tap-id by hand with a share taps that point" 0 "tap id 'track' at 75% x 50% of 1000x80: 790,1040" \
+  env ANDROID_HOME="$ROOT/tests/fake-sdk" YUKTI_PLATFORM=android YUKTI_HELPER=0 FAKE_ADB_DIR="$case_dir/adb" TMPDIR="$case_dir/tmp" "$YUKTI" tap-id track 75%
+
+dev_case at-cli-bad
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(bnode track 40 1000 1040 1080)")"
+for a in half 50; do
+  expect "tap-id by hand with '$a' is refused - a share is written with %" 1 "tapId: a point is a whole share of the element written with %, for instance 50%, got '$a'" \
+    env ANDROID_HOME="$ROOT/tests/fake-sdk" YUKTI_PLATFORM=android YUKTI_HELPER=0 FAKE_ADB_DIR="$case_dir/adb" TMPDIR="$case_dir/tmp" "$YUKTI" tap-id track "$a"
+done
+expect "tap-id by hand with a share over 100 is refused" 1 "tapId: a point is a whole share of the element from 0 to 100, got '150'" \
+  env ANDROID_HOME="$ROOT/tests/fake-sdk" YUKTI_PLATFORM=android YUKTI_HELPER=0 FAKE_ADB_DIR="$case_dir/adb" TMPDIR="$case_dir/tmp" "$YUKTI" tap-id track 150%
+
+dev_case at-cli-y
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(bnode track 40 1000 1040 1080)")"
+expect "tap-id by hand with both shares" 0 "tap id 'track' at 75% x 25% of 1000x80: 790,1020" \
+  env ANDROID_HOME="$ROOT/tests/fake-sdk" YUKTI_PLATFORM=android YUKTI_HELPER=0 FAKE_ADB_DIR="$case_dir/adb" TMPDIR="$case_dir/tmp" "$YUKTI" tap-id track 75% 25%
+
+dev_case at-y-only
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(bnode track 40 1000 1040 1080)")"
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "track", "at": { "y": "0%" } }' '{ "do": "tapId", "value": "track", "at": { "y": "100%" } }'
+run_flow "$case_dir/flow.json"
+begin "tapId at: y alone keeps x at the centre, 100% is the last row inside"
+status_is 0; taps_are "540 1000|540 1079|"
+verdict
+
+# A skipped step carries the point in its record like any other field: the
+# step after it reads its own fields, not the leftovers of the skipped one.
+dev_case at-skipped
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(bnode track 40 1000 1040 1080)")"
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "track", "at": { "x": "0%" }, "when": { "visibleId": "nothing" } }' '{ "do": "tapId", "value": "track" }'
+run_flow "$case_dir/flow.json"
+begin "tapId at: a step skipped by its condition taps nothing, the next one its own centre"
+status_is 0; taps_are "540 1040|"; has out.txt "skipped"
+verdict
+
+# iOS: istate is 360x44 at 20,200 - 25% of the width is x 110, the centre y 222.
+ios_case ios-at
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$(istate track Slider 200 "" '[]')"
+ipoint track 20 200 360 44
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "track", "at": { "x": "25%" } }'
+run_ios "$case_dir/flow.json"
+begin "tapId at on iOS: the point inside the frame, in points"
+status_is 0; has idb/log "ui tap --udid FAKE-UDID 110 222"
+verdict
+
+ios_case ios-at-thumb
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$(istate track Slider 200 "" '[]')"
+ipoint thumb 95 200 30 44
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "track", "at": { "x": "25%" } }'
+run_ios "$case_dir/flow.json"
+begin "tapId at on iOS: a thumb with its own id over the point fails as covered, nothing tapped"
+status_is 1; has out.txt "'track' at 110,222 is covered by thumb"; lacks idb/log "ui tap"; lacks out.txt "tap id 'track' at 25%"
+verdict
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

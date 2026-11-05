@@ -286,6 +286,20 @@ wins - an element with no size is skipped.
 {"do":"assertId","value":"weight_card"}
 ```
 
+`tapId` taps the centre of the element unless the step says where: `"at"` names
+a point inside it as whole shares of its width and height, from its left and top
+edge. A slider with stops often has one id on the whole track, and its middle
+stop is reachable only as a point on the track - a share, not pixels, so the same
+flow sets the same stop on any screen size. Either share left out stays at the
+centre, `100%` is the last pixel inside, and a point off the screen fails the
+step. On iOS the point is checked like the centre is: a thumb with an id of its
+own over it fails the step as covered, so tap the thumb by its id or the track
+away from it.
+
+```json
+{"do":"tapId","value":"slider-track","at":{"x":"50%"}}
+```
+
 `assertBox` and `assertBoxId` check the geometry of the element a locator
 finds - the numbers the lookup reads to decide whether it is on the screen and
 then drops. A touch target that shrank below the tappable minimum, a header
