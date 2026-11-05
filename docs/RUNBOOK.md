@@ -182,9 +182,35 @@ half is written from the code and not measured, and one difference is known:
 uiautomator clips a child's bounds to its parent, idb reports a frame as it is,
 so on iOS a label wider than its container may read as "not in the element".
 
+A link that is only a part of a longer text - "Terms of Use" in "By
+continuing you agree to the Terms of Use and the Privacy Policy." - is tapped
+with `tapText` and `"in"` (#146):
+
+```json
+{"do":"tapText","value":"Terms of Use","in":"consent-note"}
+```
+
+The tap lands on the link's own element inside the one named by id, never on
+the centre of the note, which may or may not be the link. The link needs an
+element of its own, and the app gives it one: in React Native a nested
+`<Text onPress>` is one with its parent until it carries
+`accessibilityRole="link"` (measured on Android 15: without the role the dump
+holds one TextView and no node for the link). With the role, by the React
+Native source and not measured yet, Android lists the link as a virtual node
+with its own bounds and the link's words as `content-desc`, and iOS as an
+element with its own frame. Without it the step fails with `has no element of its own to
+tap` instead of tapping the centre. With `"in"` the value is the link's whole
+words: an element counts when its whole text or label is the value, and one
+that only contains it is a longer text - the note, or a text inside the view
+that carries the id. Two links with the same words in one element go to the
+first in the tree, as equal matches always do; two different links are two
+steps with their own words. The step reads the screen once and does not
+scroll, like `tapId`, so it does not take `"timeout"`.
+
 The locator verbs - `tapText`, `optionalTapText`, `scrollToText` - are not
 assertions, and their matching is unchanged: they still match a substring and
-fold case, and they rank the candidates. What `scrollToText` does on a miss is
+fold case, and they rank the candidates - except `tapText` with `"in"`, above,
+which takes only the whole words. What `scrollToText` does on a miss is
 new, and it is below. Naming a button is not a statement about its
 capitalisation; asserting one is.
 
@@ -297,12 +323,13 @@ inside a verb could stop a run - `adb` refusing a tap, a launch of a package
 that is not installed, a `clearText` on a dead device all reported PASS, and the
 JUnit file said `failures="0"`.
 
-Seventeen more ways a flow stops, the first four of them typos that used to pass:
+Nineteen more ways a flow stops, the first four of them typos that used to pass:
 
 - a step name the runner does not know;
 - a `"match"` value that is neither `exact` nor `contains`;
 - a `"match"` key on a step that does not take one;
-- an `"in"` key on a step other than `assertText`, `assertNotText` and `waitFor`, or one that is empty;
+- an `"in"` key on a step other than `assertText`, `assertNotText`, `waitFor` and `tapText`, or one that is empty;
+- a `tapText` with both `"in"` and `"timeout"` - with `"in"` it does not scroll;
 - a `wait` whose value is not a number - `sleep` refuses it;
 - a `"value"` on a `hideKeyboard`, which has nothing to read one with;
 - a `pressKey` naming a key the tool does not have;
@@ -582,7 +609,8 @@ step's `"timeout"` (seconds, default 5). The element appearing, or a swipe that
 moves the list again, ends the wait and the search goes on. Nothing within the
 wait is the end. A real end costs the wait once per step; an element already on
 the screen at the end, or one the swipes already took out of view, is not
-waited for. `tapText` searches the same way and takes the same `"timeout"`.
+waited for. `tapText` searches the same way and takes the same `"timeout"`;
+with `"in"` it does not search at all and takes no timeout (#146).
 Two minutes of swiping is the safety net for a list that is still moving. A screen with no
 list in its dump keeps the old eight swipes down the middle. On iOS all of this
 is written, not measured - no Mac.

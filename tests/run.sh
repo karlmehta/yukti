@@ -2913,9 +2913,14 @@ expect "check: a state that is not true or false is refused" 1 \
   "step 1 'assertId': \"checked\" is true or false, got \"false\"" check "$case_dir/flow.json"
 
 new_case in-wrong-step
-flow_file "$case_dir/flow.json" '{ "do": "tapText", "value": "Ada", "in": "greeting" }'
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "Ada", "in": "greeting" }'
 expect "check: in on a step that does not take it is refused" 1 \
-  "step 1 'tapText': step 'tapText' does not take \"in\" - only assertText, assertNotText, waitFor do" check "$case_dir/flow.json"
+  "step 1 'tapId': step 'tapId' does not take \"in\" - only assertText, assertNotText, waitFor, tapText do" check "$case_dir/flow.json"
+
+new_case tap-in-timeout
+flow_file "$case_dir/flow.json" '{ "do": "tapText", "value": "Terms of Use", "in": "consent-note", "timeout": 5 }'
+expect "check: tapText with in does not scroll, so a timeout with it is refused" 1 \
+  "step 1 'tapText' takes \"in\" or \"timeout\", not both" check "$case_dir/flow.json"
 
 new_case in-empty
 flow_file "$case_dir/flow.json" '{ "do": "assertText", "value": "Ada", "in": " " }'
@@ -2931,6 +2936,156 @@ new_case in-unset-var
 flow_file "$case_dir/flow.json" '{ "do": "assertText", "value": "Ada", "in": "${YUKTI_TEST_IN}" }'
 expect "check: an in with a variable that is not set is refused" 1 \
   "\$YUKTI_TEST_IN is not set" env -u YUKTI_TEST_IN "$YUKTI" flow --check "$case_dir/flow.json"
+
+# ── a link that is part of a longer text: tapText with "in" (#146) ─────────
+# A note whose last words are a link. React Native gives the nested Text with
+# accessibilityRole="link" a virtual node of its own: no resource id, the link's
+# words as content-desc, its own bounds, clickable - by the React Native source,
+# not measured yet. Without the role the note is one TextView and the link has
+# no bounds at all (measured, Android 15).
+# lnode <desc> <x1,y1,x2,y2> - such a virtual node.
+lnode(){ printf '<node index="0" text="" resource-id="" class="android.view.View" package="com.example" content-desc="%s" checkable="false" checked="false" clickable="true" enabled="true" focusable="true" focused="false" scrollable="false" long-clickable="false" password="false" selected="false" bounds="[%s][%s]" />' \
+  "$1" "$(printf '%s' "$2" | cut -d, -f1-2)" "$(printf '%s' "$2" | cut -d, -f3-4)"; }
+LN_TEXT="By continuing you agree to the Terms of Use and the Privacy Policy."
+LN_NOTE="$(tnode consent-note "$LN_TEXT" 40,1000,1040,1200)"
+LN_LINK="$(lnode "Terms of Use" 400,1120,900,1180)"
+
+dev_case tap-in-link
+screen "$case_dir/adb/dump-1.xml" "$IN_ROOT" "$LN_NOTE" "$LN_LINK"
+flow_file "$case_dir/flow.json" '{ "do": "tapText", "value": "Terms of Use", "in": "consent-note" }'
+run_flow "$case_dir/flow.json"
+begin "tapText in: the link's own node inside the note takes the tap, not the note's centre"
+status_is 0; has out.txt "tap 'Terms of Use' in 'consent-note'"; has adb/log "input tap 650 1150"; lacks adb/log "input tap 540 1100"
+verdict
+
+# The node order does not decide it: the link listed before the note still wins.
+dev_case tap-in-link-first
+screen "$case_dir/adb/dump-1.xml" "$IN_ROOT" "$LN_LINK" "$LN_NOTE"
+flow_file "$case_dir/flow.json" '{ "do": "tapText", "value": "terms of use", "in": "consent-note" }'
+run_flow "$case_dir/flow.json"
+begin "tapText in: the link wins whatever the order of the nodes, case folded as tapText always does"
+status_is 0; has adb/log "input tap 650 1150"
+verdict
+
+# The false green of the issue: without "in" and without the link's node the
+# centre of the note is tapped and the step passes.
+dev_case tap-in-control
+screen "$case_dir/adb/dump-1.xml" "$IN_ROOT" "$LN_NOTE"
+flow_file "$case_dir/flow.json" '{ "do": "tapText", "value": "Terms of Use" }'
+run_flow "$case_dir/flow.json"
+begin "tapText in: without it, the words inside the note tap the note's centre (the case for the key)"
+status_is 0; has adb/log "input tap 540 1100"
+verdict
+
+dev_case tap-in-no-node
+screen "$case_dir/adb/dump-1.xml" "$IN_ROOT" "$LN_NOTE"
+flow_file "$case_dir/flow.json" '{ "do": "tapText", "value": "Terms of Use", "in": "consent-note" }'
+run_flow "$case_dir/flow.json"
+begin "tapText in: words with no element of their own fail by name, nothing is tapped"
+status_is 1; has out.txt "'Terms of Use' is part of a longer text in the element with id 'consent-note' and has no element of its own to tap"
+has out.txt 'accessibilityRole="link"'; lacks adb/log "input tap"
+verdict
+
+dev_case tap-in-elsewhere
+screen "$case_dir/adb/dump-1.xml" "$IN_ROOT" "$(tnode consent-note "By continuing you agree." 40,1000,1040,1200)" "$(lnode "Terms of Use" 400,1520,900,1580)"
+flow_file "$case_dir/flow.json" '{ "do": "tapText", "value": "Terms of Use", "in": "consent-note" }'
+run_flow "$case_dir/flow.json"
+begin "tapText in: the same words outside the element do not count"
+status_is 1; has out.txt "no element matching 'Terms of Use' on the screen in the element with id 'consent-note'"; lacks adb/log "input tap"
+verdict
+
+dev_case tap-in-no-id
+screen "$case_dir/adb/dump-1.xml" "$IN_ROOT" "$(tnode "" "$LN_TEXT" 40,1000,1040,1200)" "$LN_LINK"
+flow_file "$case_dir/flow.json" '{ "do": "tapText", "value": "Terms of Use", "in": "consent-note" }'
+run_flow "$case_dir/flow.json"
+begin "tapText in: a missing element is named in the words of tapId"
+status_is 1; has out.txt "no element with id 'consent-note'"; lacks adb/log "input tap"
+verdict
+
+# The element is a candidate when its whole text is the value: a button inside
+# a card, named by the card, is still tapped.
+dev_case tap-in-whole
+screen "$case_dir/adb/dump-1.xml" "$IN_ROOT" "$(tnode consent-note "Terms of Use" 40,1000,1040,1200)"
+flow_file "$case_dir/flow.json" '{ "do": "tapText", "value": "Terms of Use", "in": "consent-note" }'
+run_flow "$case_dir/flow.json"
+begin "tapText in: the element itself is tapped when its whole text is the value"
+status_is 0; has adb/log "input tap 540 1100"
+verdict
+
+# The id on a view around the text, not on the text: the text inside it is a
+# longer text all the same, and its centre is not the link.
+dev_case tap-in-wrapper
+screen "$case_dir/adb/dump-1.xml" "$IN_ROOT" "$(tnode consent-note "" 20,980,1060,1220)" "$(tnode "" "$LN_TEXT" 40,1000,1040,1200)"
+flow_file "$case_dir/flow.json" '{ "do": "tapText", "value": "Terms of Use", "in": "consent-note" }'
+run_flow "$case_dir/flow.json"
+begin "tapText in: an id on a view around the text does not turn the text's centre into the link"
+status_is 1; has out.txt "has no element of its own to tap"; lacks adb/log "input tap"
+verdict
+
+# The id on a view around the text, and the link has its node: the link is tapped.
+dev_case tap-in-wrapper-link
+screen "$case_dir/adb/dump-1.xml" "$IN_ROOT" "$(tnode consent-note "" 20,980,1060,1220)" "$(tnode "" "$LN_TEXT" 40,1000,1040,1200)" "$LN_LINK"
+flow_file "$case_dir/flow.json" '{ "do": "tapText", "value": "Terms of Use", "in": "consent-note" }'
+run_flow "$case_dir/flow.json"
+begin "tapText in: an id on a view around the text, the link inside it takes the tap"
+status_is 0; has adb/log "input tap 650 1150"
+verdict
+
+# Two links with the same words: the first in the tree, as equal matches always go.
+dev_case tap-in-tie
+screen "$case_dir/adb/dump-1.xml" "$IN_ROOT" "$LN_NOTE" "$(lnode "Terms of Use" 60,1020,360,1080)" "$LN_LINK"
+flow_file "$case_dir/flow.json" '{ "do": "tapText", "value": "Terms of Use", "in": "consent-note" }'
+run_flow "$case_dir/flow.json"
+begin "tapText in: of two links with the same words the first in the tree takes the tap"
+status_is 0; has adb/log "input tap 210 1050"; lacks adb/log "input tap 650 1150"
+verdict
+
+# The link has its node and the node has no size: not a missing role.
+dev_case tap-in-zero-link
+screen "$case_dir/adb/dump-1.xml" "$IN_ROOT" "$LN_NOTE" "$(lnode "Terms of Use" 400,1120,400,1120)"
+flow_file "$case_dir/flow.json" '{ "do": "tapText", "value": "Terms of Use", "in": "consent-note" }'
+run_flow "$case_dir/flow.json"
+begin "tapText in: a link node of no size is not on the screen, and the message does not blame the role"
+status_is 1; has out.txt "no element matching 'Terms of Use' on the screen in the element with id 'consent-note'"; lacks out.txt "accessibilityRole"; lacks adb/log "input tap"
+verdict
+
+# iOS: the link is an element with its own frame (RCTParagraphComponentAccessibilityProvider).
+# Written from the React Native source, not measured on a simulator yet.
+ilnote='{"type":"StaticText","role_description":"text","AXUniqueId":"consent-note","AXLabel":"By continuing you agree to the Terms of Use and the Privacy Policy.","frame":{"x":20,"y":500,"width":350,"height":80}}'
+illink='{"type":"Link","role_description":"link","AXUniqueId":null,"AXLabel":"Terms of Use","frame":{"x":150,"y":550,"width":160,"height":20}}'
+iroot='{"type":"Application","role_description":"application","AXUniqueId":null,"AXLabel":"App","frame":{"x":0,"y":0,"width":402,"height":874}}'
+
+ios_case ios-tap-in-link
+tree "$case_dir/idb/desc-1.json" "$iroot" "$ilnote" "$illink"
+flow_file "$case_dir/flow.json" '{ "do": "tapText", "value": "Terms of Use", "in": "consent-note" }'
+run_ios "$case_dir/flow.json"
+begin "tapText in on iOS: the link's own element takes the tap"
+status_is 0; has idb/log "ui tap --udid FAKE-UDID 230 560"
+verdict
+
+ios_case ios-tap-in-no-node
+tree "$case_dir/idb/desc-1.json" "$iroot" "$ilnote"
+flow_file "$case_dir/flow.json" '{ "do": "tapText", "value": "Terms of Use", "in": "consent-note" }'
+run_ios "$case_dir/flow.json"
+begin "tapText in on iOS: words with no element of their own fail by name"
+status_is 1; has out.txt "has no element of its own to tap"; lacks idb/log "ui tap "
+verdict
+
+ios_case ios-tap-in-wrapper
+tree "$case_dir/idb/desc-1.json" "$iroot" '{"type":"Other","role_description":"group","AXUniqueId":"consent-note","AXLabel":null,"frame":{"x":10,"y":490,"width":370,"height":100}}' "$(printf '%s' "$ilnote" | sed 's/"AXUniqueId":"consent-note"/"AXUniqueId":null/')"
+flow_file "$case_dir/flow.json" '{ "do": "tapText", "value": "Terms of Use", "in": "consent-note" }'
+run_ios "$case_dir/flow.json"
+begin "tapText in on iOS: an id on a view around the text does not turn the text's centre into the link"
+status_is 1; has out.txt "has no element of its own to tap"; lacks idb/log "ui tap "
+verdict
+
+ios_case ios-tap-in-zero-link
+tree "$case_dir/idb/desc-1.json" "$iroot" "$ilnote" '{"type":"Link","role_description":"link","AXUniqueId":null,"AXLabel":"Terms of Use","frame":{"x":150,"y":550,"width":0,"height":0}}'
+flow_file "$case_dir/flow.json" '{ "do": "tapText", "value": "Terms of Use", "in": "consent-note" }'
+run_ios "$case_dir/flow.json"
+begin "tapText in on iOS: a link of no size is not on the screen, and the message does not blame the role"
+status_is 1; has out.txt "no element matching 'Terms of Use' on the screen in the element with id 'consent-note'"; lacks out.txt "accessibilityRole"; lacks idb/log "ui tap "
+verdict
 
 # ── turnWheel (#120) ─────────────────────────────────────────────────────────
 new_case wheel-missing-key

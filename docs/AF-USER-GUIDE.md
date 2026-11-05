@@ -118,7 +118,7 @@ A flow is `{ "name": "...", "steps": [ ... ] }`. Common step verbs:
 
 | Verb | Meaning |
 |---|---|
-| `{"do":"tapText","value":"Sign In"}` | tap an element by its visible label (preferred — resilient) |
+| `{"do":"tapText","value":"Sign In"}` | tap an element by its visible label (preferred — resilient). Add `"in":"<id>"` to tap a link that is part of a longer text: the element inside that one whose whole text is the value is tapped, with one read and no scroll, so no `"timeout"`; words that are only part of a longer text fail (the app has to mark the link with `accessibilityRole="link"`) |
 | `{"do":"optionalTapText","value":"Skip"}` | tap if present, don't fail if absent |
 | `{"do":"type","value":"165"}` | type into the focused field (`${TEST_EMAIL}` / `${TEST_PASSWORD}` inject creds) |
 | `{"do":"type","value":"12a!","shows":"12"}` | type into a field that filters its input; the read-back checks what the field `shows`, not the value sent |
