@@ -377,6 +377,25 @@ status_is 0; typed_is "$VALUE"
 has out.txt "attempt 1 lost characters"; has out.txt "22 characters arrived on attempt 2"
 verdict
 
+# A value with a " in it: uiautomator quotes such an attribute with ' (the fake
+# does what the device does), and a reader of "..." alone saw no text at all -
+# "arrived 0 of 16 characters" after three attempts (#100).
+dev_case type-double-quote
+screen "$case_dir/adb/dump-1.xml" "$(field email true 100,500,900,600)"
+flow_file "$case_dir/flow.json" '{ "do": "type", "value": "${TEST_VALUE}" }'
+run_flow "$case_dir/flow.json" TEST_VALUE='Qa&Probe"mask 42'
+begin "type: a value with a double quote is read back from its single-quoted attribute"
+status_is 0; reads_are 2; typed_is 'Qa&Probe"mask 42'; lacks out.txt "lost characters"
+verdict
+
+dev_case assert-double-quote
+screen "$case_dir/adb/dump-1.xml" "$(node TextView quote x | sed "s/ text=\"x\"/ text='Say \"hi\"'/; s/ content-desc=\"x\"/ content-desc=''/")"
+flow_file "$case_dir/flow.json" '{ "do": "assertText", "value": "Say \"hi\"" }' '{ "do": "tapText", "value": "Say \"hi\"" }'
+run_flow "$case_dir/flow.json"
+begin "assertText and tapText: a label with a double quote is found in its single-quoted attribute"
+status_is 0; has out.txt "assert (exact): 'Say \"hi\"' on screen"; has adb/log "input tap"
+verdict
+
 # "shows" (#128): a field that filters what is typed holds less than was sent.
 dev_case type-shows
 screen "$case_dir/adb/dump-1.xml" "$(field amount true 100,500,900,600)"
@@ -2976,6 +2995,19 @@ flow_file "$case_dir/flow.json" '{ "do": "turnWheel", "wheel": 2, "value": 2 }'
 run_flow "$case_dir/flow.json"
 begin "turnWheel: plus turns the wheel down a row per tap, read after each"
 status_is 0; fake_used; has out.txt "turnWheel: wheel 2 turned 2 rows, '17' to '19'"; taps_are "300 1250|300 1250|"
+verdict
+
+# A wheel value with a " in it comes single-quoted, like any attribute (#100):
+# the wheel reader has to see it to count the row as turned.
+dev_case wheel-double-quote
+for i in 1 2; do
+  screen "$case_dir/adb/dump-$i.xml" "$(npick 0 Nov)" \
+    "$(npick 200 "Q$i" | sed "s/text=\"Q$i\"/text='$(( 16 + i ))\"'/")" "$(npick 400 2026)"
+done
+flow_file "$case_dir/flow.json" '{ "do": "turnWheel", "wheel": 2, "value": 1 }'
+run_flow "$case_dir/flow.json"
+begin "turnWheel: a value with a double quote is read from its single-quoted attribute"
+status_is 0; fake_used; has out.txt "'17\"' to '18\"'"; taps_are "300 1250|"
 verdict
 
 dev_case wheel-up
