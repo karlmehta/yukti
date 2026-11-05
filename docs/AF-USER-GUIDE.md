@@ -131,6 +131,8 @@ A flow is `{ "name": "...", "steps": [ ... ] }`. Common step verbs:
 | `{"do":"assertBoxId","value":"chat-pill","box":{"above":"tab-bar"}}` | the box against another element, named by its id: `above`, `below`, `leftOf`, `rightOf`, or `apart` (the two do not overlap) |
 | `{"do":"assertNotText","value":"Wrong password"}` | verify the text is NOT on the screen as it is now (no scroll). Same matching as `assertText`, `"match":"contains"` and `"in"` included |
 | `{"do":"assertNotId","value":"paywall"}` | verify no element with this id is on the screen as it is now |
+| `{"do":"waitForNotText","value":"Saving...","timeout":15}` | poll until the text is gone from the screen, fail if it is still there at the timeout (seconds, default 10). Matches like `assertNotText`, `"match":"contains"` included |
+| `{"do":"waitForNotId","value":"save-sheet"}` | the same wait, by id - for a sheet that closes or a spinner that goes, instead of a fixed `wait`. An unreadable screen is never taken for gone |
 | `{"do":"screenshot","value":"x.png"}` | capture for review |
 | `{"do":"waitFor","value":"Weight History","timeout":15}` | poll until the text is on screen, fail on timeout (seconds, default 10; no scrolling). Matches like `assertText`, `"match":"contains"` and `"in"` included |
 | `{"do":"waitForId","value":"weight_card"}` | the same wait, matching the id exactly; on timeout it says whether the id is not in the tree, is there at zero size, or is outside the screen |
@@ -440,6 +442,18 @@ They are about the screen as it is now, and they never scroll: swiping cannot
 prove that something is absent, and it changes the state the next step is about
 to check. "Not anywhere in this list" is a `scroll` step of your own followed by
 the assertion.
+
+When something has to go away first - a save sheet that closes, a spinner -
+wait for it instead of pausing with `wait`:
+
+```json
+{ "do": "tapText", "value": "Save" },
+{ "do": "waitForNotId", "value": "save-sheet", "timeout": 15 }
+```
+
+`waitForNotText` and `waitForNotId` pass as soon as the element is gone and fail
+if it is still there at the timeout. A screen that cannot be read - an app that
+crashed - is never taken for gone: the step fails and says so.
 
 Save it in `.yukti/flows/` and it's part of the suite the next Run All.
 
