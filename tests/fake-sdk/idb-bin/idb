@@ -20,7 +20,11 @@
 #   keyboard       present: a keyboard is up - the tree ends with its keys, plain
 #                  buttons as a simulator lists them (letters, shift, delete,
 #                  return), from y 590 down; holding a number: from that y
-#   drag-closes    present: a `ui swipe` closes the keyboard
+#   keypad         present: a numeric keypad is up instead - 1 to 9, ".", 0 in
+#                  three columns of 54-high buttons from y 583, a key labelled
+#                  "Delete" with a capital D, and "Next keyboard" (#145);
+#                  holding a number: from that y
+#   drag-closes    present: a `ui swipe` closes the keyboard or the keypad
 #   return-closes  present: the Return key (`ui key 40`) closes it
 import json, os, sys
 
@@ -61,6 +65,16 @@ if ops[:2] == ["ui", "describe-all"]:
                   "frame": {"x": 4 + 100 * i, "y": top + 162, "width": 90, "height": 46}}
                  for i, k in enumerate(["shift", "delete", "return"])]
         out = json.dumps(json.loads(out) + keys)
+    if has("keypad"):
+        top = int(read("keypad").strip() or 583)
+        keys = [{"type": "Button", "role_description": "button", "AXLabel": k, "AXValue": None,
+                 "frame": {"x": 4 + 132 * (i % 3), "y": top + 54 * (i // 3), "width": 128, "height": 50}}
+                for i, k in enumerate("123456789.0")]
+        keys += [{"type": "Button", "role_description": "button", "AXLabel": k, "AXValue": None,
+                  "frame": {"x": 268, "y": top + 162, "width": 128, "height": 50}} for k in ["Delete"]]
+        keys += [{"type": "Button", "role_description": "button", "AXLabel": "Next keyboard", "AXValue": None,
+                  "frame": {"x": 4, "y": top + 230, "width": 40, "height": 40}}]
+        out = json.dumps(json.loads(out) + keys)
     sys.stdout.write(out)
 elif ops[:2] == ["ui", "text"]:
     q = ops[2]
@@ -75,6 +89,7 @@ elif ops[:2] == ["ui", "key"]:
     if ops[2:] == ["40"] and has("return-closes") and has("keyboard"): os.remove(path("keyboard"))
 elif ops[:2] == ["ui", "swipe"]:
     if has("drag-closes") and has("keyboard"): os.remove(path("keyboard"))
+    if has("drag-closes") and has("keypad"): os.remove(path("keypad"))
 elif ops[:2] == ["ui", "describe-point"] and has("point.json"):
     # What is under a tap point: point.json, written by the case. Without it the
     # verb is refused, as before, and the engine's tap check answers "unknown".
