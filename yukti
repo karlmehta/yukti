@@ -2825,6 +2825,42 @@ wait_for(){ local q="${1:-}" t="${2:-10}" m="${3:-exact}" mode="${4:-assert}" op
 # element that says it scrolls, from a fifth of its width to four fifths of it -
 # or, when the screen has no such element, across the middle of the screen, with
 # a line in the run to say that is what happened.
+# A swipe between two points (#48): the gesture with no element under it and no
+# fixed direction - pulling a list down from its top, dragging a sheet away. The
+# points are pixels or shares of the screen, as for tap (see flow_xy). The finger
+# moves at the speed of scroll on both platforms and the duration is always
+# given to the tool, never left to it. Android: `input swipe` at 3 ms for every
+# 4 px, the speed scroll moves at, and never under 300 ms, the old fixed scroll
+# swipe: `input swipe` lets go at the speed it moved, and a short line drawn in a
+# few ms is a flick (it still lets go at that speed: a swipe here can fling a
+# list). iOS: iswipe, idb at IOS_SWIPE_PT_S, at least 0.3 s, as scroll - left to
+# idb, a swipe often did not move the list at all, and one faster than about
+# 175 pt/s flings it (see IOS_SWIPE_PT_S); at 150 it is a drag. No step asks for
+# a speed: a flick cannot be written yet. Written for iOS, not
+# measured - no Mac. A keyboard that is up is closed first, as for scroll: the
+# keys cover the lower part of the screen and would take the touch.
+# swipe_xy <x1> <y1> <x2> <y2> - the points on the device's own screen.
+swipe_xy(){ local dur
+  [ "$1 $2" != "$3 $4" ] || die "swipe: from $1,$2 to $3,$4 does not move - on this screen both points are the same; that is a press, not a swipe"
+  kb_before_swipe swipe || :
+  if is_android; then apaths
+    dur="$(awk -v a="$1" -v b="$2" -v c="$3" -v d="$4" 'BEGIN{t=int(sqrt((c-a)^2+(d-b)^2)*3/4); if(t<300)t=300; print t}')"
+    adb shell input swipe "$1" "$2" "$3" "$4" "$dur" || die "swipe: the device refused the swipe from $1,$2 to $3,$4"
+    ok "swipe $1,$2 -> $3,$4 in $dur ms"
+  else paths
+    dur="$(iswipe_s "$1" "$2" "$3" "$4")" || exit 1
+    iswipe "$1" "$2" "$3" "$4" || die "swipe: idb refused the swipe from $1,$2 to $3,$4"
+    ok "swipe $1,$2 -> $3,$4 in ${dur} s"
+  fi; }
+# swipe_step <x> <y> <toX> <toY> - the points as a flow file or the command line
+# writes them; a flow passes "raw" as a fifth word only from the command line.
+swipe_step(){ local a b x y tx ty
+  x="$(xy_word x "${1:-}" swipe)" || exit 1; y="$(xy_word y "${2:-}" swipe)" || exit 1
+  tx="$(xy_word toX "${3:-}" swipe)" || exit 1; ty="$(xy_word toY "${4:-}" swipe)" || exit 1
+  a="$(flow_xy "$x" "$y" "${5:-}")" || exit 1; b="$(flow_xy "$tx" "$ty" "${5:-}")" || exit 1
+  swipe_xy $a $b; }
+swipe_args(){ [ $# -eq 4 ] || die "usage: yukti swipe <x> <y> <toX> <toY> - pixels (200) or a share of the screen (\"50%\")"
+  swipe_step "$1" "$2" "$3" "$4" raw; }
 # The scroll STEP. `scroll` itself is also the blind swipe inside a search, which
 # asks about the keyboard on its own, so the question lives here and not in it.
 scroll_step(){
@@ -3017,12 +3053,15 @@ BASIS_W="${YUKTI_DEVICE_PT_W:-402}"; BASIS_H="${YUKTI_DEVICE_PT_H:-874}"; BAND_T
 # finger costs time, not steps.
 IOS_SWIPE_PT_S="${YUKTI_IOS_SWIPE_PT_S:-150}"
 # iswipe <x1> <y1> <x2> <y2> - an idb swipe at IOS_SWIPE_PT_S, at least 0.3 s.
-iswipe(){ local t
+# iswipe_s <x1> <y1> <x2> <y2> - how long that swipe takes, in seconds.
+iswipe_s(){
   # Digits only, and no leading zero: "0" is no speed, "00" divided by zero and
   # sent the swipe with no duration (the very stall this fixes), "007" read as 7.
   case "$IOS_SWIPE_PT_S" in ''|*[!0-9]*|0*) die "YUKTI_IOS_SWIPE_PT_S must be a whole number of points a second above 0, with no leading zero, is '$IOS_SWIPE_PT_S'";; esac
-  t="$(awk -v a="$1" -v b="$2" -v c="$3" -v d="$4" -v v="$IOS_SWIPE_PT_S" \
-    'BEGIN{s=sqrt((c-a)^2+(d-b)^2)/v; if(s<0.3)s=0.3; printf "%.2f", s}')"
+  awk -v a="$1" -v b="$2" -v c="$3" -v d="$4" -v v="$IOS_SWIPE_PT_S" \
+    'BEGIN{s=sqrt((c-a)^2+(d-b)^2)/v; if(s<0.3)s=0.3; printf "%.2f", s}'; }
+iswipe(){ local t
+  t="$(iswipe_s "$1" "$2" "$3" "$4")" || exit 1
   idb ui swipe --udid "$(U)" --duration "$t" "$1" "$2" "$3" "$4"; }
 # Where a per-run cache lives. Set once per invocation just before the command
 # runs (see the bottom of this file) and inherited by everything the run shells
@@ -3127,6 +3166,56 @@ scale_xy(){ local x="${1:?x}" y="${2:?y}" w h nx ny
   nx=$(( x * w / BASIS_W )); ny=$(( y * h / BASIS_H ))
   say "scaled $x,$y -> $nx,$ny (recorded ${BASIS_W}x${BASIS_H}, screen ${w}x${h})" >&2
   printf '%s %s' "$nx" "$ny"; }
+# A point a step DESCRIBES rather than recorded (#48): "50%" of the width,
+# written by hand. A share is taken of the screen the run is on - pixels on
+# Android, points on iOS, the same space the dump and the tap use - and never
+# goes through scale_xy, so it does not depend on the recording basis
+# (YUKTI_DEVICE_PT_W/H) or on YUKTI_TAP_SCALE. A pixel does: a hand-written
+# Android flow with 540 taken from an Android dump is scaled by w/402 and lands
+# at 1450. Both are proportional to the screen; neither keeps a point on a
+# control laid out at a fixed distance from an edge. Pixels still go through
+# scale_xy, so a flow recorded in Studio replays as it did. A pair may mix the
+# two; the pixel half is then scaled the way scale_xy would. 100% is the last
+# pixel (point on iOS), not the one past the edge. When the screen size cannot
+# be read, the share is of the recording basis, and screen_wh says so once.
+# xy_word <name> <value> <who> - dies unless the value is whole pixels or a
+# whole share of the screen; prints it normalised ("08" is octal in the shell).
+xy_word(){ local k="$1" v="$2" who="$3" n
+  case "$v" in
+    ''|*[!0-9%]*|*%*%|%*|*%?*) die "$who: \"$k\" is '$v' - it has to be a whole number of pixels (200) or a whole share of the screen (\"50%\")";;
+  esac
+  # More digits than any screen has would wrap in the shell arithmetic below:
+  # 9223372036854775808% came out negative and passed the 100% test.
+  n="${v%\%}"; [ "${#n}" -le 5 ] || die "$who: \"$k\" is '$v' - more than any screen has; pixels (200) or a whole share of the screen (\"50%\")"
+  n=$(( 10#$n ))
+  case "$v" in *%) [ "$n" -le 100 ] || die "$who: \"$k\" is '$v' - a share of the screen cannot be more than 100%"; printf '%s%%' "$n";; *) printf '%s' "$n";; esac; }
+# xy_axis <value> <screen> <basis> <scale 0|1> - one coordinate on the screen.
+xy_axis(){ local v="$1" n="$2" b="$3" p
+  case "$v" in
+    *%) p=$(( ${v%\%} * n / 100 )); [ "$p" -lt "$n" ] || p=$(( n - 1 )); printf '%s' "$p";;
+    *) if [ "$4" = 1 ]; then printf '%s' $(( v * n / b )); else printf '%s' "$v"; fi;;
+  esac; }
+# flow_xy <x> <y> [raw] - the point a step names, on the screen the run is on.
+# "raw" is the command line: its pixels are the device's own, as `yukti tap`'s
+# always were, and only a share is worked out.
+flow_xy(){ local x="$1" y="$2" raw="${3:-}" w h s=1 nx ny
+  case "$x$y" in *%*) ;; *) if [ "$raw" = raw ]; then printf '%s %s' "$x" "$y"; else scale_xy "$x" "$y"; fi; return;; esac
+  set -- $(screen_wh); w="${1:-$BASIS_W}"; h="${2:-$BASIS_H}"
+  { [ "${YUKTI_TAP_SCALE:-1}" = 0 ] || [ "$raw" = raw ]; } && s=0
+  nx="$(xy_axis "$x" "$w" "$BASIS_W" "$s")"; ny="$(xy_axis "$y" "$h" "$BASIS_H" "$s")"
+  # A pixel half that was scaled says so, in the words scale_xy uses.
+  case "$s:$x:$y" in 1:*%:*%) say "point $x,$y -> $nx,$ny (screen ${w}x${h})" >&2;;
+    1:*) say "point $x,$y -> $nx,$ny (pixels recorded ${BASIS_W}x${BASIS_H}, screen ${w}x${h})" >&2;;
+    *) say "point $x,$y -> $nx,$ny (screen ${w}x${h})" >&2;; esac
+  printf '%s %s' "$nx" "$ny"; }
+# The command-line forms of tap and clear: the same words for a bad coordinate
+# as the builder gives a flow file.
+tap_args(){ local x y; [ $# -eq 2 ] || die "usage: yukti tap <x> <y> - pixels (200) or a share of the screen (\"50%\")"
+  x="$(xy_word x "$1" tap)" || exit 1; y="$(xy_word y "$2" tap)" || exit 1
+  tap $(flow_xy "$x" "$y" raw); }
+clear_args(){ local x y; [ $# -ge 2 ] || die "usage: yukti clear <x> <y> - pixels (200) or a share of the screen (\"50%\")"
+  x="$(xy_word x "$1" clear)" || exit 1; y="$(xy_word y "$2" clear)" || exit 1; shift 2
+  clear_field $(flow_xy "$x" "$y" raw) "$@"; }
 # How long a search may swipe, in seconds. A safety net, not the boundary of the
 # search: a search on a list stops where the list ends (see scroll_to), and this
 # is reached only by a list that is still moving. Eight swipes used to be the
@@ -4322,7 +4411,7 @@ PY
 # step keys: include[with]|launch|stopApp|clearState|wait|waitFor[timeout,match]|waitForId[timeout]|
 #            waitForNotText[timeout,match]|waitForNotId[timeout]|screenshot|
 #            openUrl|setPermission[state]|tap[x,y]|tapText[timeout]|optionalTapText|tapId[at]|type|clearText[x,y]|clearTextId|pressKey|hideKeyboard|
-#            scroll|scrollToText[direction,edges,timeout]|dismiss|assertText[match]|assertId|assertNotText[match]|assertNotId|
+#            scroll|swipe[x,y,toX,toY]|scrollToText[direction,edges,timeout]|dismiss|assertText[match]|assertId|assertNotText[match]|assertNotId|
 #            assertBox[box]|assertBoxId[box]|turnWheel[wheel]|swipeId[direction]|swipeText[direction]
 #            any step, and an include, may carry "when": {visible|notVisible|
 #            visibleId|notVisibleId|zeroSizeId|platform} - all of them have to hold;
@@ -4409,7 +4498,7 @@ cond_words(){ local spec="$1" pair kind val out=""
     esac
   done
   printf '%s' "$out"; }
-FLOW_VERBS="launch stopApp clearState openUrl setPermission wait waitFor waitForId waitForNotText waitForNotId screenshot tap tapText optionalTapText tapId type clearText clearTextId pressKey hideKeyboard scroll scrollToText dismiss assertText assertId assertNotText assertNotId assertBox assertBoxId turnWheel swipeId swipeText"
+FLOW_VERBS="launch stopApp clearState openUrl setPermission wait waitFor waitForId waitForNotText waitForNotId screenshot tap tapText optionalTapText tapId type clearText clearTextId pressKey hideKeyboard scroll swipe scrollToText dismiss assertText assertId assertNotText assertNotId assertBox assertBoxId turnWheel swipeId swipeText"
 # The steps a condition switched off. They keep their numbers - the numbering is
 # end to end, and a skipped step that gave its number away would move every step
 # after it - they say so on the console, and they land in the report as `skipped`
@@ -4512,7 +4601,10 @@ PERM_STATES = ("granted", "denied", "unset")
 PERM_NAMES = ("notifications", "camera", "microphone", "location", "photos",
               "contacts", "calendar", "motion", "reminders", "health")
 # "at" is a point inside the element tapId taps, as shares of its box (#129).
-STEP_KEYS = set(KEYS) | {"when", "box", "title", "optional", "in", "shows", "wheel", "state", "at"} | set(STATE_KEYS)
+# "toX" and "toY" are where a swipe ends (#48).
+STEP_KEYS = set(KEYS) | {"when", "box", "title", "optional", "in", "shows", "wheel", "state", "at", "toX", "toY"} | set(STATE_KEYS)
+# The steps that read a point, and the keys they read it from.
+XY_VERBS = {"tap": ("x", "y"), "clearText": ("x", "y"), "swipe": ("x", "y", "toX", "toY")}
 IN_VERBS = ("assertText", "assertNotText", "waitFor", "tapText")
 INCLUDE_KEYS = {"do", "value", "with", "when"}
 # One condition is a kind and a value; several in one `when` all have to hold.
@@ -4760,6 +4852,48 @@ def point_of(step, at, scope, src):
         out.append(str(n))
     return ",".join(out)
 
+def xy_of(step, at):
+    # A point is whole pixels, as recorded, or a whole share of the screen
+    # (#48). Checked here, not where it runs: "abc" or "4.5" used to reach the
+    # shell arithmetic and stop the run there with no step message, and a
+    # missing "y" as a bare "y: parameter null or not set".
+    verb = step.get("do", "")
+    keys = XY_VERBS.get(verb, ())
+    # A point on scroll is the mistake this step exists for: scroll has four
+    # fixed directions and would swipe down the middle, saying nothing.
+    if verb == "scroll":
+        for k in ("x", "y", "toX", "toY"):
+            if k in step:
+                fail('%s: scroll takes no point ("%s") - for a swipe between two '
+                     'points use swipe' % (at, k))
+    for k in ("toX", "toY"):
+        if k in step and verb != "swipe":
+            fail('%s: step \'%s\' does not take "%s" - only swipe does' % (at, verb, k))
+    out = {}
+    for k in keys:
+        if k not in step:
+            fail('%s: %s needs "%s" - %s, each pixels (200) or a share of the '
+                 'screen ("50%%")' % (at, verb, k, ", ".join('"%s"' % n for n in keys)))
+        v = step[k]
+        if v is None or isinstance(v, (dict, list, bool)):
+            fail('%s: "%s" is %s - it has to be a whole number of pixels (200) or '
+                 'a whole share of the screen ("50%%")' % (at, k, json.dumps(v)))
+        v = (v if isinstance(v, str) else str(v)).strip()
+        num = v[:-1] if v.endswith("%") else v
+        if not re.match(r"\A[0-9]+\Z", num):
+            fail('%s: "%s" is \'%s\' - it has to be a whole number of pixels (200) '
+                 'or a whole share of the screen ("50%%")' % (at, k, v))
+        # "08" is octal in the shell that works the point out.
+        v = str(int(num)) + v[len(num):]
+        if v.endswith("%") and int(num) > 100:
+            fail('%s: "%s" is \'%s\' - a share of the screen cannot be more than '
+                 '100%%' % (at, k, v))
+        out[k] = v
+    if verb == "swipe" and (out["x"], out["y"]) == (out["toX"], out["toY"]):
+        fail('%s: the swipe starts and ends at %s,%s - that is a press, not a swipe'
+             % (at, out["x"], out["y"]))
+    return out
+
 def box_spec(step, at, scope, src):
     verb = step.get("do", "")
     if "box" not in step:
@@ -4930,11 +5064,15 @@ def build(path, shown, src, scope, chain, depth, pre=""):
         fields.append(state_of(step, at) or perm)
         fields.append(wheel_of(step, at, scope, src))
         fields.append(point_of(step, at, scope, src))
+        xy = xy_of(step, at)
+        if "x" in xy:
+            fields[KEYS.index("x")] = xy["x"]; fields[KEYS.index("y")] = xy["y"]
+        fields.append(xy.get("toX", "") + (" " + xy["toY"] if "toY" in xy else ""))
         if cond: recs.append(guard(cond, 1, src, idx))
         recs.append(SEP.join(fields))
 
 def include(step, at, base, src, scope, chain, depth):
-    for key in ("x", "y", "match", "timeout", "box"):
+    for key in ("x", "y", "toX", "toY", "match", "timeout", "box"):
         if key in step:
             fail('%s: "%s" is not a key an include takes - it runs the steps '
                  "of a file, and those steps carry their own keys" % (at, key))
@@ -5001,7 +5139,7 @@ PY
   # still reported PASS). Reading `<&3` also keeps the loop in THIS shell (not a
   # pipe subshell), so a step's `die` (exit 1) aborts the whole flow with a
   # non-zero status instead of being lost.
-  while IFS=$'\x1f' read -r -d '' do_ val x y mtch tmo dir edg src sidx wcond wspan bspec ttl opt inid shw stt whl atp <&3; do
+  while IFS=$'\x1f' read -r -d '' do_ val x y mtch tmo dir edg src sidx wcond wspan bspec ttl opt inid shw stt whl atp to <&3; do
       # A guard is not a step: it takes no number of its own, and when it holds
       # the run says nothing about it - the steps that follow simply run. When it
       # does not hold, its whole group is read off the stream and every step in it
@@ -5090,13 +5228,14 @@ PY
         screenshot)  FLOW_ART="$(shot "$val")" || { [ ! -s "$FLOW_ERR" ] || exit 1; die "screenshot failed"; }
                      [ -n "$FLOW_ART" ] || die "screenshot produced no file"
                      ok "shot → $FLOW_ART";;
-        tap)         tap $(scale_xy "$x" "$y");;
+        tap)         tap $(flow_xy "$x" "$y");;
         tapText)     say "tap '$val'${inid:+ in '$inid'}"; tap_text "$val" "$tmo" "$inid";;
         optionalTapText) tap_text_optional "$val";;
         scroll)      scroll_step "${val:-down}";;
+        swipe)       swipe_step "$x" "$y" "${to% *}" "${to#* }";;
         scrollToText) scroll_to_step "$val" "${dir:-down}" "$edg" "$tmo" >/dev/null;;
         dismiss)     dismiss;;
-        clearText)   clear_field $(scale_xy "$x" "$y");;
+        clearText)   clear_field $(flow_xy "$x" "$y");;
         clearTextId) say "clear id '$val'"; clear_id "$val";;
         pressKey)    press_key "$val";;
         hideKeyboard) hide_keyboard;;
@@ -5210,9 +5349,11 @@ ${_yk_B}yukti v$YUKTI_VERSION${_yk_R} — YUKTI — smart mobile-app QA automati
   yukti ui                  accessibility tree (JSON, coords in points)
   yukti helper stop         Android: stop the resident screen helper and remove its forward
   yukti find "<label>"      -> "x y" center of the first element matching label
-  yukti tap <x> <y>         tap
+  yukti tap <x> <y>         tap; each is pixels (200) or a share of the screen ("50%")
   yukti type "<text>"       type (char-by-char = reliable; idb bulk-type drops chars)
-  yukti clear <x> <y>       clear a text field
+  yukti clear <x> <y>       clear a text field (pixels or a share, as tap)
+  yukti swipe <x> <y> <toX> <toY>
+                            swipe from one point to the other, pixels or a share of the screen
   yukti scroll <up|down|left|right>
                             scroll the screen · yukti scroll-to "<label>" [dir] [clear] [timeout] scroll a label into view, fail on a miss
   yukti dismiss             auto-dismiss common modals (Not Now / Skip / OK / Close…)
@@ -5256,8 +5397,9 @@ ${_yk_B}yukti v$YUKTI_VERSION${_yk_R} — YUKTI — smart mobile-app QA automati
   yukti assert-not-id "<id>"
                             assert no element with this id is on the current screen
 
-  flow steps: wait · waitFor · waitForId · waitForNotText · waitForNotId · screenshot · tap · tapText · optionalTapText · tapId · scroll · scrollToText · dismiss · type · clearText · clearTextId · pressKey · hideKeyboard · assertText · assertId · assertNotText · assertNotId · assertBox · assertBoxId · turnWheel · swipeId · swipeText · launch · stopApp · clearState · openUrl · setPermission · include
-              (clearText · clearTextId · pressKey · hideKeyboard · assertBox · assertBoxId: measured on Android, iOS not yet run)
+  flow steps: wait · waitFor · waitForId · waitForNotText · waitForNotId · screenshot · tap · tapText · optionalTapText · tapId · scroll · swipe · scrollToText · dismiss · type · clearText · clearTextId · pressKey · hideKeyboard · assertText · assertId · assertNotText · assertNotId · assertBox · assertBoxId · turnWheel · swipeId · swipeText · launch · stopApp · clearState · openUrl · setPermission · include
+              (clearText · clearTextId · pressKey · hideKeyboard · assertBox · assertBoxId: measured on Android, iOS not yet run;
+              swipe and a share of the screen: not yet run on either platform)
               stopApp force-stops the app, clearState wipes its data (Android only); both take the variant name
               setPermission sets one permission of the app of \$YUKTI_VARIANT before it starts: "value" is
               notifications, camera, microphone, location, photos, contacts, calendar, motion, reminders,
@@ -5283,6 +5425,9 @@ ${_yk_B}yukti v$YUKTI_VERSION${_yk_R} — YUKTI — smart mobile-app QA automati
               waitFor polls for an element and fails on timeout ("timeout": seconds, default 10); it never scrolls.
               waitForId names on timeout which case it ended in: not in the tree, at zero size, or outside the screen;
               "optional": true on it skips the step on timeout instead of failing the flow, with those words
+              tap and clearText take "x" and "y" as pixels (200), scaled from the recording screen, or a share of the
+              screen ("50%"), taken of the screen the run is on and never scaled; swipe takes "x", "y", "toX", "toY"
+              the same way and moves at the speed scroll does, with a set duration on both platforms
               scroll takes up, down, left or right as its "value"; scrollToText takes the same four as "direction"
               (default down) and "edges":"clear" to land the element away from the band edges, failing if it cannot;
               at the end of the list it waits for the list to grow ("timeout": seconds, default 5) before it fails
@@ -5352,7 +5497,7 @@ case "$cmd" in
   flow) case " $* " in *" --check "*) ;; *) resolve_platform;; esac;;
   install) resolve_platform "$(install_variant "$@")";;
   build|pull|launch|up|"stop-app"|stopApp|"clear-state"|clearState) resolve_platform "${1:-}";;
-  boot|shot|ui|find|tap|"tap-text"|tapText|scroll|"scroll-to"|scrollToText|dismiss|type|clear|assert|"open-url"|openUrl|\
+  boot|shot|ui|find|tap|"tap-text"|tapText|scroll|swipe|"scroll-to"|scrollToText|dismiss|type|clear|assert|"open-url"|openUrl|\
   "tap-id"|tapId|"clear-id"|clearTextId|"assert-id"|assertId|"assert-box"|assertBox|"swipe-id"|swipeId|"swipe-text"|swipeText|"assert-not"|assertNotText|"assert-not-id"|assertNotId|"wait-for"|waitFor|\
   "wait-for-not"|waitForNotText|"wait-for-not-id"|waitForNotId)
     resolve_platform;;
@@ -5380,13 +5525,14 @@ case "$cmd" in
   ui) ui;;
   helper) helper_cmd "$@";;
   find) find_el "$@";;
-  tap) tap "$@";;
+  tap) tap_args "$@";;
   "tap-text"|tapText) tap_text "$@";;
   scroll) scroll_step "$@";;
+  swipe) swipe_args "$@";;
   "scroll-to"|scrollToText) scroll_to_step "$@";;
   dismiss) dismiss;;
   type) type_str "$@";;
-  clear) clear_field "$@";;
+  clear) clear_args "$@";;
   assert) assert_text "$@";;
   # The shares as the flow writes them, "50%", and only so: a bare 50 is refused
   # as the builder refuses it - it reads as pixels. The sign is dropped here.

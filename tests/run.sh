@@ -4278,5 +4278,135 @@ begin "tapId at on iOS: a thumb with its own id over the point fails as covered,
 status_is 1; has out.txt "'track' at 110,222 is covered by thumb"; lacks idb/log "ui tap"; lacks out.txt "tap id 'track' at 25%"
 verdict
 
+# ── a place on the screen, and a swipe between two (#48) ────────────────────
+# A point is pixels, as recorded, or a whole share of the screen ("50%"). A
+# share is of the screen the run is on and is never rescaled; pixels still are.
+# The fake Android screen is 1080x2400, the recording basis 402x874.
+new_case xy-share-ok
+flow_file "$case_dir/flow.json" '{ "do": "tap", "x": "50%", "y": "80%" }' '{ "do": "clearText", "x": 201, "y": "08%" }' \
+  '{ "do": "swipe", "x": "50%", "y": 300, "toX": "50%", "toY": "100%" }'
+expect "check: shares of the screen and pixels both build" 0 " - 3 steps" check "$case_dir/flow.json"
+
+new_case xy-share-over
+flow_file "$case_dir/flow.json" '{ "do": "tap", "x": "150%", "y": "80%" }'
+expect "check: a share over 100% is refused" 1 \
+  "step 1 'tap': \"x\" is '150%' - a share of the screen cannot be more than 100%" check "$case_dir/flow.json"
+
+new_case xy-not-a-number
+flow_file "$case_dir/flow.json" '{ "do": "tap", "x": "50%", "y": "abc" }'
+expect "check: a coordinate that is not a number is refused" 1 \
+  "step 1 'tap': \"y\" is 'abc' - it has to be a whole number of pixels (200) or a whole share of the screen (\"50%\")" check "$case_dir/flow.json"
+
+new_case xy-fraction
+flow_file "$case_dir/flow.json" '{ "do": "clearText", "x": 12.5, "y": 300 }'
+expect "check: a fraction of a pixel is refused" 1 \
+  "step 1 'clearText': \"x\" is '12.5' - it has to be a whole number of pixels" check "$case_dir/flow.json"
+
+new_case xy-missing
+flow_file "$case_dir/flow.json" '{ "do": "tap", "x": 200 }'
+expect "check: a tap without y is refused before the run" 1 \
+  "step 1 'tap': tap needs \"y\" - \"x\", \"y\", each pixels (200) or a share of the screen (\"50%\")" check "$case_dir/flow.json"
+
+new_case swipe-missing-to
+flow_file "$case_dir/flow.json" '{ "do": "swipe", "x": "50%", "y": "80%", "toX": "50%" }'
+expect "check: a swipe without its end is refused" 1 \
+  "step 1 'swipe': swipe needs \"toY\" - \"x\", \"y\", \"toX\", \"toY\"" check "$case_dir/flow.json"
+
+new_case swipe-same-point
+flow_file "$case_dir/flow.json" '{ "do": "swipe", "x": "50%", "y": "80%", "toX": "50%", "toY": "080%" }'
+expect "check: a swipe that ends where it starts is refused" 1 \
+  "step 1 'swipe': the swipe starts and ends at 50%,80% - that is a press, not a swipe" check "$case_dir/flow.json"
+
+new_case to-on-tap
+flow_file "$case_dir/flow.json" '{ "do": "tap", "x": "50%", "y": "80%", "toY": "20%" }'
+expect "check: toY on a tap is refused" 1 \
+  "step 1 'tap': step 'tap' does not take \"toY\" - only swipe does" check "$case_dir/flow.json"
+
+dev_case xy-android-tap
+flow_file "$case_dir/flow.json" '{ "do": "tap", "x": "50%", "y": "80%" }' '{ "do": "tap", "x": 201, "y": 437 }' \
+  '{ "do": "tap", "x": "100%", "y": "0%" }' '{ "do": "tap", "x": "50%", "y": 300 }'
+run_flow "$case_dir/flow.json"
+begin "tap on Android: a share is of the screen and not scaled, pixels are scaled as before"
+status_is 0; fake_used
+has adb/log "shell input tap 540 1920"; has out.txt "point 50%,80% -> 540,1920 (screen 1080x2400)"
+has adb/log "shell input tap 540 1200"; has out.txt "scaled 201,437 -> 540,1200"
+has adb/log "shell input tap 1079 0"
+has adb/log "shell input tap 540 823"; has out.txt "point 50%,300 -> 540,823 (pixels recorded 402x874, screen 1080x2400)"
+verdict
+
+dev_case swipe-android
+flow_file "$case_dir/flow.json" '{ "do": "swipe", "x": "50%", "y": "80%", "toX": "50%", "toY": "20%" }' \
+  '{ "do": "swipe", "x": "50%", "y": "50%", "toX": "50%", "toY": "52%" }'
+run_flow "$case_dir/flow.json"
+begin "swipe on Android: between two shares of the screen, with a duration, never under 300 ms"
+status_is 0
+has adb/log "shell input swipe 540 1920 540 480 1080"; has out.txt "swipe 540,1920 -> 540,480 in 1080 ms"
+has adb/log "shell input swipe 540 1200 540 1248 300"
+verdict
+
+dev_case swipe-android-keyboard
+: > "$case_dir/adb/keyboard"
+flow_file "$case_dir/flow.json" '{ "do": "swipe", "x": "50%", "y": "30%", "toX": "50%", "toY": "70%" }'
+run_flow "$case_dir/flow.json"
+begin "swipe on Android: a keyboard that is up is closed first, as for scroll"
+status_is 0; file_absent adb/keyboard
+has out.txt "swipe, before swiping: keyboard closed"; has adb/log "shell input swipe 540 720 540 1680 720"
+verdict
+
+ios_case xy-ios
+printf '393 852' > "$case_dir/idb/screen"
+tree "$case_dir/idb/desc-1.json" "$IAPP"
+flow_file "$case_dir/flow.json" '{ "do": "tap", "x": "50%", "y": "80%" }' \
+  '{ "do": "swipe", "x": "50%", "y": "80%", "toX": "50%", "toY": "20%" }' \
+  '{ "do": "swipe", "x": "50%", "y": "50%", "toX": "50%", "toY": "52%" }'
+run_ios "$case_dir/flow.json"
+begin "tap and swipe on iOS: shares of the screen in points, the swipe with a duration"
+status_is 0
+has idb/log "ui tap --udid FAKE-UDID 196 681"
+has idb/log "ui swipe --udid FAKE-UDID --duration 3.41 196 681 196 170"
+has idb/log "ui swipe --udid FAKE-UDID --duration 0.30 196 426 196 443"
+has out.txt "swipe 196,681 -> 196,170 in 3.41 s"; lacks out.txt "screen size unavailable"
+verdict
+
+# The command line: pixels are the device's own, as they always were for
+# `yukti tap`; a share is worked out from the screen.
+run_cli(){ env -u ANDROID_SDK_ROOT -u YUKTI_VARIANT -u YUKTI_CONFIG ANDROID_HOME="$ROOT/tests/fake-sdk" YUKTI_PLATFORM=android YUKTI_HELPER=0 \
+    FAKE_ADB_DIR="$case_dir/adb" TMPDIR="$case_dir/tmp" "$YUKTI" "$@" >> "$case_dir/out" 2>&1
+  run_status=$?
+  sed $'s/\033\\[[0-9;]*m//g' "$case_dir/out" > "$case_dir/out.txt"; }
+dev_case xy-cli
+begin "command line: tap and swipe take shares of the screen, tap keeps raw pixels"
+run_cli tap 50% 80%; status_is 0; run_cli tap 300 400; status_is 0; run_cli swipe 10% 50% 90% 50%; status_is 0
+has adb/log "shell input tap 540 1920"; has adb/log "shell input tap 300 400"
+has adb/log "shell input swipe 108 1200 972 1200 648"
+verdict
+dev_case xy-cli-bad
+run_cli tap 150% 10
+begin "command line: a share over 100% or too many digits is refused with the builder's words"
+status_is 1; has out.txt "tap: \"x\" is '150%' - a share of the screen cannot be more than 100%"
+lacks adb/log "input tap"
+run_cli tap 9223372036854775808% 1
+status_is 1; has out.txt "tap: \"x\" is '9223372036854775808%' - more than any screen has"
+lacks adb/log "input tap"
+verdict
+
+new_case scroll-point
+flow_file "$case_dir/flow.json" '{ "do": "scroll", "value": "down", "x": "50%", "y": "20%" }'
+expect "check: a point on scroll is refused, pointing to swipe" 1 \
+  "step 1 'scroll': scroll takes no point (\"x\") - for a swipe between two points use swipe" check "$case_dir/flow.json"
+
+# Pixel ends of a swipe are scaled as a tap's are; two forms that land on one
+# pixel are refused when the run works the points out.
+dev_case swipe-android-pixels
+flow_file "$case_dir/flow.json" '{ "do": "swipe", "x": 201, "y": 600, "toX": 201, "toY": 200 }' \
+  '{ "do": "swipe", "x": "50%", "y": "50%", "toX": 201, "toY": 437 }'
+run_flow "$case_dir/flow.json"
+begin "swipe on Android: pixel ends are scaled; a share and a pixel on one point are refused"
+status_is 1
+has adb/log "shell input swipe 540 1647 540 549 823"
+has out.txt "swipe: from 540,1200 to 540,1200 does not move"
+count_is adb/log "input swipe" 1
+verdict
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
