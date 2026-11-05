@@ -2253,7 +2253,36 @@ id_miss(){ local q="$1" for="${2:-}" w unit
     *) printf "no element with id '%s'%s" "$q" "$for";;
   esac
   return 0; }
-tap_id(){ local q="${1:-}"; [ -n "$q" ] || die "tapId needs a non-empty id"; local xy st=0; xy="$(find_el "$q" id)" || st=$?; [ "$st" -eq 0 ] || die "$(lookup_err "$st")"; [ -n "$xy" ] || die "$(id_miss "$q")"; tap_checked "$q" id $xy; }
+tap_id(){ local q="${1:-}"; [ -n "$q" ] || die "tapId needs a non-empty id"; [ -z "${2:-}${3:-}" ] || { tap_id_at "$q" "${2:-}" "${3:-}"; return; }; local xy st=0; xy="$(find_el "$q" id)" || st=$?; [ "$st" -eq 0 ] || die "$(lookup_err "$st")"; [ -n "$xy" ] || die "$(id_miss "$q")"; tap_checked "$q" id $xy; }
+# tapId with "at" (#129): a point inside the element instead of its centre. A
+# slider with stops often has one id on the whole track, or ids on its two ends
+# only, so the stop in the middle can be reached only as a point on the track.
+# x and y are shares of the element's width and height, from its left and top
+# edge; one left out stays at the centre. A share and not pixels, so the same
+# flow reaches the same stop on a phone and on a tablet. 100% is the last pixel
+# inside the frame - the right edge itself belongs to the next element.
+# The point has to be on the screen: a track that runs past the edge is still
+# found by its centre, and a tap off the screen goes nowhere. On iOS the point
+# is checked like the centre is, so a thumb with an id of its own over that
+# point fails the step as covered - tap the thumb by its id then, or the track
+# where the thumb is not.
+# tap_id_at <id> <x share or empty> <y share or empty> - shares as whole numbers.
+tap_id_at(){ local q="$1" xs="$2" ys="$3" out st=0 x1 y1 x2 y2 sx1 sy1 sx2 sy2 px py v
+  for v in "$xs" "$ys"; do
+    case "$v" in ''|[0-9]|[1-9][0-9]|100) ;; *) die "tapId: a point is a whole share of the element from 0 to 100, got '$v'";; esac
+  done
+  out="$(find_el "$q" id exact box)" || st=$?
+  [ "$st" -eq 0 ] || die "$(lookup_err "$st")"
+  [ -n "$out" ] || die "no element with id '$q'"
+  read -r x1 y1 x2 y2 sx1 sy1 sx2 sy2 <<<"$out"
+  if [ -n "$xs" ]; then px=$(( x1 + (x2 - x1) * xs / 100 )); [ "$px" -lt "$x2" ] || px=$(( x2 - 1 )); [ "$px" -ge "$x1" ] || px=$x1; else px=$(( (x1 + x2) / 2 )); fi
+  if [ -n "$ys" ]; then py=$(( y1 + (y2 - y1) * ys / 100 )); [ "$py" -lt "$y2" ] || py=$(( y2 - 1 )); [ "$py" -ge "$y1" ] || py=$y1; else py=$(( (y1 + y2) / 2 )); fi
+  [ "$px" -ge "$sx1" ] && [ "$px" -lt "$sx2" ] && [ "$py" -ge "$sy1" ] && [ "$py" -lt "$sy2" ] \
+    || die "'$q' at ${xs:-50}% x ${ys:-50}% is $px,$py, off the screen [$sx1,$sy1][$sx2,$sy2] - not tapped"
+  # Said once the tap went: a point found covered is a failed step, not a tap
+  # followed by a failure.
+  tap_checked "$q" id "$px" "$py" || return
+  ok "tap id '$q' at ${xs:-50}% x ${ys:-50}% of $((x2 - x1))x$((y2 - y1)): $px,$py"; }
 assert_id(){ local q="${1:-}" want="${2:-}"; [ -n "$q" ] || die "assertId needs a non-empty id"; local xy st=0 miss
   [ -z "$want" ] || { xy="$(find_el "$q" id exact state)" || st=$?; [ "$st" -eq 0 ] || die "assert FAILED: $(lookup_err "$st")"
     [ -n "$xy" ] || die "assert FAILED: $(id_miss "$q")"
@@ -4292,7 +4321,7 @@ PY
 # ── deterministic flow runner: a JSON list of steps ──────────────────────────
 # step keys: include[with]|launch|stopApp|clearState|wait|waitFor[timeout,match]|waitForId[timeout]|
 #            waitForNotText[timeout,match]|waitForNotId[timeout]|screenshot|
-#            openUrl|setPermission[state]|tap[x,y]|tapText[timeout]|optionalTapText|tapId|type|clearText[x,y]|clearTextId|pressKey|hideKeyboard|
+#            openUrl|setPermission[state]|tap[x,y]|tapText[timeout]|optionalTapText|tapId[at]|type|clearText[x,y]|clearTextId|pressKey|hideKeyboard|
 #            scroll|scrollToText[direction,edges,timeout]|dismiss|assertText[match]|assertId|assertNotText[match]|assertNotId|
 #            assertBox[box]|assertBoxId[box]|turnWheel[wheel]|swipeId[direction]|swipeText[direction]
 #            any step, and an include, may carry "when": {visible|notVisible|
@@ -4482,7 +4511,8 @@ STATE_VERBS = ("assertId", "waitForId")
 PERM_STATES = ("granted", "denied", "unset")
 PERM_NAMES = ("notifications", "camera", "microphone", "location", "photos",
               "contacts", "calendar", "motion", "reminders", "health")
-STEP_KEYS = set(KEYS) | {"when", "box", "title", "optional", "in", "shows", "wheel", "state"} | set(STATE_KEYS)
+# "at" is a point inside the element tapId taps, as shares of its box (#129).
+STEP_KEYS = set(KEYS) | {"when", "box", "title", "optional", "in", "shows", "wheel", "state", "at"} | set(STATE_KEYS)
 IN_VERBS = ("assertText", "assertNotText", "waitFor", "tapText")
 INCLUDE_KEYS = {"do", "value", "with", "when"}
 # One condition is a kind and a value; several in one `when` all have to hold.
@@ -4694,6 +4724,42 @@ def wheel_of(step, at, scope, src):
              % (at, r, WHEEL_MAX))
     return str(int(v))
 
+def point_of(step, at, scope, src):
+    if "at" not in step: return ""
+    verb = step.get("do", "")
+    # tapId and nothing else: a step that ignored the key would tap the centre
+    # and tell the author it tapped the point.
+    if verb != "tapId":
+        fail('%s: step \'%s\' does not take "at" - only tapId does' % (at, verb))
+    p = step["at"]
+    if not isinstance(p, dict) or not p:
+        fail('%s: "at" is a point inside the element as shares of its box, for '
+             'instance {"x": "50%%"} or {"x": "25%%", "y": "50%%"}' % at)
+    out = []
+    for key in sorted(p):
+        if key not in ("x", "y"):
+            fail("%s: '%s' is not a part of a point - \"at\" takes x and y" % (at, key))
+    for key in ("x", "y"):
+        if key not in p:
+            out.append(""); continue
+        v = p[key]
+        if v is None or isinstance(v, (dict, list, bool)):
+            fail('%s: "at" %s is a share of the element, for instance "50%%"' % (at, key))
+        v = fill(v if isinstance(v, str) else str(v), scope, at, bool(src)).strip()
+        # A share, written with its sign: a bare 50 reads as pixels to anyone who
+        # has written a `tap`, and a point in pixels inside an element is the
+        # recorded coordinate this key exists to replace.
+        if not re.match(r"\A[0-9]+%\Z", v):
+            fail('%s: "at" %s is \'%s\' - it has to be a whole share of the '
+                 'element written with %%, from "0%%" to "100%%"' % (at, key, v))
+        # "08" is octal in the shell arithmetic that places the point.
+        n = int(v[:-1])
+        if n > 100:
+            fail('%s: "at" %s is \'%s\' - a point inside the element is at most '
+                 '"100%%"' % (at, key, v))
+        out.append(str(n))
+    return ",".join(out)
+
 def box_spec(step, at, scope, src):
     verb = step.get("do", "")
     if "box" not in step:
@@ -4863,6 +4929,7 @@ def build(path, shown, src, scope, chain, depth, pre=""):
         perm = perm_of(step, at, scope, src)
         fields.append(state_of(step, at) or perm)
         fields.append(wheel_of(step, at, scope, src))
+        fields.append(point_of(step, at, scope, src))
         if cond: recs.append(guard(cond, 1, src, idx))
         recs.append(SEP.join(fields))
 
@@ -4934,7 +5001,7 @@ PY
   # still reported PASS). Reading `<&3` also keeps the loop in THIS shell (not a
   # pipe subshell), so a step's `die` (exit 1) aborts the whole flow with a
   # non-zero status instead of being lost.
-  while IFS=$'\x1f' read -r -d '' do_ val x y mtch tmo dir edg src sidx wcond wspan bspec ttl opt inid shw stt whl <&3; do
+  while IFS=$'\x1f' read -r -d '' do_ val x y mtch tmo dir edg src sidx wcond wspan bspec ttl opt inid shw stt whl atp <&3; do
       # A guard is not a step: it takes no number of its own, and when it holds
       # the run says nothing about it - the steps that follow simply run. When it
       # does not hold, its whole group is read off the stream and every step in it
@@ -5037,7 +5104,7 @@ PY
         assertText)  assert_text "$val" "${mtch:-exact}" "$inid";;
         assertNotText) assert_not_text "$val" "${mtch:-exact}" "$inid";;
         assertNotId) assert_not_id "$val";;
-        tapId)       say "tap id '$val'"; tap_id "$val";;
+        tapId)       say "tap id '$val'"; tap_id "$val" "${atp%%,*}" "${atp#*,}";;
         assertId)    assert_id "$val" "$stt";;
         assertBox)   assert_box "$val" assert "$bspec";;
         assertBoxId) assert_box "$val" id "$bspec";;
@@ -5166,7 +5233,9 @@ ${_yk_B}yukti v$YUKTI_VERSION${_yk_R} — YUKTI — smart mobile-app QA automati
                             poll until the text is gone from the screen, fail on timeout (default 10s)
   yukti wait-for-not-id "<id>" [s]
                             poll until no element with this id is on the screen, fail on timeout (default 10s)
-  yukti tap-id "<id>"       tap the element with this a11y id / resource-id segment
+  yukti tap-id "<id>" [x%] [y%]
+                            tap the element with this a11y id / resource-id segment;
+                            with shares, that point inside it (tap-id slider-track 50%)
   yukti clear-id "<id>"     empty the text field with this a11y id / resource-id segment
   yukti assert-id "<id>"    assert an element with this id is on screen
   yukti assert-box "<q>" <assert|id> minWidth=48dp minHeight=48dp
@@ -5199,6 +5268,8 @@ ${_yk_B}yukti v$YUKTI_VERSION${_yk_R} — YUKTI — smart mobile-app QA automati
               Cheaper than a restart and it resets every tab, but it promises delivery only - an address the app does
               not route still answers ok, and the app navigates after the step returns, so the step after it is
               waitFor / waitForId, not an assert
+              tapId takes "at": {"x":"50%","y":"50%"} - a point inside the element as whole shares of its width and
+              height from its left and top edge, either left out stays at the centre (a slider stop on the track)
               assertText matches the whole label as written; "match":"contains" asks for a substring
               assertText, assertNotText and waitFor take "in": "<id>" - only the element tapId would tap
               and what lies within its bounds count; that element missing fails as "no element with id"
@@ -5317,7 +5388,10 @@ case "$cmd" in
   type) type_str "$@";;
   clear) clear_field "$@";;
   assert) assert_text "$@";;
-  "tap-id"|tapId) tap_id "$@";;
+  # The shares as the flow writes them, "50%", and only so: a bare 50 is refused
+  # as the builder refuses it - it reads as pixels. The sign is dropped here.
+  "tap-id"|tapId) for a in "${2:-}" "${3:-}"; do case "$a" in ''|*%) ;; *) die "tapId: a point is a whole share of the element written with %, for instance 50%, got '$a'";; esac; done
+    a2="${2:-}"; a3="${3:-}"; tap_id "${1:-}" "${a2%\%}" "${a3%\%}";;
   "clear-id"|clearTextId) clear_id "$@";;
   "assert-id"|assertId) assert_id "$@";;
   "assert-box"|assertBox) assert_box_args "$@";;
