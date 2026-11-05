@@ -121,7 +121,8 @@ breaks several steps later on an assert about something unrelated.
 
 ## Add a test case
 
-Flows are JSON in `flows/`. Steps: `wait`, `waitFor`, `waitForId`, `screenshot`,
+Flows are JSON in `flows/`. Steps: `wait`, `waitFor`, `waitForId`,
+`waitForNotText`, `waitForNotId`, `screenshot`,
 `tap {x,y}`, `tapText`, `optionalTapText`, `tapId`, `type`, `clearText {x,y}`,
 `clearTextId`, `pressKey`, `hideKeyboard`, `scroll`, `scrollToText`,
 `dismiss`, `assertText`, `assertId`, `assertBox`, `assertBoxId`, `launch`,
@@ -209,10 +210,33 @@ for an answer would pass on every broken dump. Both of them fail instead - an
 unreadable screen, and a screen whose own bounds are missing so that nothing on
 it can be called visible, are failures of the step, never absence.
 
-`match` belongs to the assertion, so `assertText` and the wait that follows the
-same rules - `waitFor`, below - are the only steps that take it. Any other step
-given a `match` fails instead of ignoring it: a step that reads as exact while
-the verb folds case is a suite that is weaker than it looks.
+When the thing has to go rather than be gone already - a save sheet closing, a
+spinner, an old value being replaced - `waitForNotText` and `waitForNotId` poll
+instead of looking once, the way `waitFor` does for an arrival:
+
+```json
+{"do":"tapText","value":"Save"},
+{"do":"waitForNotId","value":"save-sheet","timeout":15}
+```
+
+They pass as soon as a read finds the element gone, and fail when it is still
+there at the timeout (`"timeout"` in seconds, default 10), with where it was.
+The same rule holds: a read of a screen that could not be read is not counted as
+gone. The wait goes on, and a timeout whose last read failed is a failure that
+says the screen cannot be read - so a wait on a sheet does not go green on an
+app that crashed under it. `waitForNotText` matches as `assertNotText` does,
+`"match":"contains"` included; neither takes `"in"` yet.
+
+Gone is checked, not going: a wait for a spinner that has not come up yet
+passes on its first read, and so does a wait whose text is misspelt, since an
+exact match that finds nothing is absence. When the spinner can be late, wait
+for it to arrive first (`waitForId` with `"optional": true`), then for it to go.
+
+`match` belongs to the assertion, so `assertText`, `assertNotText` and the waits
+that follow the same rules - `waitFor`, below, and `waitForNotText` - are the
+only steps that take it. Any other step given a `match` fails instead of
+ignoring it: a step that reads as exact while the verb folds case is a suite
+that is weaker than it looks.
 
 "On screen" means inside the window and of non-zero size. It does not model
 overlap: a label underneath a modal or an alert is still reported as on screen,
