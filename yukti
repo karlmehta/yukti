@@ -2081,9 +2081,11 @@ press_key(){ local name="${1:-}" u
 # A simulator (iOS 26.5, measured) lists no element of type keyboard: only its
 # keys, as plain buttons - a "delete" key and one button per letter or digit.
 # The keyboard is up when the tree holds that "delete" (lower case: an app's
-# own button says "Delete") and at least nine one-character buttons (a number
-# pad has ten). With "geom" it also prints where to drag to close it: the
-# middle of the keys, and the top of their highest row.
+# own button says "Delete") and at least nine one-character buttons in its
+# cluster: from the delete row up to 180 points above it - three rows of
+# letters, four of a number pad. A one-character button of the app elsewhere
+# on the screen (a "+" in a header) is not a key, and does not move the top of
+# the keyboard.
 # A numeric keypad labels its key "Delete", capital D (iPhone 17 Pro simulator,
 # iOS 26.5, #145), so the lower-case rule missed it and hideKeyboard said no
 # keyboard was up with the keypad over half the form. "Delete" counts only next
@@ -2096,45 +2098,81 @@ press_key(){ local name="${1:-}" u
 # solved: an app that draws its own PIN pad - ten digits and a "Delete" low on
 # the screen - reads as a keyboard, and a keypad in landscape, taller than 40%
 # of the window, does not.
+# When the tree does list a keyboard element, its keys are the one-character
+# buttons inside its frame, and neither shape is needed.
+# With "geom" it also prints where to drag to close it: the middle of the
+# keys, and the top of their highest row - also when the tree lists a keyboard
+# element whose frame takes in the bar above the keys, so that bar stays above
+# "the top"; then the centre of the "Done" button
+# of the bar on top of the keys, or "- -". That Done is tapped, so it has to be
+# the keyboard bar's and nothing else: bottom edge within 80 points above the
+# keys and not below their top - the keyboard's own return key, labelled Done
+# for a field whose key action is done, lies in the bottom row and is Return
+# by another name, which this band keeps out - the
+# shape of a bar button - at most 50 high, at most a quarter of the keys wide,
+# right edge within 24 points of theirs - and inside the toolbar on top of the
+# keys when the tree lists one. A full-width Done riding on the keyboard is the
+# form's own button and is not tapped. Of several, the lowest.
 ikb_shown(){ paths; ui | "$PY" -c '
-import json,sys
+import json,sys,os,traceback
+# Anything unforeseen leaves as 2, "no answer": status 1 would read as "no
+# keyboard", and the close would report success.
+def _unforeseen(t,v,tb):
+    traceback.print_exception(t,v,tb); sys.stderr.flush(); os._exit(2)
+sys.excepthook=_unforeseen
 try: els=json.loads(sys.stdin.read())
 except ValueError: sys.exit(2)   # an unreadable tree is not "no keyboard"
+if not isinstance(els,list): sys.exit(2)
+def kind(e): return (str(e.get("type") or "")+" "+str(e.get("role_description") or "")).lower()
 def frame(e):
     b=e.get("frame") or {}
     g=lambda *k: float(next((b[n] for n in k if n in b), 0) or 0)
     return g("x","X"), g("y","Y"), g("width","Width"), g("height","Height")
-kb=None; keys=[]; delete=False; caps=[]; digs=[]; scr=None; rank=(0,-1.0)
+def inside(a,b): return b[0]-1<=a[0] and a[0]+a[2]<=b[0]+b[2]+1 and b[1]-1<=a[1] and a[1]+a[3]<=b[1]+b[3]+1
+kb=None; dels=[]; ones=[]; caps=[]; scr=None; rank=(0,-1.0)
 for e in els:
-    t=(str(e.get("type") or "")+" "+str(e.get("role_description") or "")).lower()
-    label=str(e.get("AXLabel") or "")
-    f=frame(e)
+    t=kind(e); label=str(e.get("AXLabel") or ""); f=frame(e)
     if f[2]>0 and f[3]>0:
         r=(1 if ("application" in t or "window" in t) else 0, f[2]*f[3])
         if r>rank: rank=r; scr=f
     if "keyboard" in t: kb=f
-    if "button" in t and label=="delete": delete=True
-    if "button" in t and label=="Delete": caps.append(f)
-    if "button" in t and len(label)==1: keys.append(f)
-    if "button" in t and len(label)==1 and label.isdigit(): digs.append((label,f))
+    if "button" not in t or f[2]<=0 or f[3]<=0: continue
+    if label=="delete": dels.append(f)
+    if label=="Delete": caps.append(f)
+    if len(label)==1: ones.append((label,f))
 def keypad():
-    if not caps or scr is None: return False
+    if not caps or scr is None: return []
     top=scr[1]+scr[3]*0.6; end=scr[1]+scr[3]
     band=lambda f: top<=f[1] and f[1]+f[3]<=end+1
-    pad=dict((l,f) for l,f in digs if band(f))
-    if len(pad)<10: return False
+    pad=dict((l,f) for l,f in ones if l.isdigit() and band(f))
+    if len(pad)<10: return []
     hs=[f[3] for f in pad.values()]
-    if max(hs)-min(hs)>2 or not any(band(f) for f in caps): return False
+    if max(hs)-min(hs)>2 or not any(band(f) for f in caps): return []
     return list(pad.values())+[f for f in caps if band(f)]
-# On a keypad the drag is measured from its keys alone: a one-character button
-# of the app higher up would move the top of the keys onto the form.
-pk=keypad()
-if pk: delete=True; keys=pk
-if kb is None and not (delete and len(keys)>=9): sys.exit(1)
+keys=[]
+if kb is not None: keys=[k for l,k in ones if inside(k,kb)]
+else:
+    for d in dels:
+        band=[k for l,k in ones if d[1]-180<=k[1]<=d[1]+d[3]]
+        if len(band)>=9: keys=band+[d]; break
+    # On a keypad the drag is measured from its keys alone: a one-character
+    # button of the app higher up would move the top of the keys onto the form.
+    if not keys: keys=keypad()
+    if not keys: sys.exit(1)
 if len(sys.argv)>1:
-    x,y,w,h = kb if kb else (min(k[0] for k in keys), min(k[1] for k in keys),
-                             max(k[0]+k[2] for k in keys)-min(k[0] for k in keys), 0)
-    sys.stdout.write("%d %d" % (int(x+w/2), int(y)))
+    if keys: left,y,right=min(k[0] for k in keys),min(k[1] for k in keys),max(k[0]+k[2] for k in keys)
+    else: left,y,right=kb[0],kb[1],kb[0]+kb[2]
+    bars=[f for f in (frame(e) for e in els if "toolbar" in kind(e)) if f[2]>0 and y-20<=f[1]+f[3]<=y+2]
+    best=None
+    for e in els:
+        f=frame(e); ex,ey,ew,eh=f
+        if "button" not in kind(e) or str(e.get("AXLabel") or "").strip()!="Done": continue
+        if ew<=0 or eh<=0 or not (y-80<=ey+eh<=y): continue
+        if eh>50 or ew>(right-left)/4 or abs(ex+ew-right)>24: continue
+        if bars and not any(inside(f,b) for b in bars): continue
+        if best is None or ey+eh>best[1]+best[3]: best=f
+    done="%d %d" % (int(best[0]+best[2]/2), int(best[1]+best[3]/2)) if best else "- -"
+    sys.stdout.write("%d %d %s" % (int((left+right)/2), int(y), done))
 sys.exit(0)
 ' "$@"; }
 # hideKeyboard is pressKey with a postcondition, which is why it is built on it
@@ -2149,45 +2187,90 @@ hide_keyboard(){ local st=0
   kb_close hideKeyboard; }
 # Closing a keyboard that is up, with the check that it closed. `who` opens every
 # line it prints, so a swipe step that closes one says it in its own name.
-kb_close(){ local who="$1" st=0
+# On Android Back comes first, and only while the input method says the
+# keyboard is up: the input method takes Back while it is shown, and the key
+# goes no further. (A field that handles Back before the input method does -
+# onKeyPreIme - is the exception, and so is the moment right after a tap, when
+# the state can say "shown" before the keyboard is drawn.) Escape is not taken
+# by the input method. It reaches the window, and a dialog - a React Native
+# Modal among them - takes escape as Back and closes itself with the field in
+# it, so the keyboard was down and the step said so over a screen that had
+# gone. Back with the keyboard already down is never pressed: measured on API
+# 35, it walked the rig out of the app and, one screen later, out to the
+# launcher. So the state is asked right before the key, here as well as by the
+# caller. A keyboard takes a moment to go, so the answer after a key is waited
+# for up to 2 s before the next key. Escape stays as the fallback for a
+# keyboard Back leaves up, with the focused window read before and after it:
+# a window that changed is the dialog escape closed, and that fails the step.
+# akb_gone - polls the input method for up to 2 s: 0 down, 1 still up; no
+# answer stops the step.
+akb_gone(){ local who="$1" i st
+  for i in 1 2 3 4; do
+    sleep 0.5
+    st=0; akb_shown || st=$?
+    if [ "$st" -eq 2 ]; then device_fault; die "$who: the device did not report its input method state"; fi
+    [ "$st" -eq 1 ] && return 0
+  done
+  return 1; }
+afocus(){ adb shell "dumpsys window | grep mCurrentFocus" 2>/dev/null | head -1 | tr -d "\r" | sed "s/^ *//"; }
+kb_close(){ local who="$1" st=0 was now
   is_android || { ikb_close "$who"; return; }
-  press_key escape >/dev/null || die "$who: the device refused the escape key"
-  sleep 0.6
-  kb_shown || st=$?
+  akb_shown || st=$?
   if [ "$st" -eq 2 ]; then device_fault; die "$who: the device did not report its input method state"; fi
-  if [ "$st" -eq 1 ]; then ok "$who: keyboard closed"; return 0; fi
-  # Back is the fallback and never the mechanism, and only while the keyboard is
-  # still up: the IME consumes it then. Measured on API 35 - with the keyboard
-  # already down the same key walked the rig out of the app and, one screen
-  # later, out to the launcher.
-  warn "$who: escape did not close the keyboard - trying Back"
+  if [ "$st" -eq 1 ]; then ok "$who: no keyboard was up any more"; return 0; fi
   akey back || die "$who: the device refused the back key"
-  sleep 0.6
-  st=0; akb_shown || st=$?
-  if [ "$st" -eq 2 ]; then device_fault; die "$who: the device did not report its input method state"; fi
-  if [ "$st" -eq 1 ]; then ok "$who: keyboard closed (Back)"; return 0; fi
-  die "$who: the keyboard is still up after escape and Back"; }
+  akb_gone "$who" && { ok "$who: keyboard closed"; return 0; }
+  warn "$who: Back did not close the keyboard - trying escape, which a dialog around the field may take as Back and close"
+  was="$(afocus)"
+  press_key escape >/dev/null || die "$who: the device refused the escape key"
+  akb_gone "$who" || die "$who: the keyboard is still up after Back and escape"
+  now="$(afocus)"
+  if [ -z "$was" ]; then
+    warn "$who: keyboard closed (escape) - the focused window could not be read, so a dialog that closed with it would go unnoticed"; return 0
+  fi
+  [ "$now" = "$was" ] || die "$who: escape closed the keyboard and the window with it - focus went from '$was' to '${now:-nothing}'"
+  ok "$who: keyboard closed (escape)"; }
 # iOS has no key that only closes the keyboard: escape does nothing to it. The
 # way that types and submits nothing, measured on a simulator (iOS 26.5), is a
 # short drag down just above the keys: a scroll view that dismisses on drag
-# closes it. Return closes a single-line field too, but it can also submit the
-# form or put a newline into a multi-line field, so it is never pressed for the
-# flow: a keyboard the drag leaves up stops the step, and a flow whose form may
-# take Return says so with pressKey 'enter'.
-ikb_close(){ local who="$1" u st=0 geo x top
-  paths; u="$(U)"
+# closes it. A keyboard still up after it - or one that reaches too high for
+# the drag - gets the "Done" button on the bar above the keys, when the tree
+# has one: the close the app itself offers, with the same check after it.
+# Return is never pressed for the flow: it can submit the form or put a
+# newline into a multi-line field. There is no tap "outside the field" either:
+# no point can be sure to miss every element that acts. A keyboard still up
+# stops the step with what was tried, and a flow whose form may take Return
+# says so with pressKey 'enter'.
+# Every check reads the screen afresh: a held tree still shows the keyboard.
+# Sets geo for the caller (ikb_close declares it local; bash scope reaches it).
+ikb_kb(){ local st=0
+  HELD_TREE=""
   geo="$(ikb_shown geom)" || st=$?
-  if [ "$st" -eq 2 ]; then device_fault; die "$who: the device did not report its input method state"; fi
-  [ "$st" -eq 1 ] && { ok "$who: keyboard closed"; return 0; }
-  read -r x top <<<"$geo"
-  [ "$top" -gt 200 ] || die "$who: the keyboard reaches up to y $top, with no room above it for the drag that closes it - if this form may take Return, close it with pressKey 'enter'"
-  idb ui swipe --udid "$u" "$x" $((top-150)) "$x" $((top-60)) --duration 0.3 >/dev/null 2>&1 \
-    || die "$who: the simulator refused the drag above the keyboard"
-  sleep 0.6
-  st=0; ikb_shown || st=$?
-  if [ "$st" -eq 2 ]; then device_fault; die "$who: the device did not report its input method state"; fi
-  if [ "$st" -eq 1 ]; then ok "$who: keyboard closed (drag)"; return 0; fi
-  die "$who: the keyboard is still up after a drag above it - this screen does not close it on a drag; if this form may take Return, close it with pressKey 'enter'"; }
+  if [ "$st" -eq 2 ]; then device_fault; die "$1: the device did not report its input method state"; fi
+  [ "$st" -eq 0 ]; }
+ikb_close(){ local who="$1" u geo x top dx dy tried="" skipped=""
+  paths; u="$(U)"
+  ikb_kb "$who" || { ok "$who: no keyboard was up any more"; return 0; }
+  read -r x top dx dy <<<"$geo"
+  if [ "$top" -gt 200 ]; then
+    idb ui swipe --udid "$u" "$x" $((top-150)) "$x" $((top-60)) --duration 0.3 >/dev/null 2>&1 \
+      || die "$who: the simulator refused the drag above the keyboard"
+    sleep 0.6
+    ikb_kb "$who" || { ok "$who: keyboard closed (drag)"; return 0; }
+    read -r x top dx dy <<<"$geo"
+    tried="a drag above it"
+  else
+    skipped="a drag (the keyboard reaches up to y $top, with no room above it)"
+  fi
+  if [ "$dx" != "-" ]; then
+    idb ui tap --udid "$u" "$dx" "$dy" >/dev/null 2>&1 || die "$who: the simulator refused the tap on Done"
+    sleep 0.6
+    ikb_kb "$who" || { ok "$who: keyboard closed (Done above the keyboard - the app's own button, it may have acted)"; return 0; }
+    tried="${tried:+$tried, }the Done button above it"
+  else
+    skipped="${skipped:+$skipped, }Done (no Done button above the keyboard)"
+  fi
+  die "$who: the keyboard is still up${tried:+ after $tried}${skipped:+ - not tried: $skipped} - if this form may take Return, close it with pressKey 'enter'"; }
 # A swipe that starts on a soft keyboard is taken by the keyboard: Gboard reads a
 # drag across its keys as glide typing and types a word into the focused field,
 # and the list behind it does not move. So the first swipe of a step asks first.
@@ -2201,7 +2284,7 @@ kb_before_swipe(){ local who="$1, before swiping" st=0
   kb_shown || st=$?
   if [ "$st" -eq 1 ]; then return 0; fi
   if [ "$st" -eq 2 ]; then device_fault; die "$who: the device did not report its input method state"; fi
-  # A tree held from before the escape still shows the keyboard, and kb_close
+  # A tree held from before the close still shows the keyboard, and kb_close
   # asks again after it.
   HELD_TREE=""
   kb_close "$who"
@@ -5399,6 +5482,7 @@ ${_yk_B}yukti v$YUKTI_VERSION${_yk_R} — YUKTI — smart mobile-app QA automati
 
   flow steps: wait · waitFor · waitForId · waitForNotText · waitForNotId · screenshot · tap · tapText · optionalTapText · tapId · scroll · swipe · scrollToText · dismiss · type · clearText · clearTextId · pressKey · hideKeyboard · assertText · assertId · assertNotText · assertNotId · assertBox · assertBoxId · turnWheel · swipeId · swipeText · launch · stopApp · clearState · openUrl · setPermission · include
               (clearText · clearTextId · pressKey · hideKeyboard · assertBox · assertBoxId: measured on Android, iOS not yet run;
+               hideKeyboard's Back-first order on Android not yet run either;
               swipe and a share of the screen: not yet run on either platform)
               stopApp force-stops the app, clearState wipes its data (Android only); both take the variant name
               setPermission sets one permission of the app of \$YUKTI_VARIANT before it starts: "value" is

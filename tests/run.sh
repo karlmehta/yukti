@@ -810,6 +810,100 @@ status_is 0; ityped_is ""
 has out.txt "field empty at 190,220"
 verdict
 
+# hideKeyboard on Android (#151). Back goes first while the input method says
+# the keyboard is up: the IME takes it. Escape reaches the window, and a dialog
+# around the field (the fake's "modal") takes it as Back and closes.
+dev_case hide-keyboard-back
+: > "$case_dir/adb/keyboard"; : > "$case_dir/adb/modal"
+screen "$case_dir/adb/dump-1.xml" "$(node EditText query Item true)"
+flow_file "$case_dir/flow.json" '{ "do": "hideKeyboard" }'
+run_flow "$case_dir/flow.json"
+begin "hideKeyboard on Android: Back while the keyboard is up, no escape, and a dialog around the field stays"
+status_is 0; fake_used
+has out.txt "hideKeyboard: keyboard closed"
+has adb/log "shell input keyevent 4"; lacks adb/log "keyevent 111"
+[ -e "$case_dir/adb/modal" ] || no "the dialog around the field closed"
+verdict
+
+# FOCUS_MAIN, FOCUS_DIALOG - the focused window as dumpsys names it.
+FOCUS_MAIN='  mCurrentFocus=Window{1a2b u0 com.example/com.example.MainActivity}'
+FOCUS_DIALOG='  mCurrentFocus=Window{3c4d u0 com.example}'
+
+dev_case hide-keyboard-escape-fallback
+: > "$case_dir/adb/keyboard"; : > "$case_dir/adb/back-stays"
+printf '%s\n' "$FOCUS_MAIN" > "$case_dir/adb/focus"
+screen "$case_dir/adb/dump-1.xml" "$(node EditText query Item true)"
+flow_file "$case_dir/flow.json" '{ "do": "hideKeyboard" }'
+run_flow "$case_dir/flow.json"
+begin "hideKeyboard on Android: a keyboard Back leaves up gets escape, with a warning"
+status_is 0
+has out.txt "Back did not close the keyboard - trying escape, which a dialog around the field may take as Back and close"
+has out.txt "keyboard closed (escape)"
+[ "$(grep -n 'keyevent' "$case_dir/adb/log" | cut -d' ' -f4 | tr '\n' ' ')" = "4 111 " ] \
+  || no "keys were not Back then escape: $(grep 'keyevent' "$case_dir/adb/log" | tr '\n' ' ')"
+verdict
+
+dev_case hide-keyboard-escape-dialog
+: > "$case_dir/adb/keyboard"; : > "$case_dir/adb/back-stays"
+printf '%s\n' "$FOCUS_MAIN" > "$case_dir/adb/focus"; printf '%s\n' "$FOCUS_DIALOG" > "$case_dir/adb/modal"
+screen "$case_dir/adb/dump-1.xml" "$(node EditText query Item true)"
+flow_file "$case_dir/flow.json" '{ "do": "hideKeyboard" }'
+run_flow "$case_dir/flow.json"
+begin "hideKeyboard on Android: escape that closes the dialog around the field with the keyboard fails the step"
+status_is 1
+has out.txt "escape closed the keyboard and the window with it - focus went from 'mCurrentFocus=Window{3c4d u0 com.example}' to 'mCurrentFocus=Window{1a2b u0 com.example/com.example.MainActivity}'"
+verdict
+
+# The keyboard went between the caller's question and the close: kb_close asks
+# again itself, and presses nothing.
+dev_case hide-keyboard-gone-before-key
+: > "$case_dir/adb/keyboard"; : > "$case_dir/adb/modal"; printf 'up down' > "$case_dir/adb/kb-reads"
+screen "$case_dir/adb/dump-1.xml" "$(node EditText query Item true)"
+flow_file "$case_dir/flow.json" '{ "do": "hideKeyboard" }'
+run_flow "$case_dir/flow.json"
+begin "hideKeyboard on Android: a keyboard gone by the time of the key gets no key at all"
+status_is 0
+has out.txt "hideKeyboard: no keyboard was up any more"
+lacks adb/log "keyevent"
+[ -e "$case_dir/adb/modal" ] || no "the dialog around the field closed"
+verdict
+
+# A keyboard that takes a moment to go after Back is waited for, not sent escape.
+dev_case hide-keyboard-slow
+: > "$case_dir/adb/keyboard"; : > "$case_dir/adb/modal"; printf 'up up up up' > "$case_dir/adb/kb-reads"
+screen "$case_dir/adb/dump-1.xml" "$(node EditText query Item true)"
+flow_file "$case_dir/flow.json" '{ "do": "hideKeyboard" }'
+run_flow "$case_dir/flow.json"
+begin "hideKeyboard on Android: a keyboard still going 0.5 s after Back is waited for, and gets no escape"
+status_is 0
+has out.txt "hideKeyboard: keyboard closed"
+has adb/log "shell input keyevent 4"; lacks adb/log "keyevent 111"
+[ -e "$case_dir/adb/modal" ] || no "the dialog around the field closed"
+verdict
+
+dev_case hide-keyboard-android-none
+screen "$case_dir/adb/dump-1.xml" "$(node EditText query Item)"
+flow_file "$case_dir/flow.json" '{ "do": "hideKeyboard" }'
+run_flow "$case_dir/flow.json"
+begin "hideKeyboard on Android: with no keyboard up no key is pressed, Back least of all"
+status_is 0; fake_used
+has out.txt "no keyboard was up"
+lacks adb/log "keyevent"
+verdict
+
+# The close before a swipe is the same close.
+dev_case hide-keyboard-before-swipe
+: > "$case_dir/adb/keyboard"; : > "$case_dir/adb/modal"
+screen "$case_dir/adb/dump-1.xml" "$(node EditText query Item true)" "$(node TextView title Today)"
+flow_file "$case_dir/flow.json" '{ "do": "scroll", "value": "down" }'
+run_flow "$case_dir/flow.json"
+begin "scroll on Android: the keyboard is closed with Back before the swipe, and a dialog around the field stays"
+status_is 0
+has out.txt "before swiping: keyboard closed"
+has adb/log "shell input keyevent 4"; lacks adb/log "keyevent 111"; has adb/log "input swipe"
+[ -e "$case_dir/adb/modal" ] || no "the dialog around the field closed"
+verdict
+
 # hideKeyboard on iOS. A simulator lists its keyboard as plain buttons, one per
 # key, and no element of type keyboard; escape does not close it.
 ios_case ios-hide-keyboard-drag
@@ -821,7 +915,139 @@ begin "hideKeyboard on iOS: keys listed as buttons are a keyboard, and a drag ab
 status_is 0
 has out.txt "keyboard closed (drag)"
 has idb/log "ui swipe"
-lacks idb/log "ui key"
+lacks idb/log "ui key"; lacks idb/log "ui tap"
+verdict
+
+# idone <y> - a "Done" button 60 wide and 40 high at x 320: on the bar above
+# the keys when its bottom edge is within 80 points above their top row.
+idone(){ printf '{"type":"Button","role_description":"button","AXLabel":"Done","frame":{"x":320,"y":%s,"width":60,"height":40}}' "$1"; }
+
+# The drag does not close this keyboard (#91); the bar above it has Done.
+ios_case ios-hide-keyboard-done
+: > "$case_dir/idb/keyboard"; : > "$case_dir/idb/done-closes"; : > "$case_dir/idb/return-closes"
+tree "$case_dir/idb/desc-1.json" "$(itext email 200 '"a@b.c"')" "$(idone 546)"
+flow_file "$case_dir/flow.json" '{ "do": "hideKeyboard" }'
+run_ios "$case_dir/flow.json"
+begin "hideKeyboard on iOS: a keyboard the drag leaves up is closed with Done on the bar above it"
+status_is 0
+has out.txt "keyboard closed (Done above the keyboard - the app's own button, it may have acted)"
+has idb/log "ui swipe"; has idb/log "ui tap --udid FAKE-UDID 350 566"; lacks idb/log "ui key"
+verdict
+
+# No room for the drag is no reason to stop: Done is still there.
+ios_case ios-hide-keyboard-no-room-done
+printf '150' > "$case_dir/idb/keyboard"; : > "$case_dir/idb/done-closes"
+tree "$case_dir/idb/desc-1.json" "$(itext email 40 '"a@b.c"')" "$(idone 80)"
+flow_file "$case_dir/flow.json" '{ "do": "hideKeyboard" }'
+run_ios "$case_dir/flow.json"
+begin "hideKeyboard on iOS: a keyboard with no room above it for the drag goes on to Done"
+status_is 0
+has out.txt "keyboard closed (Done above the keyboard - the app's own button, it may have acted)"
+lacks idb/log "ui swipe"; has idb/log "ui tap --udid FAKE-UDID 350 100"; lacks idb/log "ui key"
+verdict
+
+# A "Done" at the top of the screen is the app's own button, not the bar above
+# the keys, and is not tapped.
+ios_case ios-hide-keyboard-done-elsewhere
+: > "$case_dir/idb/keyboard"; : > "$case_dir/idb/done-closes"
+tree "$case_dir/idb/desc-1.json" "$(idone 60)" "$(itext email 200 '"a@b.c"')"
+flow_file "$case_dir/flow.json" '{ "do": "hideKeyboard" }'
+run_ios "$case_dir/flow.json"
+begin "hideKeyboard on iOS: a Done that is not on the bar above the keys is not tapped"
+status_is 1
+has out.txt "the keyboard is still up after a drag above it - not tried: Done (no Done button above the keyboard) - if this form may take Return, close it with pressKey 'enter'"
+lacks idb/log "ui tap"; lacks idb/log "ui key"
+verdict
+
+# A modal form: Cancel and Done in its navigation bar, a "+" high up. The "+"
+# is not a key, so the keyboard top stays at its keys, and the bar's Done -
+# which would save the form - is not tapped.
+ios_case ios-hide-keyboard-nav-done
+: > "$case_dir/idb/keyboard"; : > "$case_dir/idb/done-closes"
+tree "$case_dir/idb/desc-1.json" \
+  '{"type":"Button","role_description":"button","AXLabel":"Cancel","frame":{"x":16,"y":50,"width":70,"height":44}}' \
+  "$(idone 50)" \
+  '{"type":"Button","role_description":"button","AXLabel":"+","frame":{"x":180,"y":110,"width":40,"height":40}}' \
+  "$(itext title 200 '"Item"')"
+flow_file "$case_dir/flow.json" '{ "do": "hideKeyboard" }'
+run_ios "$case_dir/flow.json"
+begin "hideKeyboard on iOS: a one-character button high up is not a key, and a Done in the navigation bar is not tapped"
+status_is 1
+has out.txt "the keyboard is still up after a drag above it - not tried: Done (no Done button above the keyboard)"
+has idb/log "ui swipe"; lacks idb/log "ui tap"
+verdict
+
+# A full-width Done riding on the keyboard is the form's own button.
+ios_case ios-hide-keyboard-footer-done
+: > "$case_dir/idb/keyboard"; : > "$case_dir/idb/done-closes"
+tree "$case_dir/idb/desc-1.json" "$(itext title 200 '"Item"')" \
+  '{"type":"Button","role_description":"button","AXLabel":"Done","frame":{"x":16,"y":530,"width":358,"height":50}}'
+flow_file "$case_dir/flow.json" '{ "do": "hideKeyboard" }'
+run_ios "$case_dir/flow.json"
+begin "hideKeyboard on iOS: a full-width Done above the keyboard is not the keyboard bar, and is not tapped"
+status_is 1
+has out.txt "not tried: Done (no Done button above the keyboard)"
+lacks idb/log "ui tap"
+verdict
+
+# The return key itself may be labelled Done; pressing it is Return.
+ios_case ios-hide-keyboard-return-done
+: > "$case_dir/idb/keyboard"; : > "$case_dir/idb/done-closes"; printf 'Done' > "$case_dir/idb/return-label"
+tree "$case_dir/idb/desc-1.json" "$(itext title 200 '"Item"')"
+flow_file "$case_dir/flow.json" '{ "do": "hideKeyboard" }'
+run_ios "$case_dir/flow.json"
+begin "hideKeyboard on iOS: a return key labelled Done is not the bar's Done, and is not tapped"
+status_is 1
+has out.txt "not tried: Done (no Done button above the keyboard)"
+lacks idb/log "ui tap"; lacks idb/log "ui key"
+verdict
+
+# itoolbar <x> <width> - a toolbar on top of the keys (y 546-590).
+itoolbar(){ printf '{"type":"Toolbar","role_description":"toolbar","AXLabel":"","frame":{"x":%s,"y":546,"width":%s,"height":44}}' "$1" "$2"; }
+
+ios_case ios-hide-keyboard-toolbar-done
+: > "$case_dir/idb/keyboard"; : > "$case_dir/idb/done-closes"
+tree "$case_dir/idb/desc-1.json" "$(itext title 200 '"Item"')" "$(itoolbar 0 402)" "$(idone 548)"
+flow_file "$case_dir/flow.json" '{ "do": "hideKeyboard" }'
+run_ios "$case_dir/flow.json"
+begin "hideKeyboard on iOS: a Done inside the toolbar on top of the keys is tapped"
+status_is 0
+has out.txt "keyboard closed (Done above the keyboard - the app's own button, it may have acted)"
+has idb/log "ui tap --udid FAKE-UDID 350 568"
+verdict
+
+# A keyboard element whose frame takes in the bar: the top is still the keys'.
+ios_case ios-hide-keyboard-element-bar
+: > "$case_dir/idb/keyboard"; : > "$case_dir/idb/keyboard-element"; : > "$case_dir/idb/done-closes"
+tree "$case_dir/idb/desc-1.json" "$(itext title 200 '"Item"')" "$(itoolbar 0 402)" "$(idone 548)"
+flow_file "$case_dir/flow.json" '{ "do": "hideKeyboard" }'
+run_ios "$case_dir/flow.json"
+begin "hideKeyboard on iOS: a keyboard element that takes in the bar keeps the Done above the keys reachable"
+status_is 0
+has out.txt "keyboard closed (Done above the keyboard"
+has idb/log "ui swipe"; has idb/log "ui tap --udid FAKE-UDID 350 568"
+verdict
+
+ios_case ios-hide-keyboard-toolbar-outside
+: > "$case_dir/idb/keyboard"; : > "$case_dir/idb/done-closes"
+tree "$case_dir/idb/desc-1.json" "$(itext title 200 '"Item"')" "$(itoolbar 0 300)" "$(idone 548)"
+flow_file "$case_dir/flow.json" '{ "do": "hideKeyboard" }'
+run_ios "$case_dir/flow.json"
+begin "hideKeyboard on iOS: with a toolbar on top of the keys, a Done outside it is not tapped"
+status_is 1
+has out.txt "not tried: Done (no Done button above the keyboard)"
+lacks idb/log "ui tap"
+verdict
+
+ios_case ios-hide-keyboard-nothing
+: > "$case_dir/idb/keyboard"; : > "$case_dir/idb/return-closes"
+tree "$case_dir/idb/desc-1.json" "$(itext email 200 '"a@b.c"')" "$(idone 546)"
+flow_file "$case_dir/flow.json" '{ "do": "hideKeyboard" }'
+run_ios "$case_dir/flow.json"
+begin "hideKeyboard on iOS: a keyboard neither closes stops the step with what was tried, and Return is not pressed"
+status_is 1
+has out.txt "hideKeyboard: the keyboard is still up after a drag above it, the Done button above it - if this form may take Return, close it with pressKey 'enter'"
+lacks out.txt "not tried"; lacks idb/log "ui key"
 verdict
 
 # Return would close this keyboard, and could submit the form with it.
@@ -4109,8 +4335,8 @@ screen "$case_dir/adb/dump-1.xml" "$(sroot "$(bnode row-1 0 400 1080 560)")"
 flow_file "$case_dir/flow.json" '{ "do": "swipeId", "value": "row-1", "direction": "left" }'
 run_flow "$case_dir/flow.json"
 begin "swipeId: a keyboard is closed before the row is looked up"
-status_is 0; has adb/log "keyevent 111"; has adb/log "shell input swipe 864 480 216 480 486"
-k="$(grep -n 'keyevent 111' "$case_dir/adb/log" | head -1 | cut -d: -f1)"
+status_is 0; has adb/log "shell input keyevent 4"; lacks adb/log "keyevent 111"; has adb/log "shell input swipe 864 480 216 480 486"
+k="$(grep -n 'keyevent 4$' "$case_dir/adb/log" | head -1 | cut -d: -f1)"
 r="$(grep -n 'uiautomator dump' "$case_dir/adb/log" | tail -1 | cut -d: -f1)"
 [ -n "$k" ] && [ -n "$r" ] && [ "$k" -lt "$r" ] || no "the row was read (line $r) before the keyboard was closed (line $k)"
 verdict

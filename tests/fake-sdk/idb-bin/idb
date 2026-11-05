@@ -19,7 +19,11 @@
 #                  n do
 #   keyboard       present: a keyboard is up - the tree ends with its keys, plain
 #                  buttons as a simulator lists them (letters, shift, delete,
-#                  return), from y 590 down; holding a number: from that y
+#                  return), from y 590 down; holding a number: from that y.
+#                  Letters span x 4-398; return sits at the right end
+#   return-label   what the return key is called: "return" when absent
+#   keyboard-element  present: the tree also lists an element of type keyboard
+#                  whose frame starts 44 points above the keys, taking in a bar
 #   keypad         present: a numeric keypad is up instead - 1 to 9, ".", 0 in
 #                  three columns of 54-high buttons from y 583, a key labelled
 #                  "Delete" with a capital D, and "Next keyboard" (#145);
@@ -28,6 +32,9 @@
 #   return-closes  present: the Return key (`ui key 40`) closes it
 #   screen         "<width> <height>": `describe --json` answers with this screen,
 #                  in points; absent: the verb is refused, as before
+#   done-closes    present: ANY `ui tap` closes the keyboard or the keypad - a
+#                  case puts a Done button in the tree and checks the tap's
+#                  coordinates, never "keyboard closed" alone
 import json, os, sys
 
 d = os.environ["FAKE_IDB_DIR"]
@@ -65,7 +72,10 @@ if ops[:2] == ["ui", "describe-all"]:
                 for i, k in enumerate("qwertyuiopasdfghjklzxcvbnm") ]
         keys += [{"type": "Button", "role_description": "button", "AXLabel": k, "AXValue": None,
                   "frame": {"x": 4 + 100 * i, "y": top + 162, "width": 90, "height": 46}}
-                 for i, k in enumerate(["shift", "delete", "return"])]
+                 for i, k in enumerate(["shift", "delete", "-", read("return-label").strip() or "return"]) if k != "-"]
+        if has("keyboard-element"):
+            keys.insert(0, {"type": "Keyboard", "role_description": "keyboard", "AXLabel": None, "AXValue": None,
+                            "frame": {"x": 0, "y": top - 44, "width": 402, "height": 44 + 216}})
         out = json.dumps(json.loads(out) + keys)
     if has("keypad"):
         top = int(read("keypad").strip() or 583)
@@ -99,7 +109,10 @@ elif ops[:2] == ["ui", "describe-point"] and has("point.json"):
 elif ops[:1] == ["describe"] and has("screen"):
     w, h = read("screen").split()
     sys.stdout.write(json.dumps({"screen_dimensions": {"width_points": int(w), "height_points": int(h)}}))
-elif ops[:2] == ["ui", "tap"] or ops[:1] == ["connect"]:
+elif ops[:2] == ["ui", "tap"]:
+    if has("done-closes") and has("keyboard"): os.remove(path("keyboard"))
+    if has("done-closes") and has("keypad"): os.remove(path("keypad"))
+elif ops[:1] == ["connect"]:
     pass
 else:
     sys.exit(1)
