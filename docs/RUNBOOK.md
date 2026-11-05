@@ -125,7 +125,8 @@ Flows are JSON in `flows/`. Steps: `wait`, `waitFor`, `waitForId`,
 `waitForNotText`, `waitForNotId`, `screenshot`,
 `tap {x,y}`, `tapText`, `optionalTapText`, `tapId`, `type`, `clearText {x,y}`,
 `clearTextId`, `pressKey`, `hideKeyboard`, `scroll`, `scrollToText`,
-`dismiss`, `assertText`, `assertId`, `assertBox`, `assertBoxId`, `launch`,
+`dismiss`, `assertText`, `assertId`, `assertBox`, `assertBoxId`, `swipeId`,
+`swipeText`, `launch`,
 `stopApp`, `clearState`, `include`. Coordinates are
 **points**
 (iPhone 16 Pro = 402×874). Prefer `tapText` (finds by accessibility label) over
@@ -360,6 +361,8 @@ Nineteen more ways a flow stops, the first four of them typos that used to pass:
 - a `pressKey` asking for `back` on iOS, which has no Back key;
 - a `scroll`, or a `scrollToText`, given a direction that is not `up`, `down`,
   `left` or `right` - the unknown ones used to swipe down and say nothing;
+- a `swipeId` or a `swipeText` with no `"direction"`, or with one that is not
+  one of those four;
 - an `"edges"` value other than `clear`, and a `"direction"` or an `"edges"` on
   a step that does not take one;
 - a `scrollToText` with `"edges":"clear"` whose element comes into view and never

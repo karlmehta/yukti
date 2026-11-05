@@ -3966,5 +3966,191 @@ new_case gone-check
 flow_file "$case_dir/flow.json" '{ "do": "waitForNotText", "value": "Saving", "match": "contains", "timeout": 3 }' '{ "do": "waitForNotId", "value": "sheet" }'
 expect "check: waitForNotText and waitForNotId are steps the builder knows" 0 "" check "$case_dir/flow.json"
 
+# ── swipeId / swipeText: a swipe on an element (#82) ────────────────────────
+new_case swipe-no-direction
+flow_file "$case_dir/flow.json" '{ "do": "swipeId", "value": "row-1" }'
+expect "check: swipeId without a direction is refused" 1 \
+  "step 1 'swipeId' needs a \"direction\" - up, down, left or right, where the finger goes" check "$case_dir/flow.json"
+
+new_case swipe-bad-direction
+flow_file "$case_dir/flow.json" '{ "do": "swipeText", "value": "Invoice", "direction": "sideways" }'
+expect "check: swipeText with a direction that is not one is refused" 1 \
+  "step 1 'swipeText': 'sideways' is not a direction - use up, down, left or right" check "$case_dir/flow.json"
+
+new_case swipe-direction-elsewhere
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "row-1", "direction": "left" }'
+expect "check: direction on a step that does not take it names the three that do" 1 \
+  "does not take a \"direction\" - only scrollToText, swipeId and swipeText do" check "$case_dir/flow.json"
+
+new_case swipe-check-ok
+flow_file "$case_dir/flow.json" '{ "do": "swipeId", "value": "row-1", "direction": "left" }' '{ "do": "swipeText", "value": "${ROW}", "direction": "up" }'
+expect "check: swipeId and swipeText with a direction build" 0 " - 2 steps" env ROW=Invoice "$YUKTI" flow --check "$case_dir/flow.json"
+
+# A row 1080x160 at y 400: the centre is 540,480, 60% of the width is 648.
+dev_case swipe-left
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(bnode row-1 0 400 1080 560)")"
+flow_file "$case_dir/flow.json" '{ "do": "swipeId", "value": "row-1", "direction": "left" }'
+run_flow "$case_dir/flow.json"
+begin "swipeId left: the finger goes right to left across the row, centred on it, and stays inside"
+status_is 0; fake_used; has adb/log "shell input swipe 864 480 216 480 486"
+has out.txt "swiped id 'row-1' left, 864,480 to 216,480 (60% of 1080x160)"
+verdict
+
+dev_case swipe-right-text
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(bnode row-1 0 400 1080 560 | sed 's/ text=""/ text="Invoice"/')")"
+flow_file "$case_dir/flow.json" '{ "do": "swipeText", "value": "Invoice", "direction": "right" }'
+run_flow "$case_dir/flow.json"
+begin "swipeText right: found by its text, the finger goes left to right"
+status_is 0; has adb/log "shell input swipe 216 480 864 480 486"
+verdict
+
+# Up and down take the height: 200 high, 60% is 120, and a short stroke is held to 300 ms.
+dev_case swipe-up
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(bnode card 100 400 300 600)")"
+flow_file "$case_dir/flow.json" '{ "do": "swipeId", "value": "card", "direction": "up" }'
+run_flow "$case_dir/flow.json"
+begin "swipeId up: a share of the height, at least 300 ms"
+status_is 0; has adb/log "shell input swipe 200 560 200 440 300"
+verdict
+
+dev_case swipe-share
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(bnode row-1 0 400 1080 560)")"
+flow_file "$case_dir/flow.json" '{ "do": "swipeId", "value": "row-1", "direction": "left" }'
+run_flow "$case_dir/flow.json" YUKTI_SWIPE_SHARE=30
+begin "swipeId: YUKTI_SWIPE_SHARE shortens the stroke"
+status_is 0; has adb/log "shell input swipe 702 480 378 480 300"
+verdict
+
+dev_case swipe-share-bad
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(bnode row-1 0 400 1080 560)")"
+flow_file "$case_dir/flow.json" '{ "do": "swipeId", "value": "row-1", "direction": "left" }'
+run_flow "$case_dir/flow.json" YUKTI_SWIPE_SHARE=95
+begin "swipeId: a share above 90 would start on the element's edge and is refused"
+status_is 1; has out.txt "YUKTI_SWIPE_SHARE must be a whole share of the element from 1 to 90, is '95'"; lacks adb/log "input swipe"
+verdict
+
+for v in 0 060 6x; do
+  dev_case swipe-share-word
+  screen "$case_dir/adb/dump-1.xml" "$(sroot "$(bnode row-1 0 400 1080 560)")"
+  flow_file "$case_dir/flow.json" '{ "do": "swipeId", "value": "row-1", "direction": "left" }'
+  run_flow "$case_dir/flow.json" YUKTI_SWIPE_SHARE=$v
+  begin "swipeId: YUKTI_SWIPE_SHARE=$v is refused"
+  status_is 1; has out.txt "with no leading zero, is '$v'"; lacks adb/log "input swipe"
+  verdict
+done
+
+dev_case swipe-miss-id
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(bnode row-1 0 400 1080 560)")"
+flow_file "$case_dir/flow.json" '{ "do": "swipeId", "value": "row-9", "direction": "left" }'
+run_flow "$case_dir/flow.json"
+begin "swipeId: a missing element in the words of tapId, nothing swiped"
+status_is 1; has out.txt "no element with id 'row-9'"; lacks adb/log "input swipe"
+verdict
+
+dev_case swipe-miss-text
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(bnode row-1 0 400 1080 560 | sed 's/ text=""/ text="Invoice"/')")"
+flow_file "$case_dir/flow.json" '{ "do": "swipeText", "value": "Receipt", "direction": "left" }'
+run_flow "$case_dir/flow.json"
+begin "swipeText: a missing element in the words of tapText, nothing swiped"
+status_is 1; has out.txt "no element matching 'Receipt'"; lacks adb/log "input swipe"
+verdict
+
+dev_case swipe-tiny
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(bnode dot 500 500 503 503)")"
+flow_file "$case_dir/flow.json" '{ "do": "swipeId", "value": "dot", "direction": "left" }'
+run_flow "$case_dir/flow.json"
+begin "swipeId: an element too small for a stroke fails instead of tapping it"
+status_is 1; has out.txt "swipeId: 'dot' is 3x3 on the screen - 60% of it is a stroke of 0, the app would take less than 48 for a tap"; lacks adb/log "input swipe"
+verdict
+
+# 70 wide: 60% is 42 pixels, under the touch slop with a margin.
+dev_case swipe-narrow
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(bnode chip 500 500 570 600)")"
+flow_file "$case_dir/flow.json" '{ "do": "swipeId", "value": "chip", "direction": "left" }'
+run_flow "$case_dir/flow.json"
+begin "swipeId: a stroke the app would read as a tap fails the step"
+status_is 1; has out.txt "60% of it is a stroke of 42, the app would take less than 48 for a tap"; lacks adb/log "input swipe"
+verdict
+
+dev_case swipe-down
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(bnode card 100 400 300 600)")"
+flow_file "$case_dir/flow.json" '{ "do": "swipeId", "value": "card", "direction": "down" }'
+run_flow "$case_dir/flow.json"
+begin "swipeId down: top to bottom, a share of the height"
+status_is 0; has adb/log "shell input swipe 200 440 200 560 300"; has out.txt "swipe id 'card' down"
+verdict
+
+# A row 2000 wide on a 1080 screen, its centre on the screen: the stroke is
+# measured on the part that can be touched, the same as for a 1080 row.
+dev_case swipe-wider-than-screen
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(bnode strip 0 400 2000 560)")"
+flow_file "$case_dir/flow.json" '{ "do": "swipeId", "value": "strip", "direction": "left" }'
+run_flow "$case_dir/flow.json"
+begin "swipeId: an element past the edge of the screen is swiped on its part on the screen"
+status_is 0; has adb/log "shell input swipe 864 480 216 480 486"
+verdict
+
+dev_case swipe-unreadable
+printf 'not a dump' > "$case_dir/adb/dump-1.xml"
+flow_file "$case_dir/flow.json" '{ "do": "swipeId", "value": "row-1", "direction": "left" }'
+run_flow "$case_dir/flow.json"
+begin "swipeId: a screen that cannot be read stops the step, nothing swiped"
+status_is 1; fake_used; lacks out.txt "no element with id"; lacks adb/log "input swipe"
+verdict
+
+new_case swipe-cli-no-direction
+expect "swipe-id by hand without a direction is refused" 1 \
+  "swipeId needs a direction - up, down, left or right, where the finger goes" \
+  env ANDROID_HOME="$ROOT/tests/fake-sdk" YUKTI_PLATFORM=android YUKTI_HELPER=0 FAKE_ADB_DIR="$case_dir" TMPDIR="$case_dir" "$YUKTI" swipe-id row-1
+
+dev_case swipe-keyboard
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(bnode row-1 0 400 1080 560)")"
+: > "$case_dir/adb/keyboard"
+flow_file "$case_dir/flow.json" '{ "do": "swipeId", "value": "row-1", "direction": "left" }'
+run_flow "$case_dir/flow.json"
+begin "swipeId: a keyboard is closed before the row is looked up"
+status_is 0; has adb/log "keyevent 111"; has adb/log "shell input swipe 864 480 216 480 486"
+k="$(grep -n 'keyevent 111' "$case_dir/adb/log" | head -1 | cut -d: -f1)"
+r="$(grep -n 'uiautomator dump' "$case_dir/adb/log" | tail -1 | cut -d: -f1)"
+[ -n "$k" ] && [ -n "$r" ] && [ "$k" -lt "$r" ] || no "the row was read (line $r) before the keyboard was closed (line $k)"
+verdict
+
+# iOS: istate is 360x44 at 20,<y>: at y 200 the centre is 200,222, 60% of the width is 216.
+ios_case ios-swipe-left
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$(istate row-1 Button 200 "" '["Button"]')"
+ipoint row-1 20 200 360 44
+flow_file "$case_dir/flow.json" '{ "do": "swipeId", "value": "row-1", "direction": "left" }'
+run_ios "$case_dir/flow.json"
+begin "swipeId on iOS: idb swipe inside the frame, with an explicit duration"
+status_is 0; has idb/log "ui swipe --udid FAKE-UDID --duration 1.44 308 222 92 222"; lacks out.txt "covered"
+verdict
+
+ios_case ios-swipe-covered
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$(istate row-1 Button 200 "" '["Button"]')"
+ipoint tab-bar 0 200 402 60
+flow_file "$case_dir/flow.json" '{ "do": "swipeId", "value": "row-1", "direction": "left" }'
+run_ios "$case_dir/flow.json"
+begin "swipeId on iOS: an element over the start point fails the step by name, nothing swiped"
+status_is 1; has out.txt "'row-1' at 308,222 is covered by tab-bar - not swiped"; lacks idb/log "ui swipe"
+verdict
+
+# 44 high: 60% is 26 points, over the 20 of iOS; the finger is held to 0.3 s.
+ios_case ios-swipe-up
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$(istate row-1 Button 200 "" '["Button"]')"
+ipoint row-1 20 200 360 44
+flow_file "$case_dir/flow.json" '{ "do": "swipeId", "value": "row-1", "direction": "up" }'
+run_ios "$case_dir/flow.json"
+begin "swipeId up on iOS: a share of the height, at least 0.3 s"
+status_is 0; has idb/log "ui swipe --udid FAKE-UDID --duration 0.30 200 235 200 209"
+verdict
+
+ios_case ios-swipe-unknown
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$(istate row-1 Button 200 "" '["Button"]')"
+flow_file "$case_dir/flow.json" '{ "do": "swipeId", "value": "row-1", "direction": "left" }'
+run_ios "$case_dir/flow.json"
+begin "swipeId on iOS: no answer from describe-point swipes as before, with a warning"
+status_is 0; has out.txt "could not read what is under 'row-1' at 308,222 - swiping as before"; has idb/log "ui swipe"
+verdict
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

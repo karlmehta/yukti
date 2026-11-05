@@ -2865,6 +2865,100 @@ scroll(){ local d="${1:-down}" w h
       if [ "$d" = left ]; then iswipe $(( w / 5 )) $(( h / 2 )) $(( w * 4 / 5 )) $(( h / 2 ))
       else iswipe $(( w * 4 / 5 )) $(( h / 2 )) $(( w / 5 )) $(( h / 2 )); fi;;
   esac; }
+# ── swipeId / swipeText: a swipe on an element, not on the screen (#82) ───────
+# A list row that hides its actions (delete, archive) shows them only after a
+# swipe across the row itself, and until then the buttons are not in the tree.
+# `scroll` cannot do it: it starts away from the elements inside a list on
+# purpose, so that the list gets the gesture. Here the element has to get it, and
+# the list must not move.
+#
+# The element is found the way tapId and tapText find it, and a miss reads in
+# their words. Neither scrolls - scrollToText first for a row below the fold.
+# The direction is where the finger goes: "left" draws it from right to left
+# across the row, which is the swipe that shows a delete button on its right.
+# That is the other way round from `scroll`, whose direction names what comes
+# into view.
+#
+# The stroke is a share of the element's width (of its height for up and down),
+# centred on the element's centre, so it begins and ends inside it: a stroke from
+# the centre over 60% of the width would leave the row at its edge and could land
+# on its neighbour. 60% by default, YUKTI_SWIPE_SHARE to change it, at most 90:
+# at 100 the finger goes down on the element's edge, which for a full-width row
+# is the edge of the screen, where the system takes the touch for its own gesture
+# (Back on Android, edge pan on iOS).
+#
+# Only the part of the element on the screen counts. A lookup accepts an element
+# whose centre is on the screen, and its frame may run past the edge - a carousel
+# wider than the screen, a tall card under the bottom - so the stroke is measured
+# on what can be touched, never started off the screen.
+#
+# A stroke shorter than the touch slop is a tap to the app, and a tap on a row
+# opens it: at least 48 pixels on Android (8 dp of slop is 24 pixels on a
+# 480 dpi screen, twice that leaves a margin) and 20 points on iOS (slop ~10).
+#
+# swipeText finds what tapText would tap, which is often the label inside a row,
+# not the row: the stroke is then a share of the label. For a row, swipeId on the
+# row's container. On iOS the start point is checked like a tap point, and a
+# control with an id of its own under it (a chevron, a "more" button) fails the
+# step as covered.
+#
+# iOS: in rows with swipe actions a long swipe can perform the first action
+# instead of only showing it. 60% is written, not measured on iOS: if the action
+# fires earlier there, the default goes down for both platforms. The finger moves
+# at IOS_SWIPE_PT_S, as in scroll - an explicit duration, never idb's own.
+SWIPE_SHARE="${YUKTI_SWIPE_SHARE:-60}"
+# swipe_el <id or text> <id|text> <up|down|left|right>
+swipe_el(){ local q="${1:-}" mode="$2" d="${3:-}" verb what out st=0 v
+  [ "$mode" = id ] && { verb=swipeId; what=id; } || { verb=swipeText; what=text; }
+  [ -n "$q" ] || die "$verb needs a non-empty $what"
+  case "$d" in up|down|left|right) ;; "") die "$verb needs a direction - up, down, left or right, where the finger goes";;
+    *) die "$verb: '$d' is not a direction - use up, down, left or right";; esac
+  # Digits only and no leading zero, as for the swipe speed; above 100 the stroke
+  # leaves the element, which is what this step exists not to do.
+  case "$SWIPE_SHARE" in ''|*[!0-9]*|0*) die "YUKTI_SWIPE_SHARE must be a whole share of the element from 1 to 90, with no leading zero, is '$SWIPE_SHARE'";; esac
+  [ "$SWIPE_SHARE" -le 90 ] || die "YUKTI_SWIPE_SHARE must be a whole share of the element from 1 to 90, is '$SWIPE_SHARE' - above 90 the finger starts on the element's edge"
+  # The row may sit under the keyboard; closing it after the lookup would move
+  # the row away from the coordinates just read.
+  kb_before_swipe "$verb" || :
+  out="$(find_el "$q" "$mode" exact box)" || st=$?
+  [ "$st" -eq 0 ] || die "$(lookup_err "$st")"
+  if [ -z "$out" ]; then [ "$mode" = id ] && die "no element with id '$q'"; die "no element matching '$q'"; fi
+  local x1 y1 x2 y2 sx1 sy1 sx2 sy2 vx1 vy1 vx2 vy2 cx cy half fx fy tx ty least
+  read -r x1 y1 x2 y2 sx1 sy1 sx2 sy2 <<<"$out"
+  # The part on the screen.
+  vx1=$x1; vy1=$y1; vx2=$x2; vy2=$y2
+  [ "$vx1" -ge "$sx1" ] || vx1=$sx1; [ "$vy1" -ge "$sy1" ] || vy1=$sy1
+  [ "$vx2" -le "$sx2" ] || vx2=$sx2; [ "$vy2" -le "$sy2" ] || vy2=$sy2
+  cx=$(( (vx1 + vx2) / 2 )); cy=$(( (vy1 + vy2) / 2 ))
+  case "$d" in
+    left|right) half=$(( (vx2 - vx1) * SWIPE_SHARE / 200 ));;
+    *)          half=$(( (vy2 - vy1) * SWIPE_SHARE / 200 ));;
+  esac
+  is_android && least=48 || least=20
+  [ $((half * 2)) -ge "$least" ] || die "$verb: '$q' is $((vx2 - vx1))x$((vy2 - vy1)) on the screen - $SWIPE_SHARE% of it is a stroke of $((half * 2)), the app would take less than $least for a tap"
+  case "$d" in
+    left)  fx=$((cx + half)); tx=$((cx - half)); fy=$cy; ty=$cy;;
+    right) fx=$((cx - half)); tx=$((cx + half)); fy=$cy; ty=$cy;;
+    up)    fy=$((cy + half)); ty=$((cy - half)); fx=$cx; tx=$cx;;
+    down)  fy=$((cy - half)); ty=$((cy + half)); fx=$cx; tx=$cx;;
+  esac
+  # Where the finger goes down is the point that has to be the element, as for a
+  # tap: something drawn over it would take the gesture.
+  v="$(ihit "$q" "$mode" "$fx" "$fy")"
+  case "$v" in
+    ok) ;;
+    covered*) die "'$q' at $fx,$fy is covered by ${v#covered } - not swiped, the touch would go to that instead";;
+    *) warn "could not read what is under '$q' at $fx,$fy - swiping as before";;
+  esac
+  if is_android; then apaths
+    # The rule of the vertical scroll: 3 ms for every 4 pixels, here at least
+    # 300 ms, so a short row is not flicked.
+    local dur=$(( half * 2 * 3 / 4 )); [ "$dur" -ge 300 ] || dur=300
+    adb shell input swipe "$fx" "$fy" "$tx" "$ty" "$dur" || die "$verb: the device refused the swipe on '$q'"
+  else paths
+    iswipe "$fx" "$fy" "$tx" "$ty" || die "$verb: idb refused the swipe on '$q'"
+  fi
+  ok "swiped $what '$q' $d, $fx,$fy to $tx,$ty ($SWIPE_SHARE% of $((x2 - x1))x$((y2 - y1)))"; }
 # a11y reports FULL-CONTENT coords; taps need ON-SCREEN coords. Scroll a label into the viewport.
 # Stop on an unreadable screen instead of swiping eight times into the dark:
 # a swipe changes state, and the state is what the next step is checking.
@@ -4200,7 +4294,7 @@ PY
 #            waitForNotText[timeout,match]|waitForNotId[timeout]|screenshot|
 #            openUrl|setPermission[state]|tap[x,y]|tapText[timeout]|optionalTapText|tapId|type|clearText[x,y]|clearTextId|pressKey|hideKeyboard|
 #            scroll|scrollToText[direction,edges,timeout]|dismiss|assertText[match]|assertId|assertNotText[match]|assertNotId|
-#            assertBox[box]|assertBoxId[box]|turnWheel[wheel]
+#            assertBox[box]|assertBoxId[box]|turnWheel[wheel]|swipeId[direction]|swipeText[direction]
 #            any step, and an include, may carry "when": {visible|notVisible|
 #            visibleId|notVisibleId|zeroSizeId|platform} - all of them have to hold;
 #            waitForId may carry "optional": true - a timeout skips it instead
@@ -4286,7 +4380,7 @@ cond_words(){ local spec="$1" pair kind val out=""
     esac
   done
   printf '%s' "$out"; }
-FLOW_VERBS="launch stopApp clearState openUrl setPermission wait waitFor waitForId waitForNotText waitForNotId screenshot tap tapText optionalTapText tapId type clearText clearTextId pressKey hideKeyboard scroll scrollToText dismiss assertText assertId assertNotText assertNotId assertBox assertBoxId turnWheel"
+FLOW_VERBS="launch stopApp clearState openUrl setPermission wait waitFor waitForId waitForNotText waitForNotId screenshot tap tapText optionalTapText tapId type clearText clearTextId pressKey hideKeyboard scroll scrollToText dismiss assertText assertId assertNotText assertNotId assertBox assertBoxId turnWheel swipeId swipeText"
 # The steps a condition switched off. They keep their numbers - the numbering is
 # end to end, and a skipped step that gave its number away would move every step
 # after it - they say so on the console, and they land in the report as `skipped`
@@ -4889,7 +4983,12 @@ PY
       # Same rule for the two keys scrollToText reads: a key a step ignores is a
       # line of the flow file that does not do what it says. `scroll` carries its
       # direction in "value", the way it always has.
-      [ -z "$dir" ] || case "$do_" in scrollToText) ;; *) die "step $FLOW_IDX '$do_' does not take a \"direction\" - only scrollToText does; scroll takes its direction as its \"value\"";; esac
+      [ -z "$dir" ] || case "$do_" in scrollToText|swipeId|swipeText) ;; *) die "step $FLOW_IDX '$do_' does not take a \"direction\" - only scrollToText, swipeId and swipeText do; scroll takes its direction as its \"value\"";; esac
+      # A swipe on an element has no direction of its own to fall back on: left
+      # shows a row's actions, right often does something else entirely.
+      case "$do_" in swipeId|swipeText)
+        case "$dir" in up|down|left|right) ;; "") die "step $FLOW_IDX '$do_' needs a \"direction\" - up, down, left or right, where the finger goes";;
+          *) die "step $FLOW_IDX '$do_': '$dir' is not a direction - use up, down, left or right";; esac;; esac
       [ -z "$edg" ] || case "$do_" in scrollToText) ;; *) die "step $FLOW_IDX '$do_' does not take an \"edges\" - only scrollToText does";; esac
       # tapText with "in" reads the screen once and does not scroll, so the wait
       # at the end of a list that "timeout" sets is not there to set (#146).
@@ -4943,6 +5042,8 @@ PY
         assertBox)   assert_box "$val" assert "$bspec";;
         assertBoxId) assert_box "$val" id "$bspec";;
         turnWheel)   turn_wheel "$whl" "$val";;
+        swipeId)     say "swipe id '$val' $dir"; swipe_el "$val" id "$dir";;
+        swipeText)   say "swipe '$val' $dir"; swipe_el "$val" text "$dir";;
         launch)      launch "$val";;
         stopApp)     stop_app "$val";;
         clearState)  clear_state "$val";;
@@ -5074,13 +5175,19 @@ ${_yk_B}yukti v$YUKTI_VERSION${_yk_R} — YUKTI — smart mobile-app QA automati
                             in pixels (48), dp ("48dp") or a share ("5%");
                             above, below, leftOf, rightOf, apart take the id of
                             another element (above=tab-bar)
+  yukti swipe-id "<id>" <up|down|left|right>
+                            swipe across the element with this id, in the direction the
+                            finger goes, over 60% of its width (of its height for up/down),
+                            centred on it; YUKTI_SWIPE_SHARE changes the share (1-90)
+  yukti swipe-text "<text>" <up|down|left|right>
+                            the same for the element with this text
   yukti assert-not "<text>" [exact|contains] [<id>]
                             assert the text is NOT on the current screen (no scroll);
                             with an id, NOT in that element, which has to be on screen
   yukti assert-not-id "<id>"
                             assert no element with this id is on the current screen
 
-  flow steps: wait · waitFor · waitForId · waitForNotText · waitForNotId · screenshot · tap · tapText · optionalTapText · tapId · scroll · scrollToText · dismiss · type · clearText · clearTextId · pressKey · hideKeyboard · assertText · assertId · assertNotText · assertNotId · assertBox · assertBoxId · turnWheel · launch · stopApp · clearState · openUrl · setPermission · include
+  flow steps: wait · waitFor · waitForId · waitForNotText · waitForNotId · screenshot · tap · tapText · optionalTapText · tapId · scroll · scrollToText · dismiss · type · clearText · clearTextId · pressKey · hideKeyboard · assertText · assertId · assertNotText · assertNotId · assertBox · assertBoxId · turnWheel · swipeId · swipeText · launch · stopApp · clearState · openUrl · setPermission · include
               (clearText · clearTextId · pressKey · hideKeyboard · assertBox · assertBoxId: measured on Android, iOS not yet run)
               stopApp force-stops the app, clearState wipes its data (Android only); both take the variant name
               setPermission sets one permission of the app of \$YUKTI_VARIANT before it starts: "value" is
@@ -5108,6 +5215,10 @@ ${_yk_B}yukti v$YUKTI_VERSION${_yk_R} — YUKTI — smart mobile-app QA automati
               scroll takes up, down, left or right as its "value"; scrollToText takes the same four as "direction"
               (default down) and "edges":"clear" to land the element away from the band edges, failing if it cannot;
               at the end of the list it waits for the list to grow ("timeout": seconds, default 5) before it fails
+              swipeId / swipeText swipe across one element to show what it hides (a row's delete): "direction"
+              is where the finger goes - left reveals actions on the right, the other way round from scroll;
+              the stroke is 60% of the element on the screen (YUKTI_SWIPE_SHARE, 1-90), centred on it; neither scrolls;
+              swipeText takes what tapText would tap, often the label inside a row - for a row, swipeId (iOS not yet run)
               assertNotText / assertNotId state that something is NOT on the screen as it is now; they never scroll
               waitForNotText / waitForNotId poll until it is gone ("timeout": seconds, default 10) and fail when it is
               still there; an unreadable screen is never taken for gone - at the timeout it fails as unreadable
@@ -5171,7 +5282,7 @@ case "$cmd" in
   install) resolve_platform "$(install_variant "$@")";;
   build|pull|launch|up|"stop-app"|stopApp|"clear-state"|clearState) resolve_platform "${1:-}";;
   boot|shot|ui|find|tap|"tap-text"|tapText|scroll|"scroll-to"|scrollToText|dismiss|type|clear|assert|"open-url"|openUrl|\
-  "tap-id"|tapId|"clear-id"|clearTextId|"assert-id"|assertId|"assert-box"|assertBox|"assert-not"|assertNotText|"assert-not-id"|assertNotId|"wait-for"|waitFor|\
+  "tap-id"|tapId|"clear-id"|clearTextId|"assert-id"|assertId|"assert-box"|assertBox|"swipe-id"|swipeId|"swipe-text"|swipeText|"assert-not"|assertNotText|"assert-not-id"|assertNotId|"wait-for"|waitFor|\
   "wait-for-not"|waitForNotText|"wait-for-not-id"|waitForNotId)
     resolve_platform;;
   # init, doctor, scan and help drive nothing, and a command this tool does not
@@ -5210,6 +5321,8 @@ case "$cmd" in
   "clear-id"|clearTextId) clear_id "$@";;
   "assert-id"|assertId) assert_id "$@";;
   "assert-box"|assertBox) assert_box_args "$@";;
+  "swipe-id"|swipeId) swipe_el "${1:-}" id "${2:-}";;
+  "swipe-text"|swipeText) swipe_el "${1:-}" text "${2:-}";;
   "assert-not"|assertNotText) assert_not_text "$@";;
   "assert-not-id"|assertNotId) assert_not_id "$@";;
   "wait-for"|waitFor) wait_for "$@";;
