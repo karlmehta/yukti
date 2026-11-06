@@ -3341,7 +3341,7 @@ expect "check: a state that is not true or false is refused" 1 \
 new_case in-wrong-step
 flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "Ada", "in": "greeting" }'
 expect "check: in on a step that does not take it is refused" 1 \
-  "step 1 'tapId': step 'tapId' does not take \"in\" - only assertText, assertNotText, waitFor, tapText do" check "$case_dir/flow.json"
+  "step 1 'tapId': step 'tapId' does not take \"in\" - only assertText, assertNotText, waitFor, tapText, assertCount, assertCountId do" check "$case_dir/flow.json"
 
 new_case tap-in-timeout
 flow_file "$case_dir/flow.json" '{ "do": "tapText", "value": "Terms of Use", "in": "consent-note", "timeout": 5 }'
@@ -4159,7 +4159,7 @@ dev_case gone-id-match
 flow_file "$case_dir/flow.json" '{ "do": "waitForNotId", "value": "sheet", "match": "contains" }'
 run_flow "$case_dir/flow.json"
 begin "waitForNotId: a match is refused, it matches the id exactly"
-status_is 1; has out.txt "does not take a \"match\" - only assertText, assertNotText, waitFor and waitForNotText do"
+status_is 1; has out.txt "does not take a \"match\" - only assertText, assertNotText, assertCount, waitFor and waitForNotText do"
 verdict
 
 dev_case gone-cli
@@ -4644,6 +4644,497 @@ status_is 1
 has adb/log "shell input swipe 540 1647 540 549 823"
 has out.txt "swipe: from 540,1200 to 540,1200 does not move"
 count_is adb/log "input swipe" 1
+verdict
+
+# ── one of several matches: "index" (#46) ────────────────────────────────────
+# xnode <id> <text> <x1> <y1> <x2> <y2> - a control with a label and an id.
+xnode(){ printf '<node index="0" text="%s" resource-id="%s" class="android.widget.Button" package="com.example" content-desc="" checkable="false" checked="false" clickable="true" enabled="true" focusable="true" focused="false" scrollable="false" long-clickable="false" password="false" selected="false" bounds="[%d,%d][%d,%d]" />' \
+  "$2" "${1:+com.example:id/$1}" "$3" "$4" "$5" "$6"; }
+atap_is(){ grep -qx "shell input tap $1" "$case_dir/adb/log" || no "no tap at $1 - the device was asked: $(grep '^shell input tap' "$case_dir/adb/log" | tr '\n' '|')"; }
+no_atap(){ ! grep -q '^shell input tap' "$case_dir/adb/log" || no "a tap went to the device"; }
+# Three equal buttons, listed in the dump in an order that is not the screen's:
+# the lower one first, then the right one of the top row (a little lower than
+# its neighbour, still the same row), then the left one.
+X_GRID="$(xnode "" Continue 100 900 500 1000)$(xnode "" Continue 600 310 1000 410)$(xnode "" Continue 100 300 500 400)"
+
+dev_case idx-tap-text
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$X_GRID")"
+flow_file "$case_dir/flow.json" '{ "do": "tapText", "value": "Continue", "index": 1 }' '{ "do": "tapText", "value": "Continue", "index": 2 }' \
+  '{ "do": "tapText", "value": "Continue", "index": 0 }'
+run_flow "$case_dir/flow.json"
+begin "index: tapText counts top to bottom, then left to right, not in dump order"
+status_is 0; fake_used; atap_is "800 360"; atap_is "300 950"; atap_is "300 350"
+has out.txt "tap 'Continue' index 1"
+verdict
+
+dev_case idx-out-of-range
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$X_GRID")"
+flow_file "$case_dir/flow.json" '{ "do": "tapText", "value": "Continue", "index": 3 }'
+run_flow "$case_dir/flow.json"
+begin "index: past the last match the step stops, says how many matched and taps nothing"
+status_is 1; no_atap
+has out.txt "index 3 is out of range: 3 elements match 'Continue' as closely as the best match on the screen (the index counts from 0, top to bottom, then left to right)"
+has res/flow.xml "index 3 is out of range: 3 elements match"
+verdict
+
+# Rows: centres further apart than half the smaller height are two rows, even
+# when the lower one is further left.
+dev_case idx-rows
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(xnode "" Tag 100 160 400 260)$(xnode "" Tag 600 100 900 200)$(xnode "" Tag 100 1000 400 1100)$(xnode "" Tag 600 1040 900 1140)")"
+flow_file "$case_dir/flow.json" '{ "do": "assertText", "value": "Tag", "index": 0 }' '{ "do": "assertText", "value": "Tag", "index": 1 }' \
+  '{ "do": "assertText", "value": "Tag", "index": 2 }' '{ "do": "assertText", "value": "Tag", "index": 3 }'
+run_flow "$case_dir/flow.json"
+begin "index: a row is centres within half the smaller height; otherwise top to bottom"
+status_is 0
+has out.txt "assert (exact): 'Tag' index 0 on screen at 750 150"; has out.txt "assert (exact): 'Tag' index 1 on screen at 250 210"
+has out.txt "assert (exact): 'Tag' index 2 on screen at 250 1050"; has out.txt "assert (exact): 'Tag' index 3 on screen at 750 1090"
+verdict
+
+# The frame around a control is not a second match: the tie rule of tapText.
+dev_case idx-frame
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(xnode "" Continue 0 200 1080 1200)" "$(xnode "" Continue 100 900 500 1000)" "$(xnode "" Continue 600 900 1000 1000)")"
+flow_file "$case_dir/flow.json" '{ "do": "tapText", "value": "Continue", "index": 1 }' '{ "do": "tapText", "value": "Continue", "index": 2 }'
+run_flow "$case_dir/flow.json"
+begin "index: a match that holds another match is its frame and does not count"
+status_is 1; atap_is "800 950"
+has out.txt "index 2 is out of range: 2 elements match 'Continue'"
+verdict
+
+# Off the screen and at zero size: not counted, as the single lookup ignores them.
+dev_case idx-filters
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(xnode opt "" 100 100 100 100)" "$(xnode opt "" 100 2600 500 2700)" "$(xnode opt "" 100 500 500 600)" "$(xnode opt "" 100 700 500 800)")"
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "opt", "index": 1 }' '{ "do": "assertId", "value": "opt", "index": 2 }'
+run_flow "$case_dir/flow.json"
+begin "index: tapId and assertId skip zero size and off screen when counting"
+status_is 1; atap_is "300 750"
+has out.txt "tap id 'opt' index 1"
+has out.txt "assert FAILED: index 2 is out of range: 2 elements with id 'opt' as closely as the best match on the screen"
+verdict
+
+# The shape of the issue: rows answered before stay above, and each row repeats
+# the options by id. "in" names the first row with its id, so the lowest row is
+# reached by the index alone: the options are counted down the screen.
+X_ROWS="$(xnode row "" 0 300 1080 500)$(xnode opt Yes 100 350 500 450)$(xnode opt No 600 350 1000 450)$(xnode row "" 0 600 1080 800)$(xnode opt Yes 100 650 500 750)$(xnode opt No 600 650 1000 750)"
+dev_case idx-lowest-row
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$X_ROWS")"
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "opt", "index": 3 }'
+run_flow "$case_dir/flow.json"
+begin "index: option 2 of the lowest of two rows is index 3 by id"
+status_is 0; atap_is "800 700"
+verdict
+
+# "in" and "index" together: the index counts inside the element only.
+dev_case idx-in
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(xnode "" Yes 100 100 500 200)$(xnode card "" 0 300 1080 500)$(xnode "" Yes 600 350 1000 450)$(xnode "" Yes 100 350 500 450)")"
+flow_file "$case_dir/flow.json" '{ "do": "assertText", "value": "Yes", "in": "card", "index": 1 }' '{ "do": "assertText", "value": "Yes", "in": "card", "index": 2 }'
+run_flow "$case_dir/flow.json"
+begin "index with in: counted inside the element, out of range names it"
+status_is 1
+has out.txt "assert (exact) in 'card': 'Yes' index 1 on screen at 800 400"
+has out.txt "assert FAILED (exact match): index 2 is out of range: 2 elements match 'Yes' in the element with id 'card' as closely as the best match on the screen"
+verdict
+
+dev_case idx-wait
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(xnode item "" 0 300 1080 400)")"
+screen "$case_dir/adb/dump-2.xml" "$(sroot "$(xnode item "" 0 300 1080 400)$(xnode item "" 0 500 1080 600)")"
+flow_file "$case_dir/flow.json" '{ "do": "waitForId", "value": "item", "index": 1, "timeout": 5 }' '{ "do": "waitForId", "value": "item", "index": 2, "timeout": 1 }'
+run_flow "$case_dir/flow.json"
+begin "index: waitForId waits for the second match, and its timeout says how many there were"
+status_is 1
+has out.txt "waitFor id, index 1: 'item' on screen at 540 550"
+has out.txt "'item' not on screen after 1s - index 2 is out of range: 2 elements with id 'item' as closely as the best match on the screen"
+verdict
+
+dev_case idx-box
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(xnode card "" 0 300 1080 400)$(xnode card "" 0 500 1080 700)")"
+flow_file "$case_dir/flow.json" '{ "do": "assertBoxId", "value": "card", "index": 1, "box": { "minHeight": 200 } }'
+run_flow "$case_dir/flow.json"
+begin "index: assertBoxId measures the match it names"
+status_is 0; has out.txt "assert box: id 'card' index 1 is 1080x200 at [0,500][1080,700]"
+verdict
+
+dev_case idx-optional
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$X_GRID")"
+flow_file "$case_dir/flow.json" '{ "do": "optionalTapText", "value": "Continue", "index": 5 }'
+run_flow "$case_dir/flow.json"
+begin "index: optionalTapText past the last match skips and says how many matched"
+status_is 0; no_atap
+has out.txt "optional 'Continue' not present - skipped: index 5 is out of range: 3 elements match 'Continue'"
+verdict
+
+dev_case idx-clear
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(xnode field "" 0 300 1080 400)$(xnode field "" 0 500 1080 600)")"
+flow_file "$case_dir/flow.json" '{ "do": "clearTextId", "value": "field", "index": 2 }'
+run_flow "$case_dir/flow.json"
+begin "index: clearTextId past the last match touches nothing"
+status_is 1; no_atap; has out.txt "index 2 is out of range: 2 elements with id 'field' as closely as the best match on the screen"
+verdict
+
+new_case idx-check
+flow_file "$case_dir/flow.json" '{ "do": "tapText", "value": "Continue", "index": 1 }' '{ "do": "tapId", "value": "opt", "index": "0" }' \
+  '{ "do": "assertText", "value": "Yes", "in": "card", "index": 2 }' '{ "do": "waitForId", "value": "item", "index": 1 }'
+expect "check: index builds on the lookup verbs" 0 " - 4 steps" check "$case_dir/flow.json"
+
+new_case idx-negative
+flow_file "$case_dir/flow.json" '{ "do": "tapText", "value": "Continue", "index": -1 }'
+expect "check: a negative index is refused" 1 "\"index\" is '-1' - it has to be a whole number from 0" check "$case_dir/flow.json"
+
+new_case idx-fraction
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "opt", "index": 1.5 }'
+expect "check: a fractional index is refused" 1 "\"index\" is '1.5' - it has to be a whole number from 0" check "$case_dir/flow.json"
+
+new_case idx-bool
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "opt", "index": true }'
+expect "check: a boolean index is refused" 1 "\"index\" is the number of the match, from 0" check "$case_dir/flow.json"
+
+new_case idx-not
+flow_file "$case_dir/flow.json" '{ "do": "assertNotText", "value": "Item", "index": 2 }'
+expect "check: assertNotText with an index points to assertCount" 1 \
+  "step 'assertNotText' does not take \"index\" - to say there are fewer than N matches use assertCount with \"op\": \"atMost\"" check "$case_dir/flow.json"
+
+new_case idx-scroll
+flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Item", "index": 2 }'
+expect "check: a verb that does not look one element up refuses an index" 1 \
+  "step 'scrollToText' does not take \"index\" - only tapText, optionalTapText, tapId" check "$case_dir/flow.json"
+
+ios_case ios-idx-tap
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$(ilabel "" Continue 20,500,160,40)" "$(ilabel "" Continue 220,200,160,40)" "$(ilabel "" Continue 20,205,160,40)"
+flow_file "$case_dir/flow.json" '{ "do": "tapText", "value": "Continue", "index": 0 }' '{ "do": "tapText", "value": "Continue", "index": 1 }' \
+  '{ "do": "tapText", "value": "Continue", "index": 2 }' '{ "do": "tapText", "value": "Continue", "index": 3 }'
+run_ios "$case_dir/flow.json"
+begin "index on iOS: the order of the screen, not of the list, and the same miss"
+status_is 1
+got="$(grep '^ui tap' "$case_dir/idb/log" | sed 's/^ui tap --udid FAKE-UDID //' | tr '\n' '|')"
+[ "$got" = "100 225|300 220|100 520|" ] || no "taps were $got, wanted 100 225|300 220|100 520|"
+has out.txt "index 3 is out of range: 3 elements match 'Continue' as closely as the best match on the screen"
+verdict
+
+ios_case ios-idx-id
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$(istate opt Button 300 "" '["Button"]')" "$(istate opt Button 200 "" '["Button"]')" "$(istate opt Button 2000 "" '["Button"]')"
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "opt", "index": 1 }' '{ "do": "assertId", "value": "opt", "index": 2 }'
+run_ios "$case_dir/flow.json"
+begin "index on iOS: assertId by id, off screen not counted"
+status_is 1; has out.txt "assert id: 'opt' index 1 on screen at 200 322"
+has out.txt "index 2 is out of range: 2 elements with id 'opt' as closely as the best match on the screen"
+verdict
+
+# ── how many match: assertCount (#47) ────────────────────────────────────────
+X_ITEMS="$(xnode "" Item 0 300 1080 400)$(xnode "" Item 0 500 1080 600)$(xnode "" Item 0 2600 1080 2700)$(xnode "" Item 0 800 0 800)$(xnode "" "Item 3" 0 900 1080 1000)"
+
+dev_case count-at-least
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$X_ITEMS")"
+flow_file "$case_dir/flow.json" '{ "do": "assertCount", "value": "Item", "op": "atLeast", "count": 2 }' \
+  '{ "do": "assertCount", "value": "Item", "match": "contains", "op": "exact", "count": 3 }' \
+  '{ "do": "assertCount", "value": "Item", "op": "atMost", "count": 2 }'
+run_flow "$case_dir/flow.json"
+begin "assertCount: off screen and zero size not counted, match as in assertText"
+status_is 0; fake_used
+has out.txt "assertCount (exact match): 2 elements match 'Item' on the screen, at least 2"
+has out.txt "assertCount (contains match): 3 elements match 'Item' on the screen, exactly 3"
+has out.txt "assertCount (exact match): 2 elements match 'Item' on the screen, at most 2"
+verdict
+
+dev_case count-fail
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$X_ITEMS")"
+flow_file "$case_dir/flow.json" '{ "do": "assertCount", "value": "Item", "op": "exact", "count": 3 }'
+run_flow "$case_dir/flow.json"
+begin "assertCount: a red step says how many were found, on the console and in the report"
+status_is 1
+has out.txt "assertCount (exact match) FAILED: 2 elements match 'Item' on the screen, expected exactly 3"
+has res/flow.xml "2 elements match 'Item' on the screen, expected exactly 3"
+verdict
+
+dev_case count-one
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(xnode "" Item 0 300 1080 400)")"
+flow_file "$case_dir/flow.json" '{ "do": "assertCount", "value": "Item", "op": "atLeast", "count": 2 }'
+run_flow "$case_dir/flow.json"
+begin "assertCount: the list of one that assertText passes on is red"
+status_is 1; has out.txt "1 element matches 'Item' on the screen, expected at least 2"
+verdict
+
+dev_case count-id
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$X_ROWS")"
+flow_file "$case_dir/flow.json" '{ "do": "assertCountId", "value": "opt", "op": "exact", "count": 4 }' '{ "do": "assertCountId", "value": "row", "op": "atMost", "count": 1 }'
+run_flow "$case_dir/flow.json"
+begin "assertCountId: by id, and atMost red with the number found"
+status_is 1
+has out.txt "assertCount id: 4 elements with id 'opt' on the screen, exactly 4"
+has out.txt "assertCount id FAILED: 2 elements with id 'row' on the screen, expected at most 1"
+verdict
+
+dev_case count-cli
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$X_ITEMS")"
+env -u ANDROID_SDK_ROOT -u YUKTI_VARIANT -u YUKTI_CONFIG ANDROID_HOME="$ROOT/tests/fake-sdk" YUKTI_PLATFORM=android YUKTI_HELPER=0 \
+  FAKE_ADB_DIR="$case_dir/adb" TMPDIR="$case_dir/tmp" "$YUKTI" assert-count Item assert atLeast 3 contains > "$case_dir/out" 2>&1
+run_status=$?; sed $'s/\033\\[[0-9;]*m//g' "$case_dir/out" > "$case_dir/out.txt"
+begin "assert-count by hand"
+status_is 0; has out.txt "assertCount (contains match): 3 elements match 'Item' on the screen, at least 3"
+verdict
+
+new_case count-check
+flow_file "$case_dir/flow.json" '{ "do": "assertCount", "value": "Item", "op": "atLeast", "count": 2, "match": "contains" }' \
+  '{ "do": "assertCountId", "value": "row", "op": "exact", "count": "0" }'
+expect "check: assertCount and assertCountId build" 0 " - 2 steps" check "$case_dir/flow.json"
+
+new_case count-no-op
+flow_file "$case_dir/flow.json" '{ "do": "assertCount", "value": "Item", "count": 2 }'
+expect "check: assertCount without an op is refused" 1 \
+  "assertCount needs \"op\" (atLeast, exact or atMost) and \"count\"" check "$case_dir/flow.json"
+
+new_case count-bad-op
+flow_file "$case_dir/flow.json" '{ "do": "assertCount", "value": "Item", "op": "more", "count": 2 }'
+expect "check: an unknown op is refused" 1 "\"op\" is \"more\" - use atLeast, exact or atMost" check "$case_dir/flow.json"
+
+new_case count-negative
+flow_file "$case_dir/flow.json" '{ "do": "assertCountId", "value": "row", "op": "exact", "count": -1 }'
+expect "check: a negative count is refused" 1 "\"count\" is '-1' - it has to be a whole number from 0" check "$case_dir/flow.json"
+
+new_case count-at-least-zero
+flow_file "$case_dir/flow.json" '{ "do": "assertCount", "value": "Item", "op": "atLeast", "count": 0 }'
+expect "check: atLeast 0 cannot fail and is refused" 1 "\"atLeast\" 0 passes on any screen" check "$case_dir/flow.json"
+
+new_case count-op-elsewhere
+flow_file "$case_dir/flow.json" '{ "do": "assertText", "value": "Item", "op": "atLeast" }'
+expect "check: op on another verb is refused" 1 "step 'assertText' does not take \"op\" - only assertCount and assertCountId do" check "$case_dir/flow.json"
+
+new_case count-id-match
+flow_file "$case_dir/flow.json" '{ "do": "assertCountId", "value": "row", "op": "exact", "count": 1, "match": "contains" }'
+expect "check: assertCountId takes no match" 1 "does not take a \"match\" - only assertText, assertNotText, assertCount, waitFor and waitForNotText do" check "$case_dir/flow.json"
+
+ios_case ios-count
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$(ilabel "" Item 20,100,360,40)" "$(ilabel "" Item 20,200,360,40)" "$(ilabel "" Item 20,2000,360,40)" "$(ilabel "" Item 20,300,0,0)"
+flow_file "$case_dir/flow.json" '{ "do": "assertCount", "value": "Item", "op": "exact", "count": 2 }' '{ "do": "assertCount", "value": "Item", "op": "atLeast", "count": 3 }'
+run_ios "$case_dir/flow.json"
+begin "assertCount on iOS: the same filters, the same words"
+status_is 1
+has out.txt "assertCount (exact match): 2 elements match 'Item' on the screen, exactly 2"
+has out.txt "assertCount (exact match) FAILED: 2 elements match 'Item' on the screen, expected at least 3"
+verdict
+
+# The review of #46/#47: the frame rule and the rank filter outside tapText,
+# identical boxes, the order on iOS, an index with a state, the command line.
+# rnode <class> <text> <desc> <clickable> <x1> <y1> <x2> <y2> [id] - an open node tag.
+rnode(){ printf '<node index="0" text="%s" resource-id="%s" class="android.%s" package="com.example" content-desc="%s" checkable="false" checked="false" clickable="%s" enabled="true" focusable="%s" focused="false" scrollable="false" long-clickable="false" password="false" selected="false" bounds="[%d,%d][%d,%d]"' \
+  "$2" "${9:+com.example:id/$9}" "$1" "$3" "$4" "$4" "$5" "$6" "$7" "$8"; }
+# A pressable row whose label is on the row and on the text inside it.
+rnrow(){ printf '%s>%s /></node>' "$(rnode view.ViewGroup "" Buy true 0 "$1" 1080 $(($1+100)))" "$(rnode widget.TextView Buy "" false 400 $(($1+30)) 680 $(($1+70)))"; }
+# The same with one id on the wrapper and on the view inside it.
+rnidrow(){ printf '%s>%s /></node>' "$(rnode view.ViewGroup "" "" true 0 "$1" 1080 $(($1+100)) buy)" "$(rnode widget.TextView "" "" false 400 $(($1+30)) 680 $(($1+70)) buy)"; }
+
+dev_case idx-frame-assert
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(rnrow 300)$(rnrow 500)$(rnrow 700)")"
+flow_file "$case_dir/flow.json" '{ "do": "assertCount", "value": "Buy", "op": "exact", "count": 3 }' '{ "do": "assertText", "value": "Buy", "index": 1 }'
+run_flow "$case_dir/flow.json"
+begin "frame rule by text: a row labelled on itself and on its text is one match"
+status_is 0
+has out.txt "assertCount (exact match): 3 elements match 'Buy' on the screen, exactly 3"
+has out.txt "assert (exact): 'Buy' index 1 on screen at 540 550"
+verdict
+
+dev_case idx-frame-id
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(rnidrow 300)$(rnidrow 500)$(rnidrow 700)")"
+flow_file "$case_dir/flow.json" '{ "do": "assertCountId", "value": "buy", "op": "exact", "count": 3 }' '{ "do": "tapId", "value": "buy", "index": 2 }'
+run_flow "$case_dir/flow.json"
+begin "frame rule by id: one id on a wrapper and its inner view is one match"
+status_is 0; atap_is "540 750"
+has out.txt "assertCount id: 3 elements with id 'buy' on the screen, exactly 3"
+verdict
+
+dev_case idx-same-box
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(rnode widget.FrameLayout Go "" true 100 300 500 400) />$(rnode widget.Button Go "" true 100 300 500 400) />")"
+flow_file "$case_dir/flow.json" '{ "do": "assertCount", "value": "Go", "op": "exact", "count": 1 }' '{ "do": "tapText", "value": "Go", "index": 1 }'
+run_flow "$case_dir/flow.json"
+begin "two matches with the same box are one control"
+status_is 1; no_atap
+has out.txt "assertCount (exact match): 1 element matches 'Go' on the screen, exactly 1"
+has out.txt "index 1 is out of range: 1 element matches 'Go' as closely as the best match on the screen"
+verdict
+
+dev_case idx-rank
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(rnode widget.TextView Continue "" false 100 300 500 400) />$(rnode widget.Button Continue "" true 100 900 500 1000) />$(rnode widget.Button Continue "" true 100 1100 500 1200) />")"
+flow_file "$case_dir/flow.json" '{ "do": "tapText", "value": "Continue", "index": 1 }' '{ "do": "tapText", "value": "Continue", "index": 2 }'
+run_flow "$case_dir/flow.json"
+begin "index: a caption that ranks lower is not counted, and the miss says so"
+status_is 1; atap_is "300 1150"
+has out.txt "index 2 is out of range: 2 elements match 'Continue' as closely as the best match on the screen, and 1 more matches less closely and is not counted"
+verdict
+
+dev_case idx-state
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(snode tab 300 false)" "$(snode tab 500 true)")"
+flow_file "$case_dir/flow.json" '{ "do": "waitForId", "value": "tab", "index": 1, "selected": true, "timeout": 1 }' \
+  '{ "do": "assertId", "value": "tab", "index": 1, "selected": true }' '{ "do": "assertId", "value": "tab", "index": 0, "selected": true }'
+run_flow "$case_dir/flow.json"
+begin "index with a state: the state of the match it names"
+status_is 1
+has out.txt "waitFor id, index 1: 'tab' on screen at 540 550"
+has out.txt "assert id: 'tab' index 1 on screen at 540 550, selected"
+has out.txt "assert FAILED: 'tab' is not selected"
+verdict
+
+dev_case idx-cli
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$X_GRID")"
+env -u ANDROID_SDK_ROOT -u YUKTI_VARIANT -u YUKTI_CONFIG ANDROID_HOME="$ROOT/tests/fake-sdk" YUKTI_PLATFORM=android YUKTI_HELPER=0 \
+  FAKE_ADB_DIR="$case_dir/adb" TMPDIR="$case_dir/tmp" "$YUKTI" find Continue text exact centre "" abc > "$case_dir/out" 2>&1
+run_status=$?; sed $'s/\033\\[[0-9;]*m//g' "$case_dir/out" > "$case_dir/out.txt"
+begin "an index that is not a whole number is refused by the lookup itself"
+status_is 1; has out.txt "index must be a whole number from 0 to 999999, got 'abc'"; lacks out.txt "Traceback"
+verdict
+
+dev_case idx-cli-extra
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$X_GRID")"
+env -u ANDROID_SDK_ROOT -u YUKTI_VARIANT -u YUKTI_CONFIG ANDROID_HOME="$ROOT/tests/fake-sdk" YUKTI_PLATFORM=android YUKTI_HELPER=0 \
+  FAKE_ADB_DIR="$case_dir/adb" TMPDIR="$case_dir/tmp" "$YUKTI" tap-text Continue 10 -1 > "$case_dir/out" 2>&1
+run_status=$?; sed $'s/\033\\[[0-9;]*m//g' "$case_dir/out" > "$case_dir/out.txt"
+begin "tap-text by hand takes no index: an extra argument is ignored and the first in the tree is tapped, as before"
+status_is 0; atap_is "300 950"
+verdict
+
+new_case idx-too-big
+flow_file "$case_dir/flow.json" '{ "do": "tapText", "value": "x", "index": 1000000 }' 
+expect "check: an index of more than six digits is refused" 1 "\"index\" is '1000000' - at most 999999" check "$case_dir/flow.json"
+
+# iOS: a button labelled like the text inside it, two rows.
+ibuy(){ printf '{"type":"Button","role_description":"button","AXUniqueId":"","AXLabel":"Buy","frame":{"x":0,"y":%s,"width":402,"height":60}}' "$1"; }
+ios_case ios-idx-frame
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$(ibuy 100)" "$(ilabel "" Buy 150,110,100,40)" "$(ibuy 200)" "$(ilabel "" Buy 150,210,100,40)"
+flow_file "$case_dir/flow.json" '{ "do": "assertCount", "value": "Buy", "op": "exact", "count": 2 }' '{ "do": "assertText", "value": "Buy", "index": 1 }'
+run_ios "$case_dir/flow.json"
+begin "frame rule on iOS: a button and the label inside it are one match"
+status_is 0
+has out.txt "assertCount (exact match): 2 elements match 'Buy' on the screen, exactly 2"
+has out.txt "assert (exact): 'Buy' index 1 on screen at 200 230"
+verdict
+
+ios_case ios-idx-state
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$(istate tab Button 300 "" '["Button","Selected"]')" "$(istate tab Button 200 "" '["Button"]')"
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "tab", "index": 1, "selected": true }' '{ "do": "assertId", "value": "tab", "index": 0, "selected": true }'
+run_ios "$case_dir/flow.json"
+begin "index with a state on iOS"
+status_is 1; has out.txt "assert id: 'tab' index 1 on screen at 200 322, selected"
+has out.txt "assert FAILED: 'tab' is not selected"
+verdict
+
+# The cross review of #46/#47: one index, one screen, the same element whatever
+# the verb; a count inside one element; an index with nothing to count.
+dev_case idx-rn-two-rows
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(rnrow 300)$(rnrow 500)")"
+flow_file "$case_dir/flow.json" '{ "do": "assertCount", "value": "Buy", "op": "exact", "count": 2 }' \
+  '{ "do": "assertText", "value": "Buy", "index": 1 }' '{ "do": "tapText", "value": "Buy", "index": 1 }'
+run_flow "$case_dir/flow.json"
+begin "frame rule: two pressable rows count 2, and assertText and tapText index 1 are the same row"
+status_is 0
+has out.txt "assertCount (exact match): 2 elements match 'Buy' on the screen, exactly 2"
+has out.txt "assert (exact): 'Buy' index 1 on screen at 540 550"; atap_is "540 550"
+verdict
+
+dev_case count-in
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$X_ROWS")"
+flow_file "$case_dir/flow.json" '{ "do": "assertCountId", "value": "opt", "in": "row", "op": "exact", "count": 2 }' \
+  '{ "do": "assertCount", "value": "Yes", "in": "row", "op": "exact", "count": 1 }' \
+  '{ "do": "assertCountId", "value": "opt", "in": "missing", "op": "atLeast", "count": 1 }'
+run_flow "$case_dir/flow.json"
+begin "assertCount with in: counted inside the element; a missing element is named"
+status_is 1
+has out.txt "assertCount id: 2 elements with id 'opt' in the element with id 'row' on the screen, exactly 2"
+has out.txt "assertCount (exact match): 1 element matches 'Yes' in the element with id 'row' on the screen, exactly 1"
+has out.txt "assertCount FAILED: no element with id 'missing'"
+verdict
+
+ios_case ios-count-in
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$(ilabel row "" 0,100,402,60)" "$(ilabel opt "" 20,110,100,40)" "$(ilabel opt "" 200,110,100,40)" "$(ilabel opt "" 20,300,100,40)"
+flow_file "$case_dir/flow.json" '{ "do": "assertCountId", "value": "opt", "in": "row", "op": "exact", "count": 2 }'
+run_ios "$case_dir/flow.json"
+begin "assertCountId with in on iOS"
+status_is 0; has out.txt "assertCount id: 2 elements with id 'opt' in the element with id 'row' on the screen, exactly 2"
+verdict
+
+dev_case idx-zero
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$X_GRID")"
+flow_file "$case_dir/flow.json" '{ "do": "tapText", "value": "Nope", "index": 1 }'
+run_flow "$case_dir/flow.json"
+begin "index with no match at all: out of range with 0"
+status_is 1; no_atap; has out.txt "index 1 is out of range: 0 elements match 'Nope' on the screen"
+verdict
+
+dev_case idx-zero-wait
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(xnode item "" 0 300 1080 300)")"
+flow_file "$case_dir/flow.json" '{ "do": "waitForId", "value": "item", "index": 0, "timeout": 1 }'
+run_flow "$case_dir/flow.json"
+begin "index with no match: waitForId still says the namesake is at zero size"
+status_is 1; has out.txt "'item' not on screen after 1s - at zero size [0,300][1080,300]"
+verdict
+
+# ── "index" with "in" on tapText and with "at" on tapId ──────────────────────
+# tapText "in" (#146) and tapId "at" (#129) landed next to the index: the index
+# counts inside the element, and the point is taken on the match it picks.
+# Two "Details" links inside the note, one more below it, outside.
+IX_NOTE="$(tnode consent-note "" 40,1000,1040,1300)"
+IX_L1="$(lnode "Details" 100,1050,300,1100)"
+IX_L2="$(lnode "Details" 600,1050,800,1100)"
+IX_OUT="$(lnode "Details" 100,1500,300,1550)"
+
+dev_case idx-in-tap
+screen "$case_dir/adb/dump-1.xml" "$IN_ROOT" "$IX_NOTE" "$IX_OUT" "$IX_L1" "$IX_L2"
+flow_file "$case_dir/flow.json" '{ "do": "tapText", "value": "Details", "in": "consent-note", "index": 1 }'
+run_flow "$case_dir/flow.json"
+begin "tapText in with index: the second match inside the element, the one outside not counted"
+status_is 0; has out.txt "tap 'Details' in 'consent-note' index 1"; atap_is "700 1075"
+verdict
+
+dev_case idx-in-range
+screen "$case_dir/adb/dump-1.xml" "$IN_ROOT" "$IX_NOTE" "$IX_OUT" "$IX_L1" "$IX_L2"
+flow_file "$case_dir/flow.json" '{ "do": "tapText", "value": "Details", "in": "consent-note", "index": 2 }'
+run_flow "$case_dir/flow.json"
+begin "tapText in with index past the last: counts inside the element, nothing tapped"
+status_is 1; has out.txt "index 2 is out of range: 2 elements match 'Details' in the element with id 'consent-note' as closely as the best match on the screen"
+no_atap
+verdict
+
+dev_case idx-in-part
+screen "$case_dir/adb/dump-1.xml" "$IN_ROOT" "$LN_NOTE"
+flow_file "$case_dir/flow.json" '{ "do": "tapText", "value": "Terms of Use", "in": "consent-note", "index": 0 }'
+run_flow "$case_dir/flow.json"
+begin "tapText in with index: words that are only part of a longer text keep their own words, not 'out of range'"
+status_is 1; has out.txt "'Terms of Use' is part of a longer text in the element with id 'consent-note' and has no element of its own to tap"
+lacks out.txt "out of range"; no_atap
+verdict
+
+ios_case ios-idx-in-tap
+tree "$case_dir/idb/desc-1.json" "$iroot" \
+  '{"type":"Other","role_description":"group","AXUniqueId":"consent-note","AXLabel":null,"frame":{"x":10,"y":490,"width":370,"height":100}}' \
+  '{"type":"Link","role_description":"link","AXUniqueId":null,"AXLabel":"Details","frame":{"x":30,"y":550,"width":100,"height":20}}' \
+  '{"type":"Link","role_description":"link","AXUniqueId":null,"AXLabel":"Details","frame":{"x":200,"y":550,"width":100,"height":20}}' \
+  '{"type":"Link","role_description":"link","AXUniqueId":null,"AXLabel":"Details","frame":{"x":30,"y":700,"width":100,"height":20}}'
+flow_file "$case_dir/flow.json" '{ "do": "tapText", "value": "Details", "in": "consent-note", "index": 1 }'
+run_ios "$case_dir/flow.json"
+begin "tapText in with index on iOS: the second match inside the element"
+status_is 0; has idb/log "ui tap --udid FAKE-UDID 250 560"; lacks idb/log "ui tap --udid FAKE-UDID 80 560"
+verdict
+
+# Two tracks 1000x80 under one id, at y 1000 and 1200.
+dev_case idx-at
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(bnode track 40 1000 1040 1080)$(bnode track 40 1200 1040 1280)")"
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "track", "at": { "x": "25%" }, "index": 1 }'
+run_flow "$case_dir/flow.json"
+begin "tapId at with index: the point on the second track"
+status_is 0; taps_are "290 1240|"; has out.txt "tap id 'track' index 1 at 25% x 50% of 1000x80: 290,1240"
+verdict
+
+dev_case idx-at-range
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(bnode track 40 1000 1040 1080)$(bnode track 40 1200 1040 1280)")"
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "track", "at": { "x": "25%" }, "index": 2 }'
+run_flow "$case_dir/flow.json"
+begin "tapId at with index past the last: says how many, nothing tapped"
+status_is 1; has out.txt "index 2 is out of range: 2 elements with id 'track' as closely as the best match on the screen"; taps_are ""
+verdict
+
+ios_case ios-idx-at
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$(istate track Slider 200 "" '[]')" "$(istate track Slider 300 "" '[]')"
+ipoint track 20 300 360 44
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "track", "at": { "x": "25%" }, "index": 1 }'
+run_ios "$case_dir/flow.json"
+begin "tapId at with index on iOS: the point on the second slider, in points"
+status_is 0; has idb/log "ui tap --udid FAKE-UDID 110 322"
 verdict
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"

@@ -622,7 +622,10 @@ match=(sys.argv[3] if len(sys.argv)>3 else "exact")
 # prints the centre and then the selected and checked state of the winner:
 # "cx cy true|false true|false|none" - "none" for a node that is not checkable,
 # whose checked="false" says nothing (React Native marks a node checkable
-# exactly when accessibilityState has "checked").
+# exactly when accessibilityState has "checked"). "count" (#47) prints how many
+# elements match (see pick below). The seventh argument, an index (#46), picks
+# one of them instead of the winner and prints it as above; an index past the
+# last match leaves with status 5 and the number of matches on its output.
 out=(sys.argv[4] if len(sys.argv)>4 else "centre")
 xml=sys.stdin.read()
 # Nothing arrived: the dump failed and said so on its own line. Status 1 is "the
@@ -663,9 +666,10 @@ if mode in ("assert","id") and not (SX2>SX1 and SY2>SY1): sys.exit(3)
 # returns): the words have no element of their own
 # (React Native gives a nested Text one only with accessibilityRole="link"),
 # and a tap on a centre would prove nothing.
+# assertCountId takes it too (#47): the options inside one row, counted by id.
 scope=(sys.argv[6].lower() if len(sys.argv)>6 else ""); sbox=None; part=False
 if scope and mode=="text" and not (SX2>SX1 and SY2>SY1): sys.exit(3)
-if scope and mode in ("assert","text"):
+if scope and mode in ("assert","text","id"):
     for m in re.finditer(r"<node\b[^>]*>", xml):
         tag=m.group(0)
         r=re.search(r"resource-id=(?:\"([^\"]*)\"|\x27([^\x27]*)\x27)",tag)
@@ -703,6 +707,33 @@ if out=="fullend":
 # path defines the same function; keep the two identical. A tap match scores at
 # least 2 and best_score starts below that, so a tie never meets an empty winner.
 def inside(a,b): return b[0]<=a[0] and b[1]<=a[1] and a[2]<=b[2] and a[3]<=b[3] and a!=b
+# "index" (#46) and the count (#47) ask for every match, not for the winner,
+# and both read the one list built here: the candidates that pass the filters
+# the winner passes (inside "in", of real size, the centre on the screen) and
+# rank equally best. A tied match that holds another tied match within it is the
+# frame around that control, not a second control - the tie rule of the single
+# lookup, applied here in every mode: a row whose label sits on the row and on
+# the text inside it is one row to a count, as it is on iOS, where the two
+# arrive merged. Two tied matches with the same box are one control too (a
+# wrapper the size of its child); the first in the tree stands for both. The
+# list is in the order of the screen: rows top to bottom, then left
+# to right by the centre of the frame. Elements are one row when their vertical
+# centres differ by less than half the height of the smaller one, measured from
+# the first element of the row. Dump order is not used: uiautomator returns a
+# tree and idb a flat list in traversal order, and the two disagree. The iOS
+# path defines the same function; keep the two identical.
+def pick(cands):
+    if not cands: return []
+    top=max(c[0] for c in cands); ms=[c for c in cands if c[0]==top]
+    ms=[c for i,c in enumerate(ms) if not any(o[1]==c[1] for o in ms[:i]) and not any(inside(o[1],c[1]) for o in ms)]
+    ms.sort(key=lambda c:((c[1][1]+c[1][3])/2,(c[1][0]+c[1][2])/2))
+    rows=[]
+    for c in ms:
+        cy=(c[1][1]+c[1][3])/2; h=c[1][3]-c[1][1]
+        if rows and abs(cy-rows[-1][0])<min(h,rows[-1][1])/2: rows[-1][2].append(c)
+        else: rows.append((cy,h,[c]))
+    return [c for r in rows for c in sorted(r[2],key=lambda c:(c[1][0]+c[1][2])/2)]
+idx=(sys.argv[7] if len(sys.argv)>7 else ""); enum=bool(idx) or out=="count"; cands=[]
 for m in re.finditer(r"<node\b[^>]*>", xml):
     tag=m.group(0)
     def a(n):
@@ -749,7 +780,7 @@ for m in re.finditer(r"<node\b[^>]*>", xml):
         if editable: score+=3
         if clickable: score+=1
         if focusable: score+=1
-    if score<best_score: continue
+    if score<best_score and not enum: continue
     b=re.search(r"bounds=\"\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]\"",tag)
     if not b: continue
     x1,y1,x2,y2=map(int,b.groups())
@@ -768,6 +799,10 @@ for m in re.finditer(r"<node\b[^>]*>", xml):
     if SX2>SX1 and SY2>SY1 and not (SX1<=cx<SX2 and SY1<=cy<SY2):   # off-screen
         if off is None: off=(x1,y1,x2,y2)
         continue
+    if enum:
+        cands.append((score,(x1,y1,x2,y2),(cx,cy),("true" if a("selected")=="true" else "false",
+                      ("true" if a("checked")=="true" else "false") if a("checkable")=="true" else "none")))
+        continue
     # A tie goes to the candidate that lies inside the current winner. A dialog
     # whose whole window carries the label of the button at its bottom ranks both
     # the same, and the window, coming first, took every tap: the centre of the
@@ -779,6 +814,25 @@ for m in re.finditer(r"<node\b[^>]*>", xml):
     best=(cx,cy); best_box=(x1,y1,x2,y2); best_score=score
     best_state=("true" if a("selected")=="true" else "false",
                 ("true" if a("checked")=="true" else "false") if a("checkable")=="true" else "none")
+if enum:
+    ms=pick(cands)
+    if out=="count": print(len(ms)); sys.exit(0)
+    # No match at all is out of range as well, with 0 - except for "why", which
+    # then says whether a namesake is at zero size or off the screen, and for
+    # tapText with "in" where the words are only part of a longer text: that is
+    # status 11, as without an index.
+    if not ms and part and not (zero or off): sys.exit(11)
+    if not ms and out!="why": print(0,0); sys.exit(5)
+    if ms:
+        # Past the last: how many were counted, and how many matched with a
+        # lower rank and were not (a caption next to the button, for tapText).
+        if int(idx)>=len(ms): print(len(ms),sum(1 for c in cands if c[0]<ms[0][0])); sys.exit(5)
+        _,bx,c,stt=ms[int(idx)]
+        if out=="box": print(bx[0],bx[1],bx[2],bx[3],SX1,SY1,SX2,SY2)
+        elif out=="why": print("on",c[0],c[1])
+        elif out=="state": print(c[0],c[1],*stt)
+        else: print(c[0],c[1])
+        sys.exit(0)
 if full:
     if best and (low is None or best_score>=low[0]): print("on",best[0],best[1])
     elif low: print("below",low[1])
@@ -791,7 +845,7 @@ elif part and not (zero or off): sys.exit(11)
 elif out=="why":
     if zero: print("zero",*zero)
     elif off: print("off",*off)
-' "$1" "${2:-text}" "${3:-exact}" "${4:-centre}" "${5:-}" "${6:-}"; }
+' "$1" "${2:-text}" "${3:-exact}" "${4:-centre}" "${5:-}" "${6:-}" "${7:-}"; }
 # Where a horizontal swipe should land, from the dump. A swipe across the middle
 # of the screen lands on whatever is there, and an element that does not claim
 # the gesture may be pressed instead of scrolled: measured on the app under test,
@@ -1517,7 +1571,10 @@ ui(){ is_android && { aui; return; }; [ -n "$HELD_TREE" ] && { printf '%s' "$HEL
   # empty string made every caller read it as "the element is not there". The
   # Android path already fails here; this is the same rule for iOS.
   device_fault; die "idb returned no accessibility tree after 4 tries - is the simulator booted?"; }
-find_el(){ is_android && { afind "$1" "${2:-text}" "${3:-exact}" "${4:-centre}" "" "${5:-}"; return; }; paths; ui | "$PY" -c '
+# The index (#46) is checked here, once for every caller: the flow builder
+# checks what a flow file says, and nothing else may reach int() with a word.
+find_el(){ case "${6:-}" in '') ;; *[!0-9]*|???????*) die "index must be a whole number from 0 to 999999, got '$6'";; esac
+  is_android && { afind "$1" "${2:-text}" "${3:-exact}" "${4:-centre}" "" "${5:-}" "${6:-}"; return; }; paths; ui | "$PY" -c '
 import json,sys,os,traceback
 # A lookup must never leave with status 1: that status now means the screen
 # could not be read AND the reason is already printed. Anything unforeseen in
@@ -1539,7 +1596,8 @@ mode=(sys.argv[2] if len(sys.argv)>2 else "text")
 match=(sys.argv[3] if len(sys.argv)>3 else "exact")
 # The centre is the tap point and the default; "box" asks for the frame of the
 # winner and the window it is judged against; "why" says why there is no
-# winner. Same contract as the Android path.
+# winner; "count" how many match. An index (the sixth argument) picks one of
+# the matches, status 5 past the last. Same contract as the Android path.
 out=(sys.argv[4] if len(sys.argv)>4 else "centre")
 raw=sys.stdin.read().strip()
 if not raw: sys.exit(1)   # 1 = the tree never arrived; ui() has already said why
@@ -1594,9 +1652,10 @@ if mode in ("assert","id") and not (SW>0 and SH>0): sys.exit(3)   # 3 = read, no
 # in the window - and only what lies within its frame counts; none is status 4.
 # tapText takes it too (#146), with the Android rule: only a whole match counts,
 # and only one on the screen - inside the element, nothing is searched for.
+# assertCountId too (#47), by id.
 scope=(sys.argv[5].lower() if len(sys.argv)>5 else ""); sbox=None; part=False
 if scope and mode=="text" and not (SW>0 and SH>0): sys.exit(3)
-if scope and mode in ("assert","text"):
+if scope and mode in ("assert","text","id"):
     for e in els:
         if str(e.get("AXUniqueId") or e.get("identifier") or "").lower()!=scope: continue
         if centre(e) is None: continue
@@ -1639,6 +1698,35 @@ best=None; best_el=None; best_score=-1; zero=None; off=None
 # scores at least 2 and best_score starts below that, so a tie never meets an
 # empty winner.
 def inside(a,b): return b[0]<=a[0] and b[1]<=a[1] and a[2]<=b[2] and a[3]<=b[3] and a!=b
+# "index" (#46) and the count (#47) ask for every match, not for the winner,
+# and both read the one list built here: the candidates that pass the filters
+# the winner passes (inside "in", of real size, the centre on the screen) and
+# rank equally best. A tied match that holds another tied match within it is the
+# frame around that control, not a second control - the tie rule of the single
+# lookup, applied here in every mode: a row whose label sits on the row and on
+# the text inside it is one row to a count, as it is on iOS, where the two
+# arrive merged. Two tied matches with the same box are one control too (a
+# wrapper the size of its child); the first in the tree stands for both. The
+# list is in the order of the screen: rows top to bottom, then left
+# to right by the centre of the frame. Elements are one row when their vertical
+# centres differ by less than half the height of the smaller one, measured from
+# the first element of the row. Dump order is not used: uiautomator returns a
+# tree and idb a flat list in traversal order, and the two disagree. The Android
+# path defines the same function; keep the two identical.
+def pick(cands):
+    if not cands: return []
+    top=max(c[0] for c in cands); ms=[c for c in cands if c[0]==top]
+    ms=[c for i,c in enumerate(ms) if not any(o[1]==c[1] for o in ms[:i]) and not any(inside(o[1],c[1]) for o in ms)]
+    ms.sort(key=lambda c:((c[1][1]+c[1][3])/2,(c[1][0]+c[1][2])/2))
+    rows=[]
+    for c in ms:
+        cy=(c[1][1]+c[1][3])/2; h=c[1][3]-c[1][1]
+        if rows and abs(cy-rows[-1][0])<min(h,rows[-1][1])/2: rows[-1][2].append(c)
+        else: rows.append((cy,h,[c]))
+    return [c for r in rows for c in sorted(r[2],key=lambda c:(c[1][0]+c[1][2])/2)]
+idx=(sys.argv[6] if len(sys.argv)>6 else ""); enum=bool(idx) or out=="count"; cands=[]
+def cand(e,score,xy):
+    x,y,w,h=frame(e); cands.append((score,(x,y,x+w,y+h),xy,e))
 for e in els:
     label_raw=norm(str(e.get("AXLabel") or "")); label=label_raw.lower()
     value_raw=norm(str(e.get("AXValue") or "")); value=value_raw.lower()
@@ -1662,6 +1750,10 @@ for e in els:
                 if zero is None: zero=bx
             elif off is None: off=bx
             continue
+        if sbox:
+            x,y,w,h=frame(e)
+            if not (sbox[0]<=x and sbox[1]<=y and x+w<=sbox[2] and y+h<=sbox[3]): continue
+        if enum: cand(e,10,xy); continue
         emit(e,xy); sys.exit(0)
     if mode=="assert":
         # See the Android path: an assertion matches perceivable text only, on an
@@ -1675,6 +1767,7 @@ for e in els:
         if sbox:
             x,y,w,h=frame(e)
             if not (sbox[0]<=x and sbox[1]<=y and x+w<=sbox[2] and y+h<=sbox[3]): continue
+        if enum: cand(e,10,xy); continue
         emit(e,xy); sys.exit(0)
     if not (q and (q in ident or q in label or q in value or q in title)): continue
     score=0
@@ -1705,6 +1798,11 @@ for e in els:
             continue
     if not (w>0 and h>0): continue
     if centre(e) is not None: score+=2
+    # Every match counts for an index and a count, and only on the screen: the
+    # Android path never ranks an element outside it.
+    if enum:
+        if centre(e) is not None: cand(e,score,centre(e))
+        continue
     # A tie goes to the element that lies inside the current winner, as on
     # Android: the window and the button in it can carry the same label. The
     # containment test does not depend on the order of the list, which idb does
@@ -1714,12 +1812,20 @@ for e in els:
         bx,by,bw,bh=frame(best_el)
         if not inside((x,y,x+w,y+h),(bx,by,bx+bw,by+bh)): continue
     best=(int(x+w/2),int(y+h/2)); best_el=e; best_score=score
+if enum:
+    ms=pick(cands)
+    if out=="count": print(len(ms)); sys.exit(0)
+    if not ms and part and not (zero or off): sys.exit(11)
+    if not ms and out!="why": print(0,0); sys.exit(5)
+    if ms:
+        if int(idx)>=len(ms): print(len(ms),sum(1 for c in cands if c[0]<ms[0][0])); sys.exit(5)
+        emit(ms[int(idx)][3],ms[int(idx)][2]); sys.exit(0)
 if best: emit(best_el,best)
 elif part and not (zero or off): sys.exit(11)
 elif out=="why":
     if zero: print("zero",*zero)
     elif off: print("off",*off)
-' "$1" "${2:-text}" "${3:-exact}" "${4:-centre}" "${5:-}"; }
+' "$1" "${2:-text}" "${3:-exact}" "${4:-centre}" "${5:-}" "${6:-}"; }
 tap(){ is_android && { atap "$1" "$2"; return; }; paths; idb ui tap --udid "$(U)" "${1:?x}" "${2:?y}"; }
 # iOS: what is really under a tap point. The lookups above judge an element by
 # its own frame only - in the window, of real size - and never ask whether
@@ -1770,19 +1876,19 @@ if not hit and len(box)>=4 and not ident:
 if hit: print("ok")
 else: print("covered", el.get("AXUniqueId") or el.get("identifier") or (str(el.get("type") or "element")+" (no id)"))
 '
-ihit(){ local q="$1" mode="$2" x="$3" y="$4" in="${5:-}" pt v box
+ihit(){ local q="$1" mode="$2" x="$3" y="$4" in="${5:-}" idx="${6:-}" pt v box
   is_android && { echo ok; return 0; }
   paths; pt="$(idb ui describe-point --udid "$(U)" "$x" "$y" 2>/dev/null)" || pt=""
   v="$(YUKTI_PT="$pt" "$PY" -c "$IHIT_PY" "$q" "$mode")" || v=unknown
   case "$v" in covered*)
-    box="$(find_el "$q" "$mode" exact box "$in" 2>/dev/null)" || box=""
+    box="$(find_el "$q" "$mode" exact box "$in" "$idx" 2>/dev/null)" || box=""
     [ -n "$box" ] && { v="$(YUKTI_PT="$pt" "$PY" -c "$IHIT_PY" "$q" "$mode" "$box")" || v=unknown; };;
   esac
   printf '%s\n' "${v:-unknown}"; }
 # A tap that must land on its target: covered = the step fails and says by what,
 # instead of tapping the element on top. No answer from idb = the tap goes ahead
 # as it did before this check, with a warning.
-tap_checked(){ local q="$1" mode="$2" x="$3" y="$4" v; v="$(ihit "$q" "$mode" "$x" "$y" "${5:-}")"
+tap_checked(){ local q="$1" mode="$2" x="$3" y="$4" v; v="$(ihit "$q" "$mode" "$x" "$y" "${5:-}" "${6:-}")"
   case "$v" in
     ok) ;;
     covered*) die "'$q' at $x,$y is covered by ${v#covered } - not tapped, the touch would go to that instead";;
@@ -1805,17 +1911,27 @@ tap_checked(){ local q="$1" mode="$2" x="$3" y="$4" v; v="$(ihit "$q" "$mode" "$
 # are. Like tapId it does not scroll. Words that are only a part of a longer
 # text have no place of their own to tap, and that is a failure by name, not a
 # tap on the centre of the text.
-tap_text(){ local xy st=0 grow="${2:-$SCROLL_GROW_WAIT}" in="${3:-}"
-  [ -z "$in" ] || { xy="$(find_el "$1" text exact centre "$in")" || st=$?
+#
+# With an index (#46) the step counts the matches on the screen as it is and
+# taps that one, without scrolling: a swipe changes what the index counts. With
+# "in" as well, it counts inside that element.
+tap_text(){ local xy st=0 grow="${2:-$SCROLL_GROW_WAIT}" in="${3:-}" idx="${4:-}"
+  [ -z "$in" ] || { xy="$(find_el "$1" text exact centre "$in" "$idx")" || st=$?
     case "$st" in
       0) ;;
       4) die "$(lookup_err 4 "$in")";;
+      5) die "$(index_miss "$idx" "$xy" "'$1' in the element with id '$in'")";;
       11) die "'$1' is part of a longer text in the element with id '$in' and has no element of its own to tap - a link inside a text gets one when the app marks it as a link (accessibilityRole=\"link\")";;
       *) lookup_die "$st";;
     esac
     [ -n "$xy" ] || die "no element matching '$1' on the screen in the element with id '$in'"
-    tap_checked "$1" text $xy "$in"; return; }
+    tap_checked "$1" text $xy "$in" "$idx"; return; }
   case "$grow" in ''|*[!0-9]*|0) die "tapText: timeout must be a whole number of seconds greater than zero, got '$grow'";; esac
+  if [ -n "$idx" ]; then
+    xy="$(find_el "$1" text exact centre "" "$idx")" || st=$?
+    case "$st" in 0) ;; 5) die "$(index_miss "$idx" "$xy" "'$1'")";; *) lookup_die "$st";; esac
+    [ -n "$xy" ] || die "no element matching '$1' on the screen"
+    tap_checked "$1" text $xy "" "$idx"; return; fi
   xy="$(scroll_to "$1" down "" tapText "$grow")" || st=$?
   case "$st" in 0) ;; 5) die "no element matching '$1'";; 6|7|8) die "no element matching '$1' - $(scroll_miss "$st" "$1" down "$grow")";; *) lookup_die "$st";; esac
   [ -n "$xy" ] || die "no element matching '$1'"; tap_checked "$1" text $xy; }  # auto-scrolls off-screen elements into view
@@ -1823,9 +1939,13 @@ tap_text(){ local xy st=0 grow="${2:-$SCROLL_GROW_WAIT}" in="${3:-}"
 # A device that refuses the tap is not an absent label: the status of `tap` is
 # checked here, or the step keeps its exception and reports a tap that never
 # happened - the very class of lie the status check above exists to end.
-tap_text_optional(){ local xy st=0 v; xy="$(find_el "$1")" || st=$?; [ "$st" -eq 0 ] || lookup_die "$st"
+# An index past the last match is the element the step names not being there,
+# which is what this verb tolerates: skipped, with the number that matched.
+tap_text_optional(){ local xy st=0 v idx="${2:-}"; xy="$(find_el "$1" text exact centre "" "$idx")" || st=$?
+  [ "$st" -ne 5 ] || { warn "optional '$1' not present - skipped: $(index_miss "$idx" "$xy" "'$1'")"; return 0; }
+  [ "$st" -eq 0 ] || lookup_die "$st"
   # Covered is not absent: say so, and leave it alone (see ihit).
-  [ -n "$xy" ] && { v="$(ihit "$1" text $xy)"; case "$v" in
+  [ -n "$xy" ] && { v="$(ihit "$1" text $xy "" "$idx")"; case "$v" in
     ok) ;;
     covered*) warn "optional '$1' is covered by ${v#covered } - not tapped"; return 0;;
     *) warn "could not read what is under optional '$1' at ${xy/ /,} - tapping as before";;
@@ -2301,13 +2421,14 @@ kb_before_swipe(){ local who="$1, before swiping" st=0
 # With an "in" id (#102) only that element and what lies within it count, and
 # the two misses read apart: "no element with id" in the words of tapId, or the
 # element is there and the text is not in it.
-assert_text(){ local q="${1:-}" m="${2:-exact}" in="${3:-}" xy st=0
+assert_text(){ local q="${1:-}" m="${2:-exact}" in="${3:-}" idx="${4:-}" xy st=0
   [ -n "$q" ] || die "assertText needs a non-empty value"
   case "$m" in exact|contains) ;; *) die "assertText: unknown match '$m' - use exact or contains";; esac
-  xy="$(find_el "$q" assert "$m" centre "$in")" || st=$?
+  xy="$(find_el "$q" assert "$m" centre "$in" "$idx")" || st=$?
+  [ "$st" -ne 5 ] || die "assert FAILED ($m match): $(index_miss "$idx" "$xy" "'$q'${in:+ in the element with id '$in'}")"
   [ "$st" -eq 0 ] || die "assert FAILED: $(lookup_err "$st" "$in")"
-  [ -z "$in" ] || { [ -n "$xy" ] && ok "assert ($m) in '$in': '$q' on screen at $xy" || die "assert FAILED ($m match): '$q' not in the element with id '$in'"; return; }
-  [ -n "$xy" ] && ok "assert ($m): '$q' on screen at $xy" || die "assert FAILED ($m match): '$q' not on screen"; }
+  [ -z "$in" ] || { [ -n "$xy" ] && ok "assert ($m) in '$in': '$q'${idx:+ index $idx} on screen at $xy" || die "assert FAILED ($m match): '$q' not in the element with id '$in'"; return; }
+  [ -n "$xy" ] && ok "assert ($m): '$q'${idx:+ index $idx} on screen at $xy" || die "assert FAILED ($m match): '$q' not on screen"; }
 # Explicit-selector variants. tapText/assertText match on visible text and can
 # land on a neighbouring caption; these two take an accessibility id / resource-id
 # segment and match it exactly, or fail. An empty id is a failure, never a match:
@@ -2339,7 +2460,7 @@ id_miss(){ local q="$1" for="${2:-}" w unit
     *) printf "no element with id '%s'%s" "$q" "$for";;
   esac
   return 0; }
-tap_id(){ local q="${1:-}"; [ -n "$q" ] || die "tapId needs a non-empty id"; [ -z "${2:-}${3:-}" ] || { tap_id_at "$q" "${2:-}" "${3:-}"; return; }; local xy st=0; xy="$(find_el "$q" id)" || st=$?; [ "$st" -eq 0 ] || die "$(lookup_err "$st")"; [ -n "$xy" ] || die "$(id_miss "$q")"; tap_checked "$q" id $xy; }
+tap_id(){ local q="${1:-}" idx="${4:-}"; [ -n "$q" ] || die "tapId needs a non-empty id"; [ -z "${2:-}${3:-}" ] || { tap_id_at "$q" "${2:-}" "${3:-}" "$idx"; return; }; local xy st=0; xy="$(find_el "$q" id exact centre "" "$idx")" || st=$?; [ "$st" -ne 5 ] || die "$(index_miss "$idx" "$xy" "id '$q'")"; [ "$st" -eq 0 ] || die "$(lookup_err "$st")"; [ -n "$xy" ] || die "$(id_miss "$q")"; tap_checked "$q" id $xy "" "$idx"; }
 # tapId with "at" (#129): a point inside the element instead of its centre. A
 # slider with stops often has one id on the whole track, or ids on its two ends
 # only, so the stop in the middle can be reached only as a point on the track.
@@ -2352,29 +2473,70 @@ tap_id(){ local q="${1:-}"; [ -n "$q" ] || die "tapId needs a non-empty id"; [ -
 # is checked like the centre is, so a thumb with an id of its own over that
 # point fails the step as covered - tap the thumb by its id then, or the track
 # where the thumb is not.
-# tap_id_at <id> <x share or empty> <y share or empty> - shares as whole numbers.
-tap_id_at(){ local q="$1" xs="$2" ys="$3" out st=0 x1 y1 x2 y2 sx1 sy1 sx2 sy2 px py v
+# With an index (#46) the point is taken on that match: the slider of the
+# second row of a list where every row has the same ids.
+# tap_id_at <id> <x share or empty> <y share or empty> [index] - shares as whole numbers.
+tap_id_at(){ local q="$1" xs="$2" ys="$3" idx="${4:-}" out st=0 x1 y1 x2 y2 sx1 sy1 sx2 sy2 px py v
   for v in "$xs" "$ys"; do
     case "$v" in ''|[0-9]|[1-9][0-9]|100) ;; *) die "tapId: a point is a whole share of the element from 0 to 100, got '$v'";; esac
   done
-  out="$(find_el "$q" id exact box)" || st=$?
+  out="$(find_el "$q" id exact box "" "$idx")" || st=$?
+  [ "$st" -ne 5 ] || die "$(index_miss "$idx" "$out" "id '$q'")"
   [ "$st" -eq 0 ] || die "$(lookup_err "$st")"
   [ -n "$out" ] || die "no element with id '$q'"
   read -r x1 y1 x2 y2 sx1 sy1 sx2 sy2 <<<"$out"
   if [ -n "$xs" ]; then px=$(( x1 + (x2 - x1) * xs / 100 )); [ "$px" -lt "$x2" ] || px=$(( x2 - 1 )); [ "$px" -ge "$x1" ] || px=$x1; else px=$(( (x1 + x2) / 2 )); fi
   if [ -n "$ys" ]; then py=$(( y1 + (y2 - y1) * ys / 100 )); [ "$py" -lt "$y2" ] || py=$(( y2 - 1 )); [ "$py" -ge "$y1" ] || py=$y1; else py=$(( (y1 + y2) / 2 )); fi
   [ "$px" -ge "$sx1" ] && [ "$px" -lt "$sx2" ] && [ "$py" -ge "$sy1" ] && [ "$py" -lt "$sy2" ] \
-    || die "'$q' at ${xs:-50}% x ${ys:-50}% is $px,$py, off the screen [$sx1,$sy1][$sx2,$sy2] - not tapped"
+    || die "'$q'${idx:+ index $idx} at ${xs:-50}% x ${ys:-50}% is $px,$py, off the screen [$sx1,$sy1][$sx2,$sy2] - not tapped"
   # Said once the tap went: a point found covered is a failed step, not a tap
   # followed by a failure.
-  tap_checked "$q" id "$px" "$py" || return
-  ok "tap id '$q' at ${xs:-50}% x ${ys:-50}% of $((x2 - x1))x$((y2 - y1)): $px,$py"; }
-assert_id(){ local q="${1:-}" want="${2:-}"; [ -n "$q" ] || die "assertId needs a non-empty id"; local xy st=0 miss
-  [ -z "$want" ] || { xy="$(find_el "$q" id exact state)" || st=$?; [ "$st" -eq 0 ] || die "assert FAILED: $(lookup_err "$st")"
+  tap_checked "$q" id "$px" "$py" "" "$idx" || return
+  ok "tap id '$q'${idx:+ index $idx} at ${xs:-50}% x ${ys:-50}% of $((x2 - x1))x$((y2 - y1)): $px,$py"; }
+assert_id(){ local q="${1:-}" want="${2:-}" idx="${3:-}"; [ -n "$q" ] || die "assertId needs a non-empty id"; local xy st=0 miss
+  [ -z "$want" ] || { xy="$(find_el "$q" id exact state "" "$idx")" || st=$?; [ "$st" -ne 5 ] || die "assert FAILED: $(index_miss "$idx" "$xy" "id '$q'")"; [ "$st" -eq 0 ] || die "assert FAILED: $(lookup_err "$st")"
     [ -n "$xy" ] || die "assert FAILED: $(id_miss "$q")"
     miss="$(state_miss "$q" "$want" $xy)"; [ -z "$miss" ] || die "assert FAILED: $miss"
-    set -- $xy; ok "assert id: '$q' on screen at $1 $2, $(state_words "$want")"; return 0; }
-  xy="$(find_el "$q" id)" || st=$?; [ "$st" -eq 0 ] || die "assert FAILED: $(lookup_err "$st")"; [ -n "$xy" ] && ok "assert id: '$q' on screen at $xy" || die "assert FAILED: $(id_miss "$q")"; }
+    set -- $xy; ok "assert id: '$q'${idx:+ index $idx} on screen at $1 $2, $(state_words "$want")"; return 0; }
+  xy="$(find_el "$q" id exact centre "" "$idx")" || st=$?; [ "$st" -ne 5 ] || die "assert FAILED: $(index_miss "$idx" "$xy" "id '$q'")"; [ "$st" -eq 0 ] || die "assert FAILED: $(lookup_err "$st")"; [ -n "$xy" ] && ok "assert id: '$q'${idx:+ index $idx} on screen at $xy" || die "assert FAILED: $(id_miss "$q")"; }
+# An index past the last match (#46): the lookup left with status 5, the number
+# of matches it counted and the number that matched with a lower rank. The step
+# stops and says how many there were - tapping the first one instead is the
+# guess the index exists to replace. Only the best matches are counted, and the
+# words say so when others were left out: a caption next to a button matches
+# tapText less closely than the button does.
+index_miss(){ local n="${2%% *}" less=0 w="elements match" l=""; [ "$n" = 1 ] && w="element matches"
+  case "$2" in *" "*) less="${2#* }";; esac
+  [ "${3#id }" = "$3" ] || { w="elements with"; [ "$n" = 1 ] && w="element with"; }
+  case "$less" in 0|'') ;; 1) l=", and 1 more matches less closely and is not counted";; *) l=", and $less more match less closely and are not counted";; esac
+  [ "$n" != 0 ] || { printf '%s' "index $1 is out of range: 0 $w $3 on the screen"; return; }
+  printf '%s' "index $1 is out of range: $n $w $3 as closely as the best match on the screen$l (the index counts from 0, top to bottom, then left to right)"; }
+# assertCount (#47): how many elements match, compared with a number. The count
+# is the list the index picks from (see pick in afind): the same filters, the
+# same rule for a frame around its control. The number found is in the line
+# either way, so a red step says how far off it was.
+assert_count(){ local q="${1:-}" kind="${2:-assert}" op="${3:-}" n="${4:-}" m="${5:-exact}" in="${6:-}" got st=0 what words held=""
+  [ "$kind" = id ] && what="assertCountId needs a non-empty id" || what="assertCount needs a non-empty value"
+  [ -n "$q" ] || die "$what"
+  case "$kind" in assert|id) ;; *) die "usage: yukti assert-count \"<text or id>\" <assert|id> <atLeast|exact|atMost> <count> [exact|contains] [<id>]";; esac
+  case "$op" in atLeast) words="at least";; exact) words="exactly";; atMost) words="at most";; *) die "assertCount: unknown op '$op' - use atLeast, exact or atMost";; esac
+  case "$n" in ''|*[!0-9]*|???????*) die "assertCount: count must be a whole number from 0 to 999999, got '$n'";; esac
+  n=$((10#$n))
+  [ "$op" != atLeast ] || [ "$n" -gt 0 ] || die "assertCount: at least 0 passes on any screen - ask for at least 1, or use exact or atMost"
+  case "$m" in exact|contains) ;; *) die "assertCount: unknown match '$m' - use exact or contains";; esac
+  got="$(find_el "$q" "$kind" "$m" count "$in")" || st=$?
+  [ "$st" -eq 0 ] || die "assertCount FAILED: $(lookup_err "$st" "$in")"
+  case "$got" in ''|*[!0-9]*) die "assertCount FAILED: the lookup gave no count";; esac
+  case "$op" in
+    atLeast) [ "$got" -ge "$n" ] && held=1;;
+    exact)   [ "$got" -eq "$n" ] && held=1;;
+    atMost)  [ "$got" -le "$n" ] && held=1;;
+  esac
+  if [ "$kind" = id ]; then what="assertCount id"; [ "$got" = 1 ] && q="$got element with id '$q'" || q="$got elements with id '$q'"
+  else what="assertCount ($m match)"; [ "$got" = 1 ] && q="$got element matches '$q'" || q="$got elements match '$q'"; fi
+  q="$q${in:+ in the element with id '$in'}"
+  [ -n "$held" ] || die "$what FAILED: $q on the screen, expected $words $n"
+  ok "$what: $q on the screen, $words $n"; }
 # The state a step asks of an element (#103): "selected=true checked=false", as
 # the flow builder writes it. state_miss <id> <want> <cx> <cy> <selected>
 # <checked> prints what does not hold, in words, or nothing; state_words says
@@ -2441,7 +2603,7 @@ adpi(){
 # a screen that moved in between.
 box_die(){ HELD_TREE=""; die "$@"; }
 assert_box(){
-  local q="${1:-}" kind="${2:-assert}" spec="${3:-}" what
+  local q="${1:-}" kind="${2:-assert}" spec="${3:-}" idx="${4:-}" what
   [ "$kind" = id ] && what="id" || what="text"
   [ -n "$q" ] || die "assertBox needs a non-empty $what"
   # A box assertion with no constraint passes on anything that is on the screen,
@@ -2454,7 +2616,10 @@ assert_box(){
       HELD_TREE=""; HELD_TREE="$(ui)" || exit 1;;
   esac
   local out st=0
-  out="$(find_el "$q" "$kind" exact box)" || st=$?
+  # An index (#46) picks the element measured; the elements it is measured
+  # against are named by id and taken as tapId takes them.
+  out="$(find_el "$q" "$kind" exact box "" "$idx")" || st=$?
+  [ "$st" -ne 5 ] || box_die "assert FAILED: $(index_miss "$idx" "$out" "$([ "$kind" = id ] && printf "id '%s'" "$q" || printf "'%s'" "$q")")"
   [ "$st" -eq 0 ] || box_die "assert FAILED: $(lookup_err "$st")"
   if [ -z "$out" ]; then
     [ "$what" = id ] && box_die "assert FAILED: $(id_miss "$q")"
@@ -2549,7 +2714,7 @@ assert_box(){
   done
   HELD_TREE=""
   [ -z "$bad" ] || die "assert FAILED: $what '$q' is $where - expected ${bad#, }"
-  ok "assert box: $what '$q' is $where$good"
+  ok "assert box: $what '$q'${idx:+ index $idx} is $where$good"
 }
 # ── turnWheel: turn a wheel picker by a number of rows (#120) ────────────────
 # A wheel has no id, and only the rows next to the selected one are in reach: a
@@ -2679,9 +2844,10 @@ is_num(){ case "$1" in ''|*[!0-9]*) return 1;; *) return 0;; esac; }
 # check around it, is the one `clearText` does.
 # The tree the field is found in is held for the clearing, which reads the same
 # screen before its first touch: one read where there were two (#106).
-clear_id(){ local q="${1:-}"; [ -n "$q" ] || die "clearTextId needs a non-empty id"; local xy st=0
+clear_id(){ local q="${1:-}" idx="${2:-}"; [ -n "$q" ] || die "clearTextId needs a non-empty id"; local xy st=0
   HELD_TREE=""; HELD_TREE="$(ui)" || exit 1
-  xy="$(find_el "$q" id)" || st=$?
+  xy="$(find_el "$q" id exact centre "" "$idx")" || st=$?
+  [ "$st" -ne 5 ] || { HELD_TREE=""; die "$(index_miss "$idx" "$xy" "id '$q'")"; }
   [ "$st" -eq 0 ] || { HELD_TREE=""; die "$(lookup_err "$st")"; }
   [ -n "$xy" ] || { xy="$(id_miss "$q")"; HELD_TREE=""; die "$xy"; }
   clear_field $xy "clearTextId '$q'"; }
@@ -2822,21 +2988,27 @@ wait_s(){ sleep "${1:-2}"; }
 # With an "in" id (waitFor only, #102) the poll waits for the text inside that
 # element, and an element not yet on the screen is "not there yet", not an
 # unreadable screen. The timeout says which of the two it ended in.
-wait_for(){ local q="${1:-}" t="${2:-10}" m="${3:-exact}" mode="${4:-assert}" opt="${5:-}" in="${6:-}" want="${7:-}" xy readable=1 lst=1 nosc=0 t0 el label why="" msg miss=""
+#
+# With an index (#46) the poll waits for that match: fewer matches is "not
+# there yet", and the timeout says how many there were.
+wait_for(){ local q="${1:-}" t="${2:-10}" m="${3:-exact}" mode="${4:-assert}" opt="${5:-}" in="${6:-}" want="${7:-}" idx="${8:-}" xy readable=1 lst=1 nosc=0 t0 el label why="" msg miss="" many=""
   [ -n "$q" ] || die "waitFor needs a non-empty value"
   case "$t" in ''|*[!0-9]*|0) die "waitFor: timeout must be a whole number of seconds greater than zero, got '$t'";; esac
   case "$m" in exact|contains) ;; *) die "waitFor: unknown match '$m' - use exact or contains";; esac
   [ "$mode" = id ] && label="waitFor id" || label="waitFor ($m match)${in:+ in '$in'}"
+  [ -z "$idx" ] || label="$label, index $idx"
   say "$label: up to ${t}s for '$q'${want:+, $(state_words "$want")}"
   t0=$SECONDS
   while :; do
-    if xy="$(find_el "$q" "$mode" "$m" "${want:+state}" "$in")"; then readable=1; nosc=0; miss=""
+    if xy="$(find_el "$q" "$mode" "$m" "${want:+state}" "$in" "$idx")"; then readable=1; nosc=0; miss=""; many=""
       # With a state (#103) the element on the screen is not enough: the wait
       # goes on until it is in that state, and the last miss is what it says.
       if [ -n "$xy" ] && [ -n "$want" ]; then miss="$(state_miss "$q" "$want" $xy)"; [ -z "$miss" ] || xy=""; [ -n "$xy" ] && { set -- $xy; xy="$1 $2"; }; fi
       [ -n "$xy" ] && { el=$((SECONDS - t0)); ok "$label: '$q' on screen at $xy after ${el}s${want:+, $(state_words "$want")}"; return 0; }
     else lst=$?
-      if [ "$lst" -eq 4 ]; then readable=1; nosc=1; else readable=0; fi
+      if [ "$lst" -eq 4 ]; then readable=1; nosc=1; many=""
+      elif [ "$lst" -eq 5 ]; then readable=1; nosc=0; miss=""; many="$xy"
+      else readable=0; fi
     fi
     [ $((SECONDS - t0)) -lt "$t" ] || break
     sleep 0.5
@@ -2847,13 +3019,14 @@ wait_for(){ local q="${1:-}" t="${2:-10}" m="${3:-exact}" mode="${4:-assert}" op
     if [ "$opt" = optional ]; then FLOW_OPT_MISS="$msg"; skipped "$label: $msg - optional, the flow goes on"; return 0; fi
     die "$label FAILED: $msg"
   fi
-  if [ "$mode" = id ]; then
-    if xy="$(find_el "$q" id exact why)"; then
+  case "$many" in "0 "*) many="";; esac
+  if [ "$mode" = id ] && [ -z "$many" ]; then
+    if xy="$(find_el "$q" id exact why "" "$idx")"; then
       case "$xy" in
         # It arrived between the last poll and this read: it is on the screen -
         # and with a state asked, it passes only in that state.
         on\ *)   if [ -n "$want" ]; then
-                   xy="$(find_el "$q" id exact state)" || { lst=$?; die "$label FAILED after ${t}s waiting for '$q': $(lookup_err "$lst")"; }
+                   xy="$(find_el "$q" id exact state "" "$idx")" || { lst=$?; die "$label FAILED after ${t}s waiting for '$q': $(lookup_err "$lst")"; }
                    [ -n "$xy" ] && miss="$(state_miss "$q" "$want" $xy)" || miss="'$q' left the screen"
                    if [ -n "$miss" ]; then msg="$miss after ${t}s"
                      [ "$opt" = optional ] && { FLOW_OPT_MISS="$msg"; skipped "$label: $msg - optional, the flow goes on"; return 0; }
@@ -2865,11 +3038,12 @@ wait_for(){ local q="${1:-}" t="${2:-10}" m="${3:-exact}" mode="${4:-assert}" op
         off\ *)  set -- $xy; why="outside the screen at [$2,$3][$4,$5]";;
         *)       why="not in the tree";;
       esac
-    else lst=$?; die "$label FAILED after ${t}s waiting for '$q': $(lookup_err "$lst")"; fi
+    else lst=$?; [ "$lst" -eq 5 ] || die "$label FAILED after ${t}s waiting for '$q': $(lookup_err "$lst")"; case "$xy" in "0 "*) ;; *) many="$xy";; esac; fi
   fi
   if [ -n "$in" ]; then
     [ "$nosc" = 1 ] && why="no element with id '$in'" || why="not in the element with id '$in'"
   fi
+  [ -z "$many" ] || why="$(index_miss "$idx" "$many" "$([ "$mode" = id ] && printf "id '%s'" "$q" || printf "'%s'" "$q")${in:+ in the element with id '$in'}")"
   msg="'$q' not on screen after ${t}s${why:+ - $why}"
   if [ "$opt" = optional ]; then
     FLOW_OPT_MISS="$msg"; skipped "$label: $msg - optional, the flow goes on"; return 0
@@ -4584,7 +4758,7 @@ cond_words(){ local spec="$1" pair kind val out=""
     esac
   done
   printf '%s' "$out"; }
-FLOW_VERBS="launch stopApp clearState openUrl setPermission wait waitFor waitForId waitForNotText waitForNotId screenshot tap tapText optionalTapText tapId type clearText clearTextId pressKey hideKeyboard scroll swipe scrollToText dismiss assertText assertId assertNotText assertNotId assertBox assertBoxId turnWheel swipeId swipeText"
+FLOW_VERBS="launch stopApp clearState openUrl setPermission wait waitFor waitForId waitForNotText waitForNotId screenshot tap tapText optionalTapText tapId type clearText clearTextId pressKey hideKeyboard scroll swipe scrollToText dismiss assertText assertId assertNotText assertNotId assertBox assertBoxId assertCount assertCountId turnWheel swipeId swipeText"
 # The steps a condition switched off. They keep their numbers - the numbering is
 # end to end, and a skipped step that gave its number away would move every step
 # after it - they say so on the console, and they land in the report as `skipped`
@@ -4686,12 +4860,21 @@ STATE_VERBS = ("assertId", "waitForId")
 PERM_STATES = ("granted", "denied", "unset")
 PERM_NAMES = ("notifications", "camera", "microphone", "location", "photos",
               "contacts", "calendar", "motion", "reminders", "health")
+# "index" picks one of several matches, zero-based, in the order of the screen:
+# top to bottom, then left to right (#46).
+INDEX_VERBS = ("tapText", "optionalTapText", "tapId", "clearTextId",
+               "assertText", "assertId", "assertBox", "assertBoxId",
+               "waitFor", "waitForId")
+# "op" and "count" are what assertCount compares the number of matches with (#47).
+COUNT_VERBS = ("assertCount", "assertCountId")
+COUNT_OPS = ("atLeast", "exact", "atMost")
 # "at" is a point inside the element tapId taps, as shares of its box (#129).
 # "toX" and "toY" are where a swipe ends (#48).
-STEP_KEYS = set(KEYS) | {"when", "box", "title", "optional", "in", "shows", "wheel", "state", "at", "toX", "toY"} | set(STATE_KEYS)
+STEP_KEYS = (set(KEYS) | {"when", "box", "title", "optional", "in", "shows", "wheel", "state", "at", "toX", "toY",
+                          "index", "op", "count"} | set(STATE_KEYS))
 # The steps that read a point, and the keys they read it from.
 XY_VERBS = {"tap": ("x", "y"), "clearText": ("x", "y"), "swipe": ("x", "y", "toX", "toY")}
-IN_VERBS = ("assertText", "assertNotText", "waitFor", "tapText")
+IN_VERBS = ("assertText", "assertNotText", "waitFor", "tapText", "assertCount", "assertCountId")
 INCLUDE_KEYS = {"do", "value", "with", "when"}
 # One condition is a kind and a value; several in one `when` all have to hold.
 # These two characters separate them inside the single field that carries them.
@@ -4870,6 +5053,57 @@ def shows_of(step, at, scope, src):
     if SEP in v or END in v:
         fail('%s: "shows" contains a character the runner separates fields with' % at)
     return v
+
+def whole(v, key, at, scope, src, what):
+    # A whole number from 0, as text: "02" is octal in the shell arithmetic
+    # that reads it, so it is normalised here, where the author can be told.
+    if v is None or isinstance(v, (dict, list, bool)):
+        fail('%s: "%s" is %s' % (at, key, what))
+    v = fill(v if isinstance(v, str) else str(v), scope, at, bool(src)).strip()
+    if not re.match(r"\A[0-9]+\Z", v):
+        fail('%s: "%s" is \'%s\' - it has to be a whole number from 0: %s'
+             % (at, key, v, what))
+    # Six digits: a longer number is a typo, and the shell compares in 64 bits.
+    if int(v) > 999999:
+        fail('%s: "%s" is \'%s\' - at most 999999' % (at, key, v))
+    return str(int(v))
+
+def index_of(step, at, scope, src):
+    if "index" not in step: return ""
+    verb = step.get("do", "")
+    # "Not the third one" is "fewer than three": a count, said by assertCount.
+    if verb in ("assertNotText", "assertNotId"):
+        fail('%s: step \'%s\' does not take "index" - to say there are fewer '
+             'than N matches use %s with "op": "atMost"'
+             % (at, verb, "assertCountId" if verb == "assertNotId" else "assertCount"))
+    if verb not in INDEX_VERBS:
+        fail('%s: step \'%s\' does not take "index" - only %s do'
+             % (at, verb, ", ".join(INDEX_VERBS)))
+    return whole(step["index"], "index", at, scope, src,
+                 "the number of the match, from 0, counted top to bottom, then "
+                 "left to right")
+
+def count_of(step, at, scope, src):
+    verb = step.get("do", "")
+    keys = [k for k in ("op", "count") if k in step]
+    if verb not in COUNT_VERBS:
+        if keys:
+            fail('%s: step \'%s\' does not take "%s" - only assertCount and '
+                 "assertCountId do" % (at, verb, keys[0]))
+        return "", ""
+    if len(keys) < 2:
+        fail('%s: %s needs "op" (atLeast, exact or atMost) and "count", for '
+             'instance {"do": "%s", "value": "Item", "op": "atLeast", "count": 2}'
+             % (at, verb, verb))
+    op = step["op"]
+    if not isinstance(op, str) or op not in COUNT_OPS:
+        fail('%s: "op" is %s - use atLeast, exact or atMost' % (at, json.dumps(op)))
+    n = whole(step["count"], "count", at, scope, src, "the number of matches to compare with")
+    # At least none holds on every screen: a check that cannot fail.
+    if op == "atLeast" and n == "0":
+        fail('%s: "atLeast" 0 passes on any screen - ask for at least 1, or use '
+             "exact or atMost" % at)
+    return op, n
 
 WHEEL_MAX = 150
 
@@ -5154,6 +5388,8 @@ def build(path, shown, src, scope, chain, depth, pre=""):
         if "x" in xy:
             fields[KEYS.index("x")] = xy["x"]; fields[KEYS.index("y")] = xy["y"]
         fields.append(xy.get("toX", "") + (" " + xy["toY"] if "toY" in xy else ""))
+        fields.append(index_of(step, at, scope, src))
+        fields.extend(count_of(step, at, scope, src))
         if cond: recs.append(guard(cond, 1, src, idx))
         recs.append(SEP.join(fields))
 
@@ -5225,7 +5461,7 @@ PY
   # still reported PASS). Reading `<&3` also keeps the loop in THIS shell (not a
   # pipe subshell), so a step's `die` (exit 1) aborts the whole flow with a
   # non-zero status instead of being lost.
-  while IFS=$'\x1f' read -r -d '' do_ val x y mtch tmo dir edg src sidx wcond wspan bspec ttl opt inid shw stt whl atp to <&3; do
+  while IFS=$'\x1f' read -r -d '' do_ val x y mtch tmo dir edg src sidx wcond wspan bspec ttl opt inid shw stt whl atp to idx cop cnt <&3; do
       # A guard is not a step: it takes no number of its own, and when it holds
       # the run says nothing about it - the steps that follow simply run. When it
       # does not hold, its whole group is read off the stream and every step in it
@@ -5270,7 +5506,7 @@ PY
       # it may be given it. A locator that ignored the key told the flow author
       # it was honoured: tapText folds case and matches a substring whatever the
       # step says, and a suite written on that belief is weaker than it reads.
-      [ -z "$mtch" ] || case "$do_" in assertText|assertNotText|waitFor|waitForNotText) ;; *) die "step $FLOW_IDX '$do_' does not take a \"match\" - only assertText, assertNotText, waitFor and waitForNotText do";; esac
+      [ -z "$mtch" ] || case "$do_" in assertText|assertNotText|assertCount|waitFor|waitForNotText) ;; *) die "step $FLOW_IDX '$do_' does not take a \"match\" - only assertText, assertNotText, assertCount, waitFor and waitForNotText do";; esac
       # Same rule for the two keys scrollToText reads: a key a step ignores is a
       # line of the flow file that does not do what it says. `scroll` carries its
       # direction in "value", the way it always has.
@@ -5301,8 +5537,8 @@ PY
                # THIS step and the flow stops with a message.
       case "$do_" in
         wait)        wait_s "${val:-2}";;
-        waitFor)     wait_for "$val" "${tmo:-10}" "${mtch:-exact}" assert "" "$inid";;
-        waitForId)   wait_for "$val" "${tmo:-10}" exact id "${opt:+optional}" "" "$stt";;
+        waitFor)     wait_for "$val" "${tmo:-10}" "${mtch:-exact}" assert "" "$inid" "" "$idx";;
+        waitForId)   wait_for "$val" "${tmo:-10}" exact id "${opt:+optional}" "" "$stt" "$idx";;
         waitForNotText) wait_gone "$val" "${tmo:-10}" "${mtch:-exact}" assert;;
         waitForNotId) wait_gone "$val" "${tmo:-10}" exact id;;
         # shot runs in a substitution, so its own die kills only that subshell:
@@ -5315,24 +5551,26 @@ PY
                      [ -n "$FLOW_ART" ] || die "screenshot produced no file"
                      ok "shot → $FLOW_ART";;
         tap)         tap $(flow_xy "$x" "$y");;
-        tapText)     say "tap '$val'${inid:+ in '$inid'}"; tap_text "$val" "$tmo" "$inid";;
-        optionalTapText) tap_text_optional "$val";;
+        tapText)     say "tap '$val'${inid:+ in '$inid'}${idx:+ index $idx}"; tap_text "$val" "$tmo" "$inid" "$idx";;
+        optionalTapText) tap_text_optional "$val" "$idx";;
         scroll)      scroll_step "${val:-down}";;
         swipe)       swipe_step "$x" "$y" "${to% *}" "${to#* }";;
         scrollToText) scroll_to_step "$val" "${dir:-down}" "$edg" "$tmo" >/dev/null;;
         dismiss)     dismiss;;
         clearText)   clear_field $(flow_xy "$x" "$y");;
-        clearTextId) say "clear id '$val'"; clear_id "$val";;
+        clearTextId) say "clear id '$val'${idx:+ index $idx}"; clear_id "$val" "$idx";;
         pressKey)    press_key "$val";;
         hideKeyboard) hide_keyboard;;
         type)        say "type ${#val} chars"; type_str "$val" "$shw";;
-        assertText)  assert_text "$val" "${mtch:-exact}" "$inid";;
+        assertText)  assert_text "$val" "${mtch:-exact}" "$inid" "$idx";;
         assertNotText) assert_not_text "$val" "${mtch:-exact}" "$inid";;
         assertNotId) assert_not_id "$val";;
-        tapId)       say "tap id '$val'"; tap_id "$val" "${atp%%,*}" "${atp#*,}";;
-        assertId)    assert_id "$val" "$stt";;
-        assertBox)   assert_box "$val" assert "$bspec";;
-        assertBoxId) assert_box "$val" id "$bspec";;
+        tapId)       say "tap id '$val'${idx:+ index $idx}"; tap_id "$val" "${atp%%,*}" "${atp#*,}" "$idx";;
+        assertId)    assert_id "$val" "$stt" "$idx";;
+        assertBox)   assert_box "$val" assert "$bspec" "$idx";;
+        assertBoxId) assert_box "$val" id "$bspec" "$idx";;
+        assertCount) assert_count "$val" assert "$cop" "$cnt" "${mtch:-exact}" "$inid";;
+        assertCountId) assert_count "$val" id "$cop" "$cnt" exact "$inid";;
         turnWheel)   turn_wheel "$whl" "$val";;
         swipeId)     say "swipe id '$val' $dir"; swipe_el "$val" id "$dir";;
         swipeText)   say "swipe '$val' $dir"; swipe_el "$val" text "$dir";;
@@ -5477,13 +5715,17 @@ ${_yk_B}yukti v$YUKTI_VERSION${_yk_R} — YUKTI — smart mobile-app QA automati
                             centred on it; YUKTI_SWIPE_SHARE changes the share (1-90)
   yukti swipe-text "<text>" <up|down|left|right>
                             the same for the element with this text
+  yukti assert-count "<q>" <assert|id> <atLeast|exact|atMost> <n> [exact|contains] [<id>]
+                            count the elements with that text (assert) or id on the
+                            screen and compare: assert-count Item assert atLeast 2;
+                            with an id, only inside that element
   yukti assert-not "<text>" [exact|contains] [<id>]
                             assert the text is NOT on the current screen (no scroll);
                             with an id, NOT in that element, which has to be on screen
   yukti assert-not-id "<id>"
                             assert no element with this id is on the current screen
 
-  flow steps: wait · waitFor · waitForId · waitForNotText · waitForNotId · screenshot · tap · tapText · optionalTapText · tapId · scroll · swipe · scrollToText · dismiss · type · clearText · clearTextId · pressKey · hideKeyboard · assertText · assertId · assertNotText · assertNotId · assertBox · assertBoxId · turnWheel · swipeId · swipeText · launch · stopApp · clearState · openUrl · setPermission · include
+  flow steps: wait · waitFor · waitForId · waitForNotText · waitForNotId · screenshot · tap · tapText · optionalTapText · tapId · scroll · swipe · scrollToText · dismiss · type · clearText · clearTextId · pressKey · hideKeyboard · assertText · assertId · assertNotText · assertNotId · assertBox · assertBoxId · assertCount · assertCountId · turnWheel · swipeId · swipeText · launch · stopApp · clearState · openUrl · setPermission · include
               (clearText · clearTextId · pressKey · hideKeyboard · assertBox · assertBoxId: measured on Android, iOS not yet run;
                hideKeyboard's Back-first order on Android not yet run either;
               swipe and a share of the screen: not yet run on either platform)
@@ -5500,7 +5742,16 @@ ${_yk_B}yukti v$YUKTI_VERSION${_yk_R} — YUKTI — smart mobile-app QA automati
               tapId takes "at": {"x":"50%","y":"50%"} - a point inside the element as whole shares of its width and
               height from its left and top edge, either left out stays at the centre (a slider stop on the track)
               assertText matches the whole label as written; "match":"contains" asks for a substring
-              assertText, assertNotText and waitFor take "in": "<id>" - only the element tapId would tap
+              tapText, optionalTapText, tapId, clearTextId, assertText, assertId, assertBox, assertBoxId,
+              waitFor and waitForId take "index": which of several matches, from 0, counted top to bottom,
+              then left to right ("index": 1 is the second). Only the matches that match as closely as the
+              best one count - for tapText a caption next to a button matches less closely than the button;
+              past the last match the step stops and says how many matched (optionalTapText skips).
+              With "in" the index counts inside that element. tapText with an index does not scroll
+              assertCount (text, takes "match") and assertCountId count the matches on the screen and
+              compare: "op": "atLeast", "exact" or "atMost", "count": a whole number; the number found
+              is in the line and in the report either way; both take "in": "<id>" to count inside one element
+              assertText, assertNotText, waitFor, assertCount and assertCountId take "in": "<id>" - only the element tapId would tap
               and what lies within its bounds count; that element missing fails as "no element with id"
               tapText takes "in" too: a link inside a longer text is tapped on its own element, found inside
               the one named by id by its whole words; one read, no scroll, no "timeout"; words that are only
@@ -5585,7 +5836,7 @@ case "$cmd" in
   install) resolve_platform "$(install_variant "$@")";;
   build|pull|launch|up|"stop-app"|stopApp|"clear-state"|clearState) resolve_platform "${1:-}";;
   boot|shot|ui|find|tap|"tap-text"|tapText|scroll|swipe|"scroll-to"|scrollToText|dismiss|type|clear|assert|"open-url"|openUrl|\
-  "tap-id"|tapId|"clear-id"|clearTextId|"assert-id"|assertId|"assert-box"|assertBox|"swipe-id"|swipeId|"swipe-text"|swipeText|"assert-not"|assertNotText|"assert-not-id"|assertNotId|"wait-for"|waitFor|\
+  "tap-id"|tapId|"clear-id"|clearTextId|"assert-id"|assertId|"assert-box"|assertBox|"assert-count"|assertCount|"swipe-id"|swipeId|"swipe-text"|swipeText|"assert-not"|assertNotText|"assert-not-id"|assertNotId|"wait-for"|waitFor|\
   "wait-for-not"|waitForNotText|"wait-for-not-id"|waitForNotId)
     resolve_platform;;
   # init, doctor, scan and help drive nothing, and a command this tool does not
@@ -5613,26 +5864,29 @@ case "$cmd" in
   helper) helper_cmd "$@";;
   find) find_el "$@";;
   tap) tap_args "$@";;
-  "tap-text"|tapText) tap_text "$@";;
+  # The index and "in" are keys of a flow step, not arguments here: these take
+  # the arguments they took before them (#46, #146).
+  "tap-text"|tapText) tap_text "${@:1:2}";;
   scroll) scroll_step "$@";;
   swipe) swipe_args "$@";;
   "scroll-to"|scrollToText) scroll_to_step "$@";;
   dismiss) dismiss;;
   type) type_str "$@";;
   clear) clear_args "$@";;
-  assert) assert_text "$@";;
+  assert) assert_text "${@:1:3}";;
   # The shares as the flow writes them, "50%", and only so: a bare 50 is refused
   # as the builder refuses it - it reads as pixels. The sign is dropped here.
   "tap-id"|tapId) for a in "${2:-}" "${3:-}"; do case "$a" in ''|*%) ;; *) die "tapId: a point is a whole share of the element written with %, for instance 50%, got '$a'";; esac; done
     a2="${2:-}"; a3="${3:-}"; tap_id "${1:-}" "${a2%\%}" "${a3%\%}";;
-  "clear-id"|clearTextId) clear_id "$@";;
-  "assert-id"|assertId) assert_id "$@";;
+  "clear-id"|clearTextId) clear_id "${@:1:1}";;
+  "assert-id"|assertId) assert_id "${@:1:2}";;
   "assert-box"|assertBox) assert_box_args "$@";;
   "swipe-id"|swipeId) swipe_el "${1:-}" id "${2:-}";;
   "swipe-text"|swipeText) swipe_el "${1:-}" text "${2:-}";;
+  "assert-count"|assertCount) assert_count "$@";;
   "assert-not"|assertNotText) assert_not_text "$@";;
   "assert-not-id"|assertNotId) assert_not_id "$@";;
-  "wait-for"|waitFor) wait_for "$@";;
+  "wait-for"|waitFor) wait_for "${@:1:7}";;
   "wait-for-not"|waitForNotText) wait_gone "${1:-}" "${2:-10}" "${3:-exact}" assert;;
   "wait-for-not-id"|waitForNotId) wait_gone "${1:-}" "${2:-10}" exact id;;
   ""|-h|--help|help) usage;;

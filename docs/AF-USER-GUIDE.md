@@ -130,6 +130,9 @@ A flow is `{ "name": "...", "steps": [ ... ] }`. Common step verbs:
 | `{"do":"assertBox","value":"Reconnect","box":{"minX":16,"maxX":"95%"}}` | verify the box of the element with this label: `minWidth`, `minHeight`, `maxWidth`, `maxHeight` for the size, `minX`, `minY`, `maxX`, `maxY` for the edges. Pixels (`48`), dp (`"48dp"`) or a share of the screen (`"5%"`) |
 | `{"do":"assertBoxId","value":"primary-cta","box":{"minWidth":"48dp","minHeight":"48dp"}}` | the same check, matching the id exactly - here the touch-target minimum |
 | `{"do":"assertBoxId","value":"chat-pill","box":{"above":"tab-bar"}}` | the box against another element, named by its id: `above`, `below`, `leftOf`, `rightOf`, or `apart` (the two do not overlap) |
+| `{"do":"tapText","value":"Continue","index":1}` | the second of several equal matches, counting from 0 top to bottom, then left to right. Taken by `tapText`, `optionalTapText`, `tapId`, `clearTextId`, `assertText`, `assertId`, `assertBox`, `assertBoxId`, `waitFor` and `waitForId`; past the last match the step stops and says how many matched. `tapText` with an index does not scroll |
+| `{"do":"assertCount","value":"Item","op":"atLeast","count":2}` | count the elements with this text on the screen and compare: `"op"` is `atLeast`, `exact` or `atMost`; matches like `assertText`, `"match":"contains"` included. The number found is in the line and in the report |
+| `{"do":"assertCountId","value":"result-row","op":"exact","count":5}` | the same count, matching the id exactly; both take `"in":"<id>"` to count inside one element |
 | `{"do":"assertNotText","value":"Wrong password"}` | verify the text is NOT on the screen as it is now (no scroll). Same matching as `assertText`, `"match":"contains"` and `"in"` included |
 | `{"do":"assertNotId","value":"paywall"}` | verify no element with this id is on the screen as it is now |
 | `{"do":"waitForNotText","value":"Saving...","timeout":15}` | poll until the text is gone from the screen, fail if it is still there at the timeout (seconds, default 10). Matches like `assertNotText`, `"match":"contains"` included |
@@ -168,6 +171,22 @@ before the step runs. The value stays after the title, shown the way it is
 without one, so a block that two flows include with different `"with"` values
 names its steps differently in each. The step runs exactly as it would without
 a title, and a `${VARIABLE}` in a title is printed as written, never expanded.
+
+`"index"` picks one of several equal matches - three fields with no captions,
+a grid of the same cards, rows that repeat the same options under the same ids.
+It counts from 0 in the order of the screen, the same on both platforms: rows
+top to bottom, then left to right by the centre (two elements are one row when
+their vertical centres differ by less than half the height of the smaller one).
+Only what is on the screen, of real size, counts, and with `"in"` only what is
+inside that element. Only the matches that match as closely as the best one
+count: for `tapText` a caption next to a button matches less closely than the
+button and is left out, and a row labelled on itself and on its text counts
+once. An index past the last match fails the step with the number that matched,
+and the number left out, instead of acting on the first one. `assertCount` and
+`assertCountId` count the same matches and compare: `atLeast` is the guard that
+a list filled, `exact` and `atMost` close it from the other side. On iOS a
+container marked accessible arrives as one element (#88), so a count there is
+what the accessibility tree reports.
 
 `assertBox` and `assertBoxId` measure the box the lookup already reads. A
 constraint is a plain number of pixels (`48`), a number of dp (`"48dp"`), or a
