@@ -409,8 +409,19 @@ Nineteen more ways a flow stops, the first four of them typos that used to pass:
 
 While the keyboard is up it covers the controls under it, so a flow that fills a
 second field, or taps Save, has to close it first: `hideKeyboard` between the
-fields. It asks the input method itself whether a keyboard is up, presses escape,
-and asks again - if one is still up after that, and after Back, the step fails
+fields. It asks the input method itself whether a keyboard is up and, only
+while one is, presses Back: the input method takes Back while it is shown. The
+exceptions are a field that handles Back before the input method does (Android's
+`onKeyPreIme`, used by some chat and emoji inputs) and the moment right after a
+tap, when the state can say "shown" before the keyboard is drawn - there Back
+can reach the screen. Then the step waits up to 2 s for the keyboard to go.
+Escape comes second, and only for a keyboard Back left up, with a warning:
+escape is not taken by the input method, it reaches the window, and a dialog
+around the field - a React Native `Modal` among them - takes it as Back and
+closes, field and all. So the step reads the focused window before and after
+escape, and a window that changed fails the step ("escape closed the keyboard
+and the window with it"); a device that names no focused window leaves that
+unchecked and says so. If a keyboard is still up after both, the step fails
 rather than letting the next tap land on a key.
 
 Two consequences worth knowing before writing flows:
@@ -423,8 +434,12 @@ Two consequences worth knowing before writing flows:
 - `pressKey` is the general form and `hideKeyboard` is built on it. Use
   `pressKey enter` to submit a form from the keyboard, and `hideKeyboard` when
   what you need is the keyboard gone. `pressKey back` is not a way to close a
-  keyboard: on a screen with nothing to go back to it leaves the app, which is
-  what it did to this rig at the second press.
+  keyboard: a flow cannot tell whether the keyboard is still up when it
+  presses it, and with the keyboard down Back leaves the screen, or the app,
+  which is what it did to this rig at the second press. A flow that pressed
+  Back right after typing, to close a keyboard over a field inside a dialog,
+  uses `hideKeyboard` instead: it presses Back only while the input method
+  says the keyboard is up.
 
 `clearText` empties a field with select-all and one delete, then reads the field
 back and fails if anything is left. It never prints what the field held - a
@@ -474,10 +489,30 @@ digits cannot be told apart, and the step fails.
 
 `hideKeyboard` on iOS closes the keyboard with a short drag just above the keys,
 which works on a screen whose scroll view dismisses the keyboard on a drag. A
-swipe step that finds the keyboard up closes it the same way. Neither ever
-presses Return, because Return can submit the form or put a newline into a
-multi-line field. On a screen the drag does not close, the step fails. A flow
-whose form may take Return closes the keyboard with `pressKey enter` instead.
+swipe step that finds the keyboard up closes it the same way. The keyboard is
+found by its keys: the lower-case "delete" key and the one-character keys in
+its cluster, so an app's own "+" higher up does not move the top of the
+keyboard. A keyboard the drag leaves up - or one that reaches so high there is
+no room for the drag - gets the "Done" button of the bar on top of the keys,
+checked the same way after it. That button is tapped only when it is the bar's
+for certain: its bottom edge within 80 points above the keys and not below
+their top (a return key labelled Done is Return), at most 50 points high and a
+quarter of the keys wide, right-aligned with them, and inside the toolbar on
+top of the keys when the tree lists one. That Done is the app's own button -
+iOS adds no bar to a text keyboard - and while many only close the keyboard,
+some commit a value or submit, so the run says "the app's own button, it may
+have acted": the drag is the safe close, Done the fallback with a side effect.
+This fallback is written from the idb tree format and not yet measured on a
+simulator. A Done in the navigation bar, or a
+full-width Done riding on the keyboard, is the form's own button and is not
+tapped. The label is matched in English: a simulator in another language
+skips this step. Neither step ever presses Return, because Return can submit
+the form or put a newline into a multi-line field, and there is no tap
+"outside the field": no point can be aimed so that it is sure to miss every
+element that acts. A keyboard still up fails the step, which lists what it
+tried and what it did not ("... - not tried: Done (no Done button above the
+keyboard) - ..."). A flow whose form may take Return closes the keyboard with
+`pressKey enter` instead.
 
 The flow file itself is now read in full before the first step runs, and a file
 the runner cannot turn into steps stops the run there: JSON it cannot parse, no

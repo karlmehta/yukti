@@ -50,7 +50,14 @@
 # User 0, every permission there not granted and not answered.
 #
 # `dumpsys input_method` answers that no keyboard is up, unless the file
-# `keyboard` is there; the escape key (111) removes it.
+# `keyboard` is there; the escape key (111) removes it, and so does Back (4)
+# unless the file `back-stays` is there. `kb-reads` overrides the answer, one
+# word per read ("up" or "down"), first word first; past the last, the file
+# `keyboard` answers again. `modal` stands for a dialog around the field: an
+# escape removes it, as a React Native Modal takes escape as Back and closes,
+# and so does a Back with no keyboard up; Back while the keyboard is up does
+# not reach it. While `modal` holds text, `dumpsys window` prints that text
+# (the dialog's window has focus) instead of the file `focus`.
 import os, sys, time
 from xml.sax.saxutils import quoteattr
 
@@ -95,7 +102,13 @@ elif args[:3] == ["shell", "input", "keycombination"]:
 elif args[:3] == ["shell", "input", "keyevent"]:
     typed = read("typed")
     for k in args[3:]:
-        if k == "111" and has("keyboard"): os.remove(path("keyboard"))
+        if k == "111":
+            if has("keyboard"): os.remove(path("keyboard"))
+            if has("modal"): os.remove(path("modal"))
+        if k == "4":
+            if not has("keyboard"):
+                if has("modal"): os.remove(path("modal"))
+            elif not has("back-stays"): os.remove(path("keyboard"))
         if k == "67":
             # A delete takes the selection when there is one, else a character.
             if has("selected"): typed = ""; os.remove(path("selected"))
@@ -152,7 +165,11 @@ elif args[:2] == ["exec-out", "screencap"]:
     sys.stdout.buffer.write(b"\x89PNG\r\n\x1a\n" + b"\0" * 32)
 elif line == "shell dumpsys input_method":
     # A swipe step asks first (kb_before_swipe).
-    print("  mInputShown=%s" % ("true" if has("keyboard") else "false"))
+    up = has("keyboard")
+    seq = read("kb-reads").split()
+    if seq:
+        up = seq[0] == "up"; write("kb-reads", " ".join(seq[1:]))
+    print("  mInputShown=%s" % ("true" if up else "false"))
 elif line == "shell wm size":
     print("Physical size: 1080x2400")
 elif line == "shell wm density":
@@ -180,7 +197,7 @@ elif args[:2] == ["shell", "pidof"] and len(args) == 3:
     if not pid: sys.exit(1)
     print(pid)
 elif args[:1] == ["shell"] and len(args) == 2 and args[1].startswith("dumpsys window"):
-    sys.stdout.write(read("focus"))
+    sys.stdout.write(read("modal") if read("modal").strip() else read("focus"))
 elif args == ["shell", "date", "+%s"]:
     print(int(time.time() + float(read("device-offset", "0") or 0)))
 elif args[:4] == ["logcat", "-b", "crash", "-d"]:
