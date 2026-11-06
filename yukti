@@ -2099,7 +2099,10 @@ press_key(){ local name="${1:-}" u
 # the screen - reads as a keyboard, and a keypad in landscape, taller than 40%
 # of the window, does not.
 # When the tree does list a keyboard element, its keys are the one-character
-# buttons inside its frame, and neither shape is needed.
+# buttons inside its frame, and neither shape is needed. A keyboard element with
+# no one-character button inside it (not seen on a device yet) is measured by
+# its own frame, whose top takes in the bar: the bar's Done then lies below
+# "the top" and is not found.
 # With "geom" it also prints where to drag to close it: the middle of the
 # keys, and the top of their highest row - also when the tree lists a keyboard
 # element whose frame takes in the bar above the keys, so that bar stays above

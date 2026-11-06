@@ -1111,6 +1111,18 @@ begin "hideKeyboard on iOS: the drag over a keypad starts above its keys, not ab
 status_is 0; has out.txt "keyboard closed (drag)"; has idb/log "200 433 200 523"
 verdict
 
+# The drag leaves this keypad up; the bar above its keys has Done.
+ios_case ios-hide-keypad-done
+: > "$case_dir/idb/keypad"; : > "$case_dir/idb/done-closes"
+tree "$case_dir/idb/desc-1.json" "$KAPP" "$(itext amount 200 '"12"')" "$(idone 539)"
+flow_file "$case_dir/flow.json" '{ "do": "hideKeyboard" }'
+run_ios "$case_dir/flow.json"
+begin "hideKeyboard on iOS: a keypad the drag leaves up is closed with Done on the bar above it"
+status_is 0
+has out.txt "keyboard closed (Done above the keyboard - the app's own button, it may have acted)"
+has idb/log "ui swipe"; has idb/log "ui tap --udid FAKE-UDID 350 559"; lacks idb/log "ui key"
+verdict
+
 # The same buttons drawn by an app in the top half of its screen: a "Delete"
 # and ten digits of its own are not a keypad.
 ios_case ios-hide-keypad-app-digits
