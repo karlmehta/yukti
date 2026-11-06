@@ -1375,12 +1375,15 @@ set_permission_android(){ local V="$1" name="$2" state="$3" pkg="" api="" want="
   # maps to two permissions is set on the ones the app has.
   req="$(adb shell dumpsys package "$pkg" 2>/dev/null | tr -d '\r' | "$PY" -c '
 import sys
-on=False; ind=0
+on=False; done=False; ind=0
 for line in sys.stdin:
+    # The rest of dumpsys is read and dropped: a reader that leaves while the
+    # pipe is full makes tr fail, and pipefail would discard what is printed.
+    if done: continue
     s=line.strip(); i=len(line)-len(line.lstrip())
     if s=="requested permissions:": on=True; ind=i; continue
     if on:
-        if not s or i<=ind: break
+        if not s or i<=ind: done=True; continue
         print(s.split(":")[0])
 ')" || req=""
   [ -n "$req" ] || die "setPermission: the device lists no permissions for '$pkg' - is it installed?"

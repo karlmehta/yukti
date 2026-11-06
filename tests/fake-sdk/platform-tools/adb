@@ -46,7 +46,8 @@
 # absent), `requested` the permissions the app's manifest asks for, `perms`
 # their runtime state as the pm calls leave it, `pm-refuses` what pm grant /
 # revoke / *-permission-flags print instead of nothing, and `pm-ignores` a pm
-# that answers nothing and changes nothing. `user10` adds a work profile after
+# that answers nothing and changes nothing, `filler` a number of lines
+# `dumpsys package` prints after the manifest. `user10` adds a work profile after
 # User 0, every permission there not granted and not answered.
 #
 # `dumpsys input_method` answers that no keyboard is up, unless the file
@@ -133,6 +134,10 @@ elif args[:3] == ["shell", "dumpsys", "package"] and len(args) == 4:
         if p == "android.permission.INTERNET": continue
         g, fl = st.get(p, ("false", ""))
         print("        %s: granted=%s, flags=[ %s]" % (p, g, (fl.replace(",", "|") + " ") if fl else ""))
+    # `filler` is a count of further lines, as a real dumpsys goes on for
+    # thousands (#168): more than a pipe holds, after User 0's block (before
+    # User 10's when there is one).
+    for n in range(int(read("filler").strip() or 0)): print("      filler entry %d: some more of the package dump" % n)
     if has("user10"):
         print("    User 10: ceDataInode=2 installed=true\n      runtime permissions:")
         for p in read("requested").split():

@@ -3673,6 +3673,17 @@ begin "setPermission: a package the device lists no permissions for asks whether
 status_is 1; has out.txt "the device lists no permissions for 'com.example' - is it installed?"
 verdict
 
+# On a device dumpsys goes on for thousands of lines after the manifest; the
+# reader of the list must take them all, or tr fails on the full pipe and
+# pipefail throws the list away (#168).
+perm_case perm-long-dumpsys
+echo 3000 > "$case_dir/adb/filler"
+flow_file "$case_dir/flow.json" '{ "do": "setPermission", "value": "camera", "state": "granted" }'
+run_perm "$case_dir/flow.json"
+begin "setPermission: the manifest is found when dumpsys goes on for more than a pipe holds"
+status_is 0; has out.txt "permission camera granted for com.example"; lacks out.txt "is it installed?"
+verdict
+
 perm_case perm-health-not-asked
 printf '%s\n' android.permission.INTERNET android.permission.CAMERA > "$case_dir/adb/requested"
 flow_file "$case_dir/flow.json" '{ "do": "setPermission", "value": "health", "state": "granted" }'
