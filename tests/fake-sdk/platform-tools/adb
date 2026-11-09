@@ -115,6 +115,9 @@ elif args[:3] == ["shell", "input", "keyevent"]:
             if has("selected"): typed = ""; os.remove(path("selected"))
             else: typed = typed[:-1]
     write("typed", typed)
+elif line == "shell getprop persist.sys.timezone":
+    # The device's zone (#55): `timezone`, nothing when it is not there.
+    print(read("timezone").strip())
 elif line == "shell getprop ro.build.version.sdk":
     print(read("sdk").strip() or "35")
 elif args[:3] == ["shell", "dumpsys", "package"] and len(args) == 4:

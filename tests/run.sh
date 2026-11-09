@@ -5148,5 +5148,175 @@ begin "tapId at with index on iOS: the point on the second slider, in points"
 status_is 0; has idb/log "ui tap --udid FAKE-UDID 110 322"
 verdict
 
+# ── preparation, teardown and the fixture step (#55) ────────────────────────
+# fx_case <name> - an Android case with a fixture service of its own
+# (tests/fake-sdk/fixture-server) and a config whose variant "app" names it, the
+# secret in $FX_TOKEN. The device's zone is Europe/Lisbon.
+fx_case(){ local i=0; dev_case "$1"; mkdir -p "$case_dir/fx"
+  "$ROOT/tests/fake-sdk/fixture-server" "$case_dir/fx" & fx_pid=$!
+  while [ ! -s "$case_dir/fx/port" ] && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i + 1)); done
+  printf '{"variants":{"app":{"platform":"android","package":"com.example","fixtures":{"url":"http://127.0.0.1:%s/","secret":"FX_TOKEN"}}}}\n' \
+    "$(cat "$case_dir/fx/port")" > "$case_dir/cfg.json"
+  printf 'Europe/Lisbon' > "$case_dir/adb/timezone"; }
+fx_end(){ touch "$case_dir/fx/stop"; wait "$fx_pid" 2>/dev/null || true; }
+run_fx(){ local f="$1"; shift; run_flow "$f" YUKTI_VARIANT=app YUKTI_CONFIG="$case_dir/cfg.json" "$@"; }
+# answer <fixture> <status> [body]
+answer(){ printf '%s\n%s' "$2" "${3:-}" > "$case_dir/fx/answer-$1"; }
+asked(){ grep -c "\"path\": \"/$1\"" "$case_dir/fx/requests" 2>/dev/null || true; }
+NEWMAIL="new.user@example.invalid"
+# A flow that prepares an account, checks its address is on the screen, and
+# deletes it afterwards.
+fx_flow(){ cat > "$case_dir/flow.json" <<JSON
+{ "name": "flow",
+  "prepare": [ { "fixture": "fresh-account", "with": { "plan": "basic" }, "bind": { "TEST_EMAIL": "account.email" } } ],
+  "teardown": [ { "fixture": "delete-account", "with": { "email": "\${TEST_EMAIL}" } } ],
+  "steps": [ { "do": "assertText", "value": "\${TEST_EMAIL}" } ] }
+JSON
+  screen "$case_dir/adb/dump-1.xml" "$(node TextView email "$NEWMAIL")"; }
+
+fx_case fx-bind
+fx_flow; answer fresh-account 200 "{\"account\": {\"email\": \"$NEWMAIL\"}}"; answer delete-account 200 '{}'
+run_fx "$case_dir/flow.json" FX_TOKEN=synthetic-token TEST_EMAIL=old.user@example.invalid
+fx_end
+begin "prepare: the bound value wins over the exported one and reaches the steps; the teardown gets it"
+status_is 0; has out.txt "prepare 1: fixture 'fresh-account' - bound TEST_EMAIL"; has out.txt "assert (exact): '$NEWMAIL' on screen"
+has fx/requests '"path": "/fresh-account", "auth": "Bearer synthetic-token", "tz": "Europe/Lisbon", "body": {"plan": "basic"}'
+has fx/requests "\"path\": \"/delete-account\", \"auth\": \"Bearer synthetic-token\", \"tz\": \"Europe/Lisbon\", \"body\": {\"email\": \"$NEWMAIL\"}"
+has out.txt "teardown 1: fixture 'delete-account'"; lacks out.txt "synthetic-token"
+has res/flow.xml '<property name="outcome" value="passed"/>'
+verdict
+
+fx_case fx-500
+fx_flow; answer fresh-account 500 '{"detail": "server error"}'; answer delete-account 200 '{}'
+run_fx "$case_dir/flow.json" FX_TOKEN=synthetic-token
+fx_end
+begin "prepare: a fixture that answered 500 blocks the flow - no step runs, not a failure, and no stand-in reaches the teardown"
+status_is 0; has out.txt "flow blocked: prepare 1: fixture 'fresh-account' answered 500 - none of its steps ran"
+has out.txt "step 1 'assertText' skipped: blocked: prepare 1"; lacks adb/log "uiautomator dump"; lacks out.txt "server error"
+has res/flow.xml "<skipped message=\"blocked: prepare 1: fixture 'fresh-account' answered 500\"/>"
+has res/flow.xml '<property name="outcome" value="skipped"/>'; has res/flow.xml "<property name=\"reason\" value=\"blocked: prepare 1"
+has out.txt "teardown: teardown 1: fixture 'delete-account' not called - \$TEST_EMAIL was never set"
+[ "$(asked delete-account)" = 0 ] || no "the teardown was called with a value nobody bound"
+has res/flow.xml "<system-err>teardown: teardown 1: fixture 'delete-account' not called"
+verdict
+
+fx_case fx-missing-field
+fx_flow; answer fresh-account 200 '{"account": {}}'
+run_fx "$case_dir/flow.json" FX_TOKEN=synthetic-token
+fx_end
+begin "prepare: an answer without the bound field blocks the flow, by the field's name"
+status_is 0; has out.txt "flow blocked: prepare 1: fixture 'fresh-account' answered without 'account.email' - TEST_EMAIL stays unset"
+verdict
+
+fx_case fx-no-secret
+fx_flow
+run_fx "$case_dir/flow.json"
+fx_end
+begin "prepare: the secret the config names is not set - blocked, nothing sent"
+status_is 0; has out.txt "fixture 'fresh-account' not called - \$FX_TOKEN, the access secret the config names, is not set"
+file_absent fx/requests
+verdict
+
+fx_case fx-redirect
+fx_flow; answer fresh-account 302 ''
+run_fx "$case_dir/flow.json" FX_TOKEN=synthetic-token
+fx_end
+begin "prepare: a redirect is not followed - the secret stays with the address the config named"
+status_is 0; has out.txt "fixture 'fresh-account' answered 302 (a redirect - fixtures are not followed elsewhere)"
+[ "$(wc -l < "$case_dir/fx/requests")" -eq 1 ] || no "more than one request reached the service"
+verdict
+
+fx_case fx-unreachable
+fx_flow; fx_end
+run_fx "$case_dir/flow.json" FX_TOKEN=synthetic-token
+begin "prepare: a service that does not answer blocks the flow"
+status_is 0; has out.txt "flow blocked: prepare 1: fixture 'fresh-account' could not be reached"
+verdict
+
+fx_case fx-teardown-after-red
+fx_flow; answer fresh-account 200 '{"account": {"email": "someone.else@example.invalid"}}'; answer delete-account 200 '{}'
+run_fx "$case_dir/flow.json" FX_TOKEN=synthetic-token
+fx_end
+begin "teardown: runs after a step failed, with the value the preparation bound"
+status_is 1; has fx/requests '"path": "/delete-account", "auth": "Bearer synthetic-token", "tz": "Europe/Lisbon", "body": {"email": "someone.else@example.invalid"}'
+has res/flow.xml '<property name="outcome" value="failed"/>'
+verdict
+
+fx_case fx-teardown-fails
+fx_flow; answer fresh-account 200 "{\"account\": {\"email\": \"$NEWMAIL\"}}"; answer delete-account 500 ''
+run_fx "$case_dir/flow.json" FX_TOKEN=synthetic-token
+fx_end
+begin "teardown: one that failed is said and kept in the report, and the flow still passed"
+status_is 0; has out.txt "teardown: teardown 1: fixture 'delete-account' answered 500"
+has res/flow.xml "<system-err>teardown: teardown 1: fixture 'delete-account' answered 500</system-err>"
+has res/flow.xml '<property name="outcome" value="passed"/>'
+verdict
+
+fx_case fx-step
+screen "$case_dir/adb/dump-1.xml" "$(node TextView weight 70)"
+flow_file "$case_dir/flow.json" '{ "do": "fixture", "value": "change-weight", "with": { "kg": 70, "note": "${FX_NOTE}" } }' '{ "do": "assertText", "value": "70" }'
+answer change-weight 200 '{}'
+run_fx "$case_dir/flow.json" FX_TOKEN=synthetic-token FX_NOTE=from-the-flow
+fx_end
+begin "fixture step: called in the middle of the flow with its body, variables filled"
+status_is 0; has fx/requests '"path": "/change-weight", "auth": "Bearer synthetic-token", "tz": "Europe/Lisbon", "body": {"kg": 70, "note": "from-the-flow"}'
+has out.txt "fixture 'change-weight' called"
+verdict
+
+fx_case fx-step-blocked
+screen "$case_dir/adb/dump-1.xml" "$(node TextView weight 70)"
+flow_file "$case_dir/flow.json" '{ "do": "fixture", "value": "change-weight" }' '{ "do": "assertText", "value": "70" }'
+answer change-weight 503 ''
+run_fx "$case_dir/flow.json" FX_TOKEN=synthetic-token
+fx_end
+begin "fixture step: a fixture that failed blocks the rest of the flow, out loud and in the report"
+status_is 0; has out.txt "step 1 'fixture' skipped: blocked: step: fixture 'change-weight' answered 503 - the rest of the flow is skipped with it"
+has out.txt "step 2 'assertText' skipped: blocked:"; lacks adb/log "uiautomator dump"
+has res/flow.xml '<property name="outcome" value="skipped"/>'
+verdict
+
+dev_case fx-http-far
+printf '{"variants":{"app":{"platform":"android","package":"com.example","fixtures":{"url":"http://fixtures.example.invalid/"}}}}\n' > "$case_dir/cfg.json"
+flow_file "$case_dir/flow.json" '{ "do": "fixture", "value": "change-weight" }'
+run_fx "$case_dir/flow.json"
+begin "fixtures: plain http to another machine is refused as a mistake in the config"
+status_is 1; has out.txt "the fixtures address is 'http://fixtures.example.invalid/' - it has to be https (http only to localhost)"
+verdict
+
+dev_case fx-no-address
+printf '{"variants":{"app":{"platform":"android","package":"com.example"}}}\n' > "$case_dir/cfg.json"
+flow_file "$case_dir/flow.json" '{ "do": "fixture", "value": "change-weight" }'
+run_fx "$case_dir/flow.json"
+begin "fixtures: a config with no address is a red, not a blocked flow"
+status_is 1; has out.txt "nothing says where the fixtures are - put \"fixtures\": {\"url\": \"https://...\"} on variant 'app'"
+verdict
+
+new_case fx-check
+cat > "$case_dir/ok.json" <<'JSON'
+{ "name": "ok",
+  "prepare": [ { "fixture": "fresh-account", "bind": { "YUKTI_FX_EMAIL": "email" } },
+               { "fixture": "activate", "with": { "email": "${YUKTI_FX_EMAIL}" } } ],
+  "teardown": [ { "fixture": "delete-account", "with": { "email": "${YUKTI_FX_EMAIL}" } } ],
+  "steps": [ { "do": "type", "value": "${YUKTI_FX_EMAIL}" }, { "do": "fixture", "value": "change-weight", "with": { "kg": 70 } } ] }
+JSON
+expect "prepare: --check builds the steps with a stand-in for what a fixture binds" 0 " - 2 steps" \
+  env -u YUKTI_FX_EMAIL "$YUKTI" flow --check "$case_dir/ok.json"
+printf '{ "name": "b", "prepare": [ { "fixture": "x" } ], "steps": [ { "do": "wait", "value": "1" } ] }\n' > "$case_dir/block.json"
+flow_file "$case_dir/inc.json" '{ "do": "include", "value": "block.json" }'
+expect "prepare: a block that carries it is refused" 1 "block 'block.json' carries \"prepare\" - only the flow file itself does" check "$case_dir/inc.json"
+printf '{ "name": "t", "teardown": [ { "fixture": "x", "bind": { "A": "a" } } ], "steps": [ { "do": "wait", "value": "1" } ] }\n' > "$case_dir/tbind.json"
+expect "teardown: bind is refused - nothing runs after it" 1 "teardown 1: 'bind' is not a key a teardown call takes" check "$case_dir/tbind.json"
+printf '{ "name": "n", "prepare": [ { "fixture": "../admin" } ], "steps": [ { "do": "wait", "value": "1" } ] }\n' > "$case_dir/name.json"
+expect "prepare: a fixture name that is a path is refused" 1 "prepare 1: \"fixture\" is the name of a fixture" check "$case_dir/name.json"
+printf '{ "name": "u", "prepare": [ { "fixture": "x", "with": { "a": "${YUKTI_FX_UNSET}" } } ], "steps": [ { "do": "wait", "value": "1" } ] }\n' > "$case_dir/unset.json"
+expect "prepare: a variable nobody sets or binds is refused" 1 "prepare 1: \$YUKTI_FX_UNSET is not set in the environment, and no call before this one binds it" \
+  env -u YUKTI_FX_UNSET "$YUKTI" flow --check "$case_dir/unset.json"
+flow_file "$case_dir/sbind.json" '{ "do": "fixture", "value": "x", "bind": { "A": "a" } }'
+expect "fixture step: bind is refused - the steps after it are built before it runs" 1 "a fixture step binds nothing" check "$case_dir/sbind.json"
+flow_file "$case_dir/sname.json" '{ "do": "fixture", "value": "a/b" }'
+expect "fixture step: a name with a slash is refused" 1 "step 1 'fixture': \"value\" is the name of a fixture" check "$case_dir/sname.json"
+flow_file "$case_dir/with.json" '{ "do": "tapText", "value": "x", "with": { "a": "b" } }'
+expect "with: still refused on a step that is not include or fixture" 1 "only include and fixture take it" check "$case_dir/with.json"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
