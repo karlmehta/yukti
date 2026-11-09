@@ -54,6 +54,8 @@
 # unless `home-ignored` is there; `monkey -p <app>` puts the app's window there,
 # unless `launch-ignored` is there, and starts it - a pid in `app-pid` - when it
 # was not running or when `launch-restarts` is there (a new pid every time).
+# All of this only in a case that wrote `app-pid` itself: the cases of a crash
+# (#63) launch and expect the app to stay gone.
 # `am force-stop <app>` empties `app-pid`. `pm list packages` lists `packages`.
 #
 # `dumpsys input_method` answers that no keyboard is up, unless the file
@@ -169,7 +171,7 @@ elif len(args) == 2 and args[0] == "shell" and args[1].startswith("pm ") and ("p
             elif f[1] == "set-permission-flags": e[1] |= {x.upper().replace("-", "_") for x in f[4:]}
             elif f[1] == "clear-permission-flags": e[1] -= {x.upper().replace("-", "_") for x in f[4:]}
         write("perms", "".join("%s %s %s\n" % (k, v[0], ",".join(sorted(v[1]))) for k, v in st.items()))
-elif args[:2] == ["shell", "monkey"] and "-p" in args:
+elif args[:2] == ["shell", "monkey"] and "-p" in args and has("app-pid"):
     app = args[args.index("-p") + 1]
     if not has("launch-ignored"):
         write("focus", "  mCurrentFocus=Window{3c4d u0 %s/%s.MainActivity}\n" % (app, app))
