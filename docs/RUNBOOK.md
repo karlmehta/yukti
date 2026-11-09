@@ -127,7 +127,7 @@ Flows are JSON in `flows/`. Steps: `wait`, `waitFor`, `waitForId`,
 `clearTextId`, `pressKey`, `hideKeyboard`, `scroll`, `swipe {x,y,toX,toY}`, `scrollToText`,
 `dismiss`, `assertText`, `assertId`, `assertBox`, `assertBoxId`, `assertCount`,
 `assertCountId`, `swipeId`, `swipeText`, `launch`,
-`stopApp`, `clearState`, `background`, `foreground`, `relaunch`, `include`. Recorded coordinates are
+`stopApp`, `clearState`, `background`, `foreground`, `relaunch`, `fixture`, `include`. Recorded coordinates are
 **points**
 (iPhone 16 Pro = 402×874), scaled to the screen the run is on; a coordinate may
 also be a share of the screen (`"50%"`), see "A place on the screen, and a swipe". Prefer `tapText` (finds by accessibility label) over
@@ -1112,6 +1112,78 @@ Neither half has been run on a device by the engine yet: the Android half is
 built from the commands `launch` and `stopApp` already send, the iOS half from
 the documentation and that one measurement, and the engine's tests drive both
 through fakes.
+
+### The state of the system: prepare and teardown
+
+`stopApp`, `clearState` and `launch` bring the app on the device to a known
+state. The account it signs into, its records and its flags are whatever the
+last run left, so a test that needs an account which has never been through
+onboarding cannot be written with them, and a preparation done by a script
+outside the tool does not show in the report: when it fails, the flow fails as
+if the app did (#55).
+
+A flow file may say what it needs from the system it talks to:
+
+```json
+{ "name": "first sign-in",
+  "prepare": [
+    { "fixture": "fresh-account", "with": { "plan": "basic" },
+      "bind": { "TEST_EMAIL": "account.email", "TEST_PASSWORD": "account.password" } }
+  ],
+  "teardown": [
+    { "fixture": "delete-account", "with": { "email": "${TEST_EMAIL}" } }
+  ],
+  "steps": [ ... ] }
+```
+
+and the config says where the fixtures are:
+
+```json
+"fixtures": { "url": "https://qa-fixtures.example.com/", "secret": "FIXTURES_TOKEN" }
+```
+
+at the top level or on a variant (the variant's wins), the way `urlBase` is.
+
+- A call is a POST of `"with"` as JSON to the address plus the fixture's name
+  (`.../fresh-account`). The project's service decides what a fixture does; the
+  tool knows only names.
+- `"bind"` takes fields of the answer, a dotted path for a nested one, into flow
+  variables. The steps use them like any variable, and a bound value wins over
+  one exported with the same name: it is the state this run made. A later call
+  of `"prepare"` and the `"teardown"` may use what an earlier call bound.
+- The address comes from the config, never from the flow file. `"secret"` is
+  the **name** of an environment variable, and its value goes in
+  `Authorization: Bearer ...`; a secret is never written in a file that lives in
+  a repository. The address has to be https (http only to localhost), and a
+  redirect is not followed: the secret goes nowhere the config did not name.
+- The request carries the device's time zone in `X-Device-Timezone` (Android:
+  the device's own; iOS: the Mac's, which the simulator keeps). A record "for
+  today" made in the zone of a CI runner lands, around midnight, on another day
+  than the one the app shows.
+- `"teardown"` runs whatever the outcome - after a pass, a failure or a blocked
+  flow - and every call of it runs even when one before it failed. A call that
+  needs a value no fixture bound is not made. A teardown that failed is said on
+  the console and kept in the results as `<system-err>`; it does not change the
+  outcome.
+- The step `fixture` calls one fixture in the middle of a flow, under the same
+  rules: `{"do":"fixture","value":"change-weight","with":{"kg":70}}`. It binds
+  nothing - the steps after it are built before it runs.
+
+**Blocked, not failed.** A preparation that did not give its state means the
+flow did not run. When a fixture does not answer, answers other than 2xx or
+leaves out a field the flow binds, or the secret is not set, the flow is
+skipped with the reason `blocked:`: every step is listed as not run, the results
+say `<property name="outcome" value="skipped"/>` with the reason next to it, and
+the run ends with status 0, as a flow cut short by `platform:` (#51) does. A
+mistake the author can fix - a fixture name that is not a name, a config with no
+address, a variable nobody sets - is a red, as any other mistake in a flow file.
+
+A fixture moves the system forward, not back: "an account that has not been
+through onboarding" cannot usually be restored through an API, so a fixture
+creates a new one on every run rather than resetting an old one. There is no
+step that runs a shell command, on purpose: a flow file is input, and a fixture
+call whose address it cannot choose does not turn it into code run on the
+machine.
 
 ### Permissions before the app starts
 

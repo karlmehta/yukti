@@ -4719,7 +4719,7 @@ for step in steps:
         # A step the platform cannot do (#51) carries its reason as it is: the
         # message starts with the reason word, "platform:", and no condition
         # was involved.
-        if step.get("kind") == "platform": why = step["skip"]
+        if step.get("kind") in ("platform", "blocked"): why = step["skip"]
         else:
             why = ("optional wait ended, the flow went on: " if step.get("kind") == "optional"
                    else "condition not met: ") + step["skip"]
@@ -4754,6 +4754,13 @@ elif int(num(st)) != 0:
 
 skips = sum(1 for s in steps if s["skip"])
 red = int(num(st)) != 0 or failing is not None
+# The flow's own outcome (#55), for a reader that counts flows rather than
+# steps: passed, failed, or skipped with the reason that cut it short -
+# "platform:" (#51) or "blocked:", a preparation that did not give its state.
+cut = next((s["skip"] for s in steps if s.get("kind") in ("platform", "blocked")), "")
+outcome = "failed" if red else ("skipped" if cut else "passed")
+# A teardown that did not work does not change the outcome, and is not lost.
+torn = read(errf + ".teardown").strip()
 arts = [s["art"] for s in steps if s["art"]] + captured
 out = [
     '<?xml version="1.0" encoding="UTF-8"?>',
@@ -4765,11 +4772,15 @@ out = [
     '    <properties>',
     '      <property name="platform" value=%s/>' % quoteattr(plat),
     '      <property name="flow" value=%s/>' % quoteattr(flow),
+    '      <property name="outcome" value=%s/>' % quoteattr(outcome),
+] + (['      <property name="reason" value=%s/>' % quoteattr(cut)] if outcome == "skipped" else []) + [
     '    </properties>',
 ]
 out.extend(cases)
 if arts:
     out.append('    <system-out>' + escape("\n".join(arts)) + '</system-out>')
+if torn:
+    out.append('    <system-err>' + escape("\n".join("teardown: " + l for l in torn.split("\n"))) + '</system-err>')
 out.append('  </testsuite>')
 out.append('</testsuites>')
 
@@ -4787,10 +4798,261 @@ PY
   else
     warn "could not write the results file to '$RESULTS_DIR'"
   fi
-  rm -f "$FLOW_REC" "$FLOW_CUR" "$FLOW_ERR" "$FLOW_ERR.kind" "$FLOW_TREE" "$FLOW_TREE.step"; FLOW_REC=""
+  rm -f "$FLOW_REC" "$FLOW_CUR" "$FLOW_ERR" "$FLOW_ERR.kind" "$FLOW_ERR.teardown" "$FLOW_TREE" "$FLOW_TREE.step"; FLOW_REC=""
   return 0
 }
 
+# ── preparation and teardown: the state of the system, not of the device (#55) ─
+# launch, stopApp and clearState bring the app on the device to a known state.
+# The account it signs into, its records and its flags were whatever the last run
+# left, and a test that needs an account which has never seen onboarding could
+# not be written at all. Preparation done by scripts outside the tool did not
+# show in the report, and a preparation that failed read as the app failing.
+#
+# A flow file may carry "prepare" and "teardown": lists of calls to named
+# fixtures. A call is a POST of its "with" as JSON to the fixtures address of the
+# config plus the fixture's name; "bind" takes fields of the answer into flow
+# variables, which the steps then use like any other. The address comes from the
+# config and never from the flow file, the access secret from the environment
+# variable the config names, and never from a file in a repository. There is no
+# step that runs a command: a flow file is input, and a fixture call whose
+# address it cannot choose does not turn it into code run on this machine.
+#
+# A flow whose preparation did not work did not run: it is "skipped" with a
+# "blocked:" reason, every step listed as not run, and the run ends with status
+# 0, the way a flow cut short by "platform:" does. What the author can fix - a
+# fixture name, a missing address, an unset variable in the flow file - is a red,
+# as any other mistake in a flow file. The teardown runs whatever the outcome; a
+# teardown that failed is said on the console and in the report, and does not
+# change the outcome. The step "fixture" calls one fixture in the middle of a
+# flow, under the same rules, and blocks the rest of the flow when it fails.
+#
+# fixture_py <mode> [<name> <with as JSON>] - of the flow file being run
+#   check     validate "prepare" and "teardown", put a stand-in for every bound
+#             variable in $FLOW_BOUND, print "<prepare calls> <teardown calls>"
+#   prepare   call them in order, each bound value into $FLOW_BOUND as it comes
+#   teardown  call every one, whatever failed before
+#   step      call one fixture, the step's
+# Status 2: the flow file or the config is wrong. Status 3: the system did not
+# give the state - blocked. The reason is on stderr; stdout says what was done.
+fixture_py(){ YUKTI_ENV0="$_yk_env0" "$PY" - "$1" "$FLOW_FILE" "$CONFIG" "${YUKTI_VARIANT:-}" "${FLOW_TZ:-}" "$FLOW_BOUND" "${2:-}" "${3:-}" <<'PY'
+import json, os, re, sys, urllib.error, urllib.request
+from urllib.parse import quote, urlsplit
+
+mode, flow, config, variant, tz, boundf = sys.argv[1:7]
+VAR = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
+NAME = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]*\Z")
+# A fixture name becomes the last part of an address: no slash, no "..".
+FIXTURE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
+LOOPBACK = ("localhost", "127.0.0.1", "::1")
+
+def wrong(msg): sys.stderr.write(msg + "\n"); sys.exit(2)
+def blocked(msg): sys.stderr.write(msg + "\n"); sys.exit(3)
+
+# What a fixture bound, and apart from it the stand-ins --check builds with: a
+# teardown must never send a stand-in as if it were a value.
+def bound(path=boundf):
+    try:
+        with open(path, encoding="utf-8") as fh: return json.load(fh)
+    except (OSError, ValueError): return {}
+
+def keep(values, path=boundf):
+    b = bound(path); b.update(values)
+    with open(path, "w", encoding="utf-8") as fh: json.dump(b, fh)
+
+def scope():
+    env = dict(os.environ)
+    try: env.update(json.loads(env.pop("YUKTI_ENV0", "") or "{}"))
+    except ValueError: pass
+    env.update(bound())
+    return env
+
+# ${NAME} in every text of the body, at any depth. The names that are not set
+# come back instead of a body: the caller decides whether that is a mistake in
+# the flow file or a value an earlier call never bound.
+def fill(v, sc, missing):
+    if isinstance(v, str):
+        return VAR.sub(lambda m: sc.get(m.group(1) or m.group(2)) if (m.group(1) or m.group(2)) in sc
+                       else (missing.append(m.group(1) or m.group(2)) or ""), v)
+    if isinstance(v, dict): return {k: fill(x, sc, missing) for k, x in v.items()}
+    if isinstance(v, list): return [fill(x, sc, missing) for x in v]
+    return v
+
+def calls(doc, key):
+    if key not in doc: return []
+    items = doc[key]
+    if not isinstance(items, list) or not items:
+        wrong('"%s" is a list of fixture calls, for instance [{"fixture": "fresh-account"}]' % key)
+    allowed = ("bind", "fixture", "with") if key == "prepare" else ("fixture", "with")
+    out = []
+    for n, it in enumerate(items, 1):
+        at = "%s %d" % (key, n)
+        if not isinstance(it, dict): wrong("%s is not an object" % at)
+        extra = sorted(k for k in it if k not in allowed)
+        if extra:
+            wrong("%s: '%s' is not a key a %s call takes - those are %s%s"
+                  % (at, extra[0], key, ", ".join(allowed),
+                     " (a teardown binds nothing: nothing runs after it)" if extra[0] == "bind" else ""))
+        name = it.get("fixture")
+        if not isinstance(name, str) or not FIXTURE.match(name) or ".." in name:
+            wrong('%s: "fixture" is the name of a fixture - letters, digits, ".", "_" and "-", '
+                  'for instance "fresh-account"' % at)
+        w = it.get("with", {})
+        if not isinstance(w, dict):
+            wrong('%s: "with" is an object - the body the fixture is sent' % at)
+        b = it.get("bind", {})
+        if not isinstance(b, dict) or not all(isinstance(k, str) and NAME.match(k) for k in b) \
+                or not all(isinstance(f, str) and f.strip() for f in b.values()):
+            wrong('%s: "bind" takes a field of the answer into a flow variable, for instance '
+                  '{"TEST_EMAIL": "email"} or {"TEST_EMAIL": "account.email"}' % at)
+        out.append((at, name, w, b))
+    return out
+
+def address():
+    try:
+        with open(config, encoding="utf-8") as fh: cfg = json.load(fh)
+    except (OSError, ValueError) as e:
+        wrong("the fixtures need the config, and %s cannot be read: %s" % (config, e))
+    v = (cfg.get("variants") or {}).get(variant) if variant else None
+    fx = v.get("fixtures") if isinstance(v, dict) and "fixtures" in v else cfg.get("fixtures")
+    if not isinstance(fx, dict) or not isinstance(fx.get("url"), str) or not fx["url"].strip():
+        wrong('nothing says where the fixtures are - put "fixtures": {"url": "https://..."} on '
+              "variant '%s' in %s, or one at the top level" % (variant, config))
+    url = fx["url"].strip()
+    u = urlsplit(url)
+    # The secret travels in a header: in clear text only to this machine.
+    if not (u.scheme == "https" or (u.scheme == "http" and u.hostname in LOOPBACK)) or not u.hostname:
+        wrong("the fixtures address is '%s' - it has to be https (http only to localhost)" % url)
+    secret = fx.get("secret", "")
+    if not isinstance(secret, str) or (secret and not NAME.match(secret)):
+        wrong('"fixtures.secret" in %s is the NAME of an environment variable that holds the '
+              "access secret, not the secret" % config)
+    return url, secret
+
+class Stay(urllib.request.HTTPRedirectHandler):
+    # A redirect would carry the secret to an address the config never named.
+    def redirect_request(self, *a, **k): return None
+
+def call(at, name, body):
+    url, secret = address()
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    if secret:
+        if not os.environ.get(secret):
+            blocked("%s: fixture '%s' not called - $%s, the access secret the config names, is not set" % (at, name, secret))
+        headers["Authorization"] = "Bearer " + os.environ[secret]
+    # A record "for today" made in the runner's zone lands, around midnight, on
+    # another day than the one the device shows.
+    if tz: headers["X-Device-Timezone"] = tz
+    req = urllib.request.Request(url.rstrip("/") + "/" + quote(name), data=json.dumps(body).encode("utf-8"),
+                                 headers=headers, method="POST")
+    # The answer's body is never printed: it may hold the very credentials the
+    # fixture made.
+    try:
+        with urllib.request.build_opener(Stay).open(req, timeout=30) as r: return r.read()
+    except urllib.error.HTTPError as e:
+        blocked("%s: fixture '%s' answered %d%s" % (at, name, e.code,
+                " (a redirect - fixtures are not followed elsewhere)" if 300 <= e.code < 400 else
+                (" - check the secret in $%s" % secret if secret else " - the config names no secret")
+                if e.code in (401, 403) else ""))
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        blocked("%s: fixture '%s' could not be reached: %s" % (at, name, getattr(e, "reason", e)))
+
+def take(at, name, answer, b):
+    try: doc = json.loads(answer.decode("utf-8"))
+    except (UnicodeDecodeError, ValueError):
+        blocked("%s: fixture '%s' answered with something that is not JSON - nothing to bind" % (at, name))
+    got = {}
+    for var, path in b.items():
+        cur = doc
+        for part in path.split("."):
+            if not isinstance(cur, dict) or part not in cur:
+                blocked("%s: fixture '%s' answered without '%s' - %s stays unset" % (at, name, path, var))
+            cur = cur[part]
+        if cur is None or isinstance(cur, (dict, list)):
+            blocked("%s: '%s' in the answer of fixture '%s' is %s, not text or a number"
+                    % (at, path, name, "null" if cur is None else type(cur).__name__))
+        got[var] = cur if isinstance(cur, str) else json.dumps(cur)
+    return got
+
+if mode == "step":
+    name, body = sys.argv[7], json.loads(sys.argv[8] or "{}")
+    call("step", name, body)
+    print("fixture '%s' called" % name)
+    sys.exit(0)
+
+try:
+    with open(flow, encoding="utf-8") as fh: doc = json.load(fh)
+except (OSError, ValueError):
+    print("0 0"); sys.exit(0)   # the builder says what is wrong with the file
+if not isinstance(doc, dict): print("0 0"); sys.exit(0)
+prep, tear = calls(doc, "prepare"), calls(doc, "teardown")
+
+if mode == "check":
+    stand = {}
+    for at, name, w, b in prep:
+        missing = []; fill(w, dict(scope(), **stand), missing)
+        if missing: wrong("%s: $%s is not set in the environment, and no call before this one binds it" % (at, missing[0]))
+        for var in b: stand[var] = "<bound by fixture '%s'>" % name
+    keep(stand, boundf + ".stand")
+    print("%d %d" % (len(prep), len(tear)))
+elif mode == "prepare":
+    for at, name, w, b in prep:
+        missing = []; body = fill(w, scope(), missing)
+        if missing: wrong("%s: $%s is not set" % (at, missing[0]))
+        answer = call(at, name, body)
+        got = take(at, name, answer, b) if b else {}
+        keep(got)
+        print("%s: fixture '%s'%s" % (at, name, " - bound " + ", ".join(sorted(got)) if got else ""))
+else:
+    failed = 0
+    for at, name, w, b in tear:
+        missing = []; body = fill(w, scope(), missing)
+        if missing:
+            sys.stderr.write("%s: fixture '%s' not called - $%s was never set\n" % (at, name, missing[0]))
+            failed += 1; continue
+        # One teardown that did not work does not keep the next from running. The
+        # reason is on stderr already.
+        try: call(at, name, body); print("%s: fixture '%s'" % (at, name))
+        except SystemExit: failed += 1
+    sys.exit(3 if failed else 0)
+PY
+}
+# The device's own zone, read once per flow and only when a fixture is called.
+# A simulator keeps the zone of the Mac it runs on.
+fixture_tz(){ [ -z "${FLOW_TZ_READ:-}" ] || return 0; FLOW_TZ_READ=1; FLOW_TZ=""
+  if is_android; then apaths; FLOW_TZ="$(adb shell getprop persist.sys.timezone 2>/dev/null | tr -d '\r')" || FLOW_TZ=""
+  else FLOW_TZ="${TZ:-$(readlink /etc/localtime 2>/dev/null | sed 's#.*/zoneinfo/##')}" || FLOW_TZ=""; fi
+  [ -n "$FLOW_TZ" ] || warn "the device did not say its time zone - the fixtures are sent none, and a record \"for today\" may land on another day around midnight"; }
+# Lines a fixture call printed, said on the console.
+fixture_said(){ [ -z "$1" ] || printf '%s\n' "$1" | while IFS= read -r l; do ok "$l"; done; }
+flow_prepare(){ local out st=0
+  fixture_tz
+  out="$(fixture_py prepare 2> "$FLOW_BOUND.err")" || st=$?
+  fixture_said "$out"
+  case "$st" in
+    0) ;;
+    3) FLOW_BLOCKED="blocked: $(head -1 "$FLOW_BOUND.err")";;
+    *) die "$(cat "$FLOW_BOUND.err")";;
+  esac; }
+# In the EXIT trap, where -e still holds: every command is guarded, and nothing
+# here may stop the trap before the results are written.
+flow_teardown(){ local out st=0 l
+  [ "${FLOW_TEARS:-0}" -gt 0 ] || return 0
+  fixture_tz || true
+  out="$(fixture_py teardown 2> "$FLOW_BOUND.err")" || st=$?
+  fixture_said "$out" || true
+  [ "$st" -eq 0 ] && return 0
+  while IFS= read -r l; do warn "teardown: $l"; done < "$FLOW_BOUND.err" || true
+  cp "$FLOW_BOUND.err" "$FLOW_ERR.teardown" 2>/dev/null || true; }
+fixture_step(){ local out st=0
+  fixture_tz
+  out="$(fixture_py step "$1" "${2:-}" 2> "$FLOW_BOUND.err")" || st=$?
+  fixture_said "$out"
+  case "$st" in
+    0) ;;
+    3) FLOW_PLAT_SKIP="blocked: $(head -1 "$FLOW_BOUND.err")"; FLOW_PLAT_KIND=blocked;;
+    *) die "$(cat "$FLOW_BOUND.err")";;
+  esac; }
 # ── deterministic flow runner: a JSON list of steps ──────────────────────────
 # step keys: include[with]|launch|stopApp|clearState|background|foreground|relaunch|wait|waitFor[timeout,match]|waitForId[timeout]|
 #            waitForNotText[timeout,match]|waitForNotId[timeout]|screenshot|
@@ -4882,7 +5144,7 @@ cond_words(){ local spec="$1" pair kind val out=""
     esac
   done
   printf '%s' "$out"; }
-FLOW_VERBS="launch stopApp clearState background foreground relaunch openUrl setPermission wait waitFor waitForId waitForNotText waitForNotId screenshot tap tapText optionalTapText tapId type clearText clearTextId pressKey hideKeyboard scroll swipe scrollToText dismiss assertText assertId assertNotText assertNotId assertBox assertBoxId assertCount assertCountId turnWheel swipeId swipeText"
+FLOW_VERBS="launch stopApp clearState background foreground relaunch openUrl setPermission fixture wait waitFor waitForId waitForNotText waitForNotId screenshot tap tapText optionalTapText tapId type clearText clearTextId pressKey hideKeyboard scroll swipe scrollToText dismiss assertText assertId assertNotText assertNotId assertBox assertBoxId assertCount assertCountId turnWheel swipeId swipeText"
 # The steps a condition switched off. They keep their numbers - the numbering is
 # end to end, and a skipped step that gave its number away would move every step
 # after it - they say so on the console, and they land in the report as `skipped`
@@ -4922,15 +5184,32 @@ flow(){
   [ -n "$args" ] || die "usage: yukti flow [--check] <file.json>"
   local f="$args" st; [ -f "$f" ] || die "no flow file '$f'"; paths
   FLOW_FILE="$f"; FLOW_IDX=0; FLOW_ART=""
+  FLOW_BOUND="$(mktemp)"; FLOW_BLOCKED=""; FLOW_TEARS=0; FLOW_TZ_READ=""; FLOW_PLAT_KIND=""
   if [ "$chk" = 1 ]; then
     say "checking flow: $f"
+    trap 'rm -f "$FLOW_BOUND" "$FLOW_BOUND.err" "$FLOW_BOUND.stand"' EXIT
   else
     say "running flow: $f"
     FLOW_REC="$(mktemp)"; FLOW_CUR="$(mktemp)"; FLOW_ERR="$(mktemp)"; FLOW_TREE="$(mktemp)"; FLOW_T0="$(now)"
     export YUKTI_STEP_ERR="$FLOW_ERR" YUKTI_LAST_TREE="$FLOW_TREE"
     # Nothing ran, so nothing is reported: a JUnit file written by --check would
     # say a flow passed on a machine that never had a device.
-    trap 'flow_results $?; read_summary || true; run_dir_cleanup' EXIT
+    # The teardown goes first: it runs whatever the outcome, and what it says
+    # belongs in the results.
+    trap 'FLOW_ST=$?; flow_teardown || true; flow_results $FLOW_ST; read_summary || true; run_dir_cleanup; rm -f "$FLOW_BOUND" "$FLOW_BOUND.err" "$FLOW_BOUND.stand"' EXIT
+  fi
+  # Preparation (#55): checked in both modes, called only in a run, and before
+  # the steps are built - a bound value reaches them like any other variable.
+  # The whole flow is checked first, as --check does it, with a stand-in for
+  # every bound value: a typo in a step stops the flow before anything is made
+  # on the server.
+  local fx ck
+  fx="$(fixture_py check 2> "$FLOW_BOUND.err")" || die "$(cat "$FLOW_BOUND.err")"
+  FLOW_TEARS="${fx#* }"
+  if [ "$chk" = 0 ] && [ "${fx%% *}" != 0 ]; then
+    ck="$(env -u YUKTI_STEP_ERR -u YUKTI_LAST_TREE "$0" flow --check "$f" 2>&1 >/dev/null)" \
+      || die "$(printf '%s\n' "$ck" | sed $'s/\033\\[[0-9;]*m//g; s/^✗ //' | tail -1)"
+    flow_prepare
   fi
   # The steps are built before the first one runs, and a flow file the builder
   # refuses never starts. It used to be generated straight into the loop, where
@@ -4939,7 +5218,7 @@ flow(){
   # and the run still ended with "flow complete".
   local steps gerr gmsg
   steps="$(mktemp)"; gerr="$(mktemp)"
-  if ! YUKTI_ENV0="$_yk_env0" "$PY" - "$f" > "$steps" 2> "$gerr" <<'PY'
+  if ! YUKTI_ENV0="$_yk_env0" YUKTI_BOUND="$FLOW_BOUND" "$PY" - "$f" > "$steps" 2> "$gerr" <<'PY'
 import json, os, re, sys
 
 def fail(msg):
@@ -4994,7 +5273,7 @@ COUNT_VERBS = ("assertCount", "assertCountId")
 COUNT_OPS = ("atLeast", "exact", "atMost")
 # "at" is a point inside the element tapId taps, as shares of its box (#129).
 # "toX" and "toY" are where a swipe ends (#48).
-STEP_KEYS = (set(KEYS) | {"when", "box", "title", "optional", "in", "shows", "wheel", "state", "at", "toX", "toY",
+STEP_KEYS = (set(KEYS) | {"with", "when", "box", "title", "optional", "in", "shows", "wheel", "state", "at", "toX", "toY",
                           "index", "op", "count"} | set(STATE_KEYS))
 # The steps that read a point, and the keys they read it from.
 XY_VERBS = {"tap": ("x", "y"), "clearText": ("x", "y"), "swipe": ("x", "y", "toX", "toY")}
@@ -5029,6 +5308,11 @@ def load(path, what, pre=""):
         fail('%s%s has no "steps" list' % (pre, what))
     if not doc["steps"]:
         fail("%s%s has no steps - it would pass without doing anything" % (pre, what))
+    # The state a flow starts from belongs to the flow (#55): a block included
+    # twice would prepare twice, and its teardown would run in the middle.
+    for key in ("prepare", "teardown"):
+        if pre and key in doc:
+            fail('%s%s carries "%s" - only the flow file itself does' % (pre, what, key))
     return doc["steps"]
 
 def when_spec(step, at, scope, src):
@@ -5407,6 +5691,26 @@ def box_spec(step, at, scope, src):
         pairs.append(key + KV + v)
     return CSEP.join(pairs)
 
+# A fixture step (#55): the name of a fixture in "value", the body of the call
+# in "with", any depth, ${VARIABLE} filled in its texts. The body travels as JSON,
+# which escapes the separators of the record.
+FIXTURE = re.compile(r"\A[A-Za-z0-9][A-Za-z0-9_.-]*\Z")
+def fixture_of(step, at, scope, src):
+    if step.get("do") != "fixture": return ""
+    name = fill(str(step.get("value", "")), scope, at, bool(src))
+    if not FIXTURE.match(name) or ".." in name:
+        fail('%s: "value" is the name of a fixture - letters, digits, ".", "_" and '
+             '"-", for instance "change-weight"' % at)
+    w = step.get("with", {})
+    if not isinstance(w, dict):
+        fail('%s: "with" is an object - the body the fixture is sent' % at)
+    def deep(v):
+        if isinstance(v, str): return fill(v, scope, at, bool(src))
+        if isinstance(v, dict): return {k: deep(x) for k, x in v.items()}
+        if isinstance(v, list): return [deep(x) for x in v]
+        return v
+    return json.dumps(deep(w))
+
 def guard(cond, span, src, idx):
     # A condition is a record of its own, not another field on the step it
     # guards: a block included under a condition may carry a condition on its
@@ -5455,9 +5759,12 @@ def build(path, shown, src, scope, chain, depth, pre=""):
         if isinstance(verb, str) and verb.startswith("__"):
             fail("%s: a step name cannot start with __ - those belong to the "
                  "runner's own records" % at)
-        if "with" in step and verb != "include":
-            fail('%s: "with" passes values to an include - only include takes it'
-                 % at)
+        if "with" in step and verb not in ("include", "fixture"):
+            fail('%s: "with" passes values to an include, or the body to a fixture - '
+                 "only include and fixture take it" % at)
+        if verb == "fixture" and "bind" in step:
+            fail('%s: a fixture step binds nothing - the steps after it are built '
+                 'before it runs; bind in "prepare"' % at)
         # A key nobody reads used to be mentioned by nobody. Tolerable while every
         # key did something visible; not tolerable next to a condition, where
         # `wehn` means a step that runs every time while the file says it is
@@ -5514,6 +5821,7 @@ def build(path, shown, src, scope, chain, depth, pre=""):
         fields.append(xy.get("toX", "") + (" " + xy["toY"] if "toY" in xy else ""))
         fields.append(index_of(step, at, scope, src))
         fields.extend(count_of(step, at, scope, src))
+        fields.append(fixture_of(step, at, scope, src))
         if cond: recs.append(guard(cond, 1, src, idx))
         recs.append(SEP.join(fields))
 
@@ -5569,6 +5877,14 @@ flow = sys.argv[1]
 env = dict(os.environ)
 try: env.update(json.loads(env.pop("YUKTI_ENV0", "") or "{}"))
 except ValueError: pass
+# A value a fixture bound (#55) wins over both: it is the state this run made.
+# Under --check, and when the preparation did not get that far, it is a stand-in
+# that names the fixture.
+bound = env.pop("YUKTI_BOUND", "")
+for path in (bound + ".stand", bound) if bound else ():
+    try:
+        with open(path, encoding="utf-8") as fh: env.update(json.load(fh))
+    except (OSError, ValueError): pass
 build(flow, "flow file", "", env,
       [(os.path.realpath(flow), os.path.basename(flow))], 0)
 
@@ -5579,13 +5895,20 @@ PY
   # Opened and then unlinked: the loop keeps reading it, and no path is left
   # behind whichever way the flow ends.
   exec 3< "$steps"; rm -f "$steps"
+  # A flow whose preparation did not work did not run: every step is listed as
+  # not run, with the reason, and the flow is not a pass and not a failure.
+  if [ -n "$FLOW_BLOCKED" ]; then
+    skipped "flow blocked: ${FLOW_BLOCKED#blocked: } - none of its steps ran"
+    FLOW_CUT="the preparation: $FLOW_BLOCKED"
+    FLOW_SKIP_KIND=blocked flow_skip 1000000 "$FLOW_BLOCKED"
+  fi
   # The steps are fed on FD 3, NOT stdin: steps shell out to adb/idb,
   # and `adb shell` / subprocesses read stdin — if the loop read from the same
   # pipe they'd swallow the remaining steps, so only step 1 ran (and the flow
   # still reported PASS). Reading `<&3` also keeps the loop in THIS shell (not a
   # pipe subshell), so a step's `die` (exit 1) aborts the whole flow with a
   # non-zero status instead of being lost.
-  while IFS=$'\x1f' read -r -d '' do_ val x y mtch tmo dir edg src sidx wcond wspan bspec ttl opt inid shw stt whl atp to idx cop cnt <&3; do
+  while IFS=$'\x1f' read -r -d '' do_ val x y mtch tmo dir edg src sidx wcond wspan bspec ttl opt inid shw stt whl atp to idx cop cnt fxw <&3; do
       # A guard is not a step: it takes no number of its own, and when it holds
       # the run says nothing about it - the steps that follow simply run. When it
       # does not hold, its whole group is read off the stream and every step in it
@@ -5714,6 +6037,7 @@ PY
         relaunch)    app_relaunch;;
         openUrl)     open_url "$val";;
         setPermission) set_permission "$val" "$stt";;
+        fixture)     say "fixture '$val'"; fixture_step "$val" "$fxw";;
         # A name the dispatcher does not know is a typo in the flow file, and a
         # typo must not pass: `warn` returns zero, so this case has to die on its
         # own - reading the status below would not catch it.
@@ -5733,12 +6057,13 @@ PY
       [ "$st" -eq 0 ] || die "step $FLOW_IDX '$do_'${ttl:+ \"$ttl\"} failed (exit $st)"
       # A permission this platform or its version does not have (#51): the flow
       # is skipped from this step, out loud and in the report - a flow about the
-      # denied branch that went on without it would prove nothing.
+      # denied branch that went on without it would prove nothing. A fixture step
+      # that did not get its state (#55) does the same, with "blocked:".
       if [ -n "$FLOW_PLAT_SKIP" ]; then
         skipped "step $FLOW_IDX '$do_'${ttl:+ \"$ttl\"} skipped: $FLOW_PLAT_SKIP - the rest of the flow is skipped with it"
-        printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' "$FLOW_IDX" "$do_" "$rval" "$FLOW_S0" "$(now)" "" "$FLOW_PLAT_SKIP" "${src//[$'\n\r']/ }" "$ttl" platform >> "$FLOW_REC"
+        printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s\n' "$FLOW_IDX" "$do_" "$rval" "$FLOW_S0" "$(now)" "" "$FLOW_PLAT_SKIP" "${src//[$'\n\r']/ }" "$ttl" "${FLOW_PLAT_KIND:-platform}" >> "$FLOW_REC"
         FLOW_CUT="step $FLOW_IDX: $FLOW_PLAT_SKIP"
-        FLOW_SKIP_KIND=platform flow_skip 1000000 "$FLOW_PLAT_SKIP"; FLOW_PLAT_SKIP=""
+        FLOW_SKIP_KIND="${FLOW_PLAT_KIND:-platform}" flow_skip 1000000 "$FLOW_PLAT_SKIP"; FLOW_PLAT_SKIP=""; FLOW_PLAT_KIND=""
         continue
       fi
       # The eighth field is the block the step was written in, empty for the flow
@@ -5860,7 +6185,7 @@ ${_yk_B}yukti v$YUKTI_VERSION${_yk_R} — YUKTI — smart mobile-app QA automati
   yukti assert-not-id "<id>"
                             assert no element with this id is on the current screen
 
-  flow steps: wait · waitFor · waitForId · waitForNotText · waitForNotId · screenshot · tap · tapText · optionalTapText · tapId · scroll · swipe · scrollToText · dismiss · type · clearText · clearTextId · pressKey · hideKeyboard · assertText · assertId · assertNotText · assertNotId · assertBox · assertBoxId · assertCount · assertCountId · turnWheel · swipeId · swipeText · launch · stopApp · clearState · background · foreground · relaunch · openUrl · setPermission · include
+  flow steps: wait · waitFor · waitForId · waitForNotText · waitForNotId · screenshot · tap · tapText · optionalTapText · tapId · scroll · swipe · scrollToText · dismiss · type · clearText · clearTextId · pressKey · hideKeyboard · assertText · assertId · assertNotText · assertNotId · assertBox · assertBoxId · assertCount · assertCountId · turnWheel · swipeId · swipeText · launch · stopApp · clearState · background · foreground · relaunch · openUrl · setPermission · fixture · include
               (clearText · clearTextId · pressKey · hideKeyboard · assertBox · assertBoxId: measured on Android, iOS not yet run;
                hideKeyboard's Back-first order on Android not yet run either;
               swipe and a share of the screen: not yet run on either platform)
@@ -5920,6 +6245,10 @@ ${_yk_B}yukti v$YUKTI_VERSION${_yk_R} — YUKTI — smart mobile-app QA automati
               include runs another flow file here as a block, path relative to the including file; "with" passes values into it,
               its steps are ordinary steps in the report, and nesting stops at a block inside a block;
               "when" on an include is answered once and covers the whole block
+              a flow file may carry "prepare" and "teardown", lists of {"fixture": name, "with": body, "bind": {VAR: field}}:
+              each a POST to the "fixtures" url of the config, the secret from the variable its "secret" names; a
+              preparation that fails skips the flow as blocked:, the teardown runs whatever the outcome. The step
+              fixture calls one in the middle of a flow (no bind)
   config: \$YUKTI_CONFIG or ./yukti.config.json  ·  cross-platform: set variant "platform":"android"
 EOF
 }
