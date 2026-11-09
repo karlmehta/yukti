@@ -127,7 +127,7 @@ Flows are JSON in `flows/`. Steps: `wait`, `waitFor`, `waitForId`,
 `clearTextId`, `pressKey`, `hideKeyboard`, `scroll`, `swipe {x,y,toX,toY}`, `scrollToText`,
 `dismiss`, `assertText`, `assertId`, `assertBox`, `assertBoxId`, `assertCount`,
 `assertCountId`, `swipeId`, `swipeText`, `launch`,
-`stopApp`, `clearState`, `include`. Recorded coordinates are
+`stopApp`, `clearState`, `background`, `foreground`, `relaunch`, `include`. Recorded coordinates are
 **points**
 (iPhone 16 Pro = 402×874), scaled to the screen the run is on; a coordinate may
 also be a share of the screen (`"50%"`), see "A place on the screen, and a swipe". Prefer `tapText` (finds by accessibility label) over
@@ -1063,6 +1063,55 @@ not a failure - that is the state the step exists to reach. On iOS that warning
 currently covers any refusal from `simctl`, a simulator that is not booted
 included, so read a warning there as "not stopped, reason unknown". The iOS half
 of both steps has not been exercised on a Mac.
+
+### The background, and a restart that keeps the data
+
+`launch` starts the app, `stopApp` stops it and `clearState` wipes it. Three
+steps sit between (#53):
+
+```json
+{"do":"background","value":5},
+{"do":"foreground"},
+{"do":"relaunch"}
+```
+
+They act on the app of `$YUKTI_VARIANT`, as `openUrl` and `setPermission` do -
+`background` carries its seconds in `"value"`, so none of the three takes a
+variant name.
+
+- `background` presses Home and holds the app there for `"value"` whole seconds
+  (none: 0, at most 600). The app stays in the background after the step: what is on the
+  screen now is the home screen, and a `foreground` brings the app back.
+- `foreground` brings the running app back to the front. A return is a return to
+  the same process: when the app comes back with another pid, the system stopped
+  it while it was away and the command started it afresh, and the step fails
+  rather than let the flow check a cold start as a resumed one. An app that is
+  not running is not started, and one already in front fails too - nothing was
+  brought back.
+- `relaunch` stops the app and starts it again with its data kept - the user who
+  swipes the app away and opens it again. It fails when the app in front is the
+  same process as before: then nothing was stopped. It is not `clearState`: the session,
+  the settings and the cache survive, which is exactly what a test of them
+  needs.
+
+Each step asks the device afterwards which app is in front, and fails with what
+is there. On Android that is the window with focus (`dumpsys window`); Home is
+the key code and coming back is the launcher intent `launch` already sends,
+which resumes the task that is there; `relaunch` is the force-stop of `stopApp`
+followed by that intent. On iOS it is the root element of the tree, whose label
+is the app's display name while the app is in front and blank on the home
+screen; the name is read once from the installed build's `Info.plist`, so the
+config needs nothing more than the bundle id. Home is `idb ui button HOME`, back
+is `simctl launch` of the running app, and `relaunch` is `simctl launch
+--terminate-running-process`. A `simctl launch` straight after Home exits 0 and
+prints a pid while the home screen stays in front (measured on iOS 26.5), so
+`foreground` launches once more when the first did not bring the app, and fails
+after the second.
+
+Neither half has been run on a device by the engine yet: the Android half is
+built from the commands `launch` and `stopApp` already send, the iOS half from
+the documentation and that one measurement, and the engine's tests drive both
+through fakes.
 
 ### Permissions before the app starts
 
