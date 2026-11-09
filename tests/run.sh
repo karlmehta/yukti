@@ -5148,6 +5148,193 @@ begin "tapId at with index on iOS: the point on the second slider, in points"
 status_is 0; has idb/log "ui tap --udid FAKE-UDID 110 322"
 verdict
 
+# ── background, foreground, relaunch (#53) ──────────────────────────────────
+# bg_case <name> - an Android case: variant "app" is com.example, installed,
+# running as pid 4242 and in front.
+bg_case(){ dev_case "$1"; app_cfg android package
+  printf '%s\n' com.example > "$case_dir/adb/packages"; printf '4242' > "$case_dir/adb/app-pid"
+  printf '  mCurrentFocus=Window{3c4d u0 com.example/com.example.MainActivity}\n' > "$case_dir/adb/focus"; }
+run_bg(){ run_flow "$1" YUKTI_VARIANT=app YUKTI_CONFIG="$case_dir/cfg.json"; }
+LAUNCHER='  mCurrentFocus=Window{1a2b u0 com.android.launcher3/com.android.launcher3.Launcher}'
+
+bg_case bg-and-back
+flow_file "$case_dir/flow.json" '{ "do": "background", "value": 1 }' '{ "do": "foreground" }'
+run_bg "$case_dir/flow.json"
+begin "background and foreground: Home, the launcher in front for a second, the same process back"
+status_is 0; has adb/log "shell input keyevent 3"; has adb/log "shell monkey -p com.example -c android.intent.category.LAUNCHER 1"
+has out.txt "background: com.example behind com.android.launcher3 for 1 s"
+has out.txt "foreground: com.example back in front, the same process (4242)"
+verdict
+
+bg_case bg-no-value
+flow_file "$case_dir/flow.json" '{ "do": "background" }'
+run_bg "$case_dir/flow.json"
+begin "background with no value: to the home screen and left there"
+status_is 0; has out.txt "behind com.android.launcher3 for 0 s"; lacks adb/log "monkey"
+verdict
+
+bg_case bg-home-ignored
+touch "$case_dir/adb/home-ignored"
+flow_file "$case_dir/flow.json" '{ "do": "background" }'
+run_bg "$case_dir/flow.json"
+begin "background: a Home that did not land fails the step"
+status_is 1; has out.txt "background: com.example is still in front 5 s after Home"
+verdict
+
+bg_case bg-not-in-front
+printf '%s\n' "$LAUNCHER" > "$case_dir/adb/focus"
+flow_file "$case_dir/flow.json" '{ "do": "background" }'
+run_bg "$case_dir/flow.json"
+begin "background: an app that is not in front is refused, no Home pressed"
+status_is 1; has out.txt "background: com.example is not in front - in front: com.android.launcher3 - there is nothing to send to the background"
+lacks adb/log "keyevent 3"
+verdict
+
+bg_case fg-new-process
+touch "$case_dir/adb/launch-restarts"
+flow_file "$case_dir/flow.json" '{ "do": "background" }' '{ "do": "foreground" }'
+run_bg "$case_dir/flow.json"
+begin "foreground: an app that comes back as a new process fails - a cold start is not a return"
+status_is 1; has out.txt "foreground: com.example came back as a new process (pid 4242, now 4243) - it was started afresh, not resumed"
+verdict
+
+bg_case fg-not-running
+printf '' > "$case_dir/adb/app-pid"; printf '%s\n' "$LAUNCHER" > "$case_dir/adb/focus"
+flow_file "$case_dir/flow.json" '{ "do": "foreground" }'
+run_bg "$case_dir/flow.json"
+begin "foreground: an app that is not running is not started, the step fails"
+status_is 1; has out.txt "foreground: com.example is not running any more"; lacks adb/log "monkey"
+verdict
+
+bg_case fg-already-front
+flow_file "$case_dir/flow.json" '{ "do": "foreground" }'
+run_bg "$case_dir/flow.json"
+begin "foreground: an app already in front fails - nothing was brought back"
+status_is 1; has out.txt "foreground: com.example is already in front - there is nothing to bring back"; lacks adb/log "monkey"
+verdict
+
+bg_case fg-launch-ignored
+touch "$case_dir/adb/launch-ignored"
+flow_file "$case_dir/flow.json" '{ "do": "background" }' '{ "do": "foreground" }'
+run_bg "$case_dir/flow.json"
+begin "foreground: an app that did not come to the front fails with what is there"
+status_is 1; has out.txt "foreground: com.example is not in front 10 s after it was called - in front: com.android.launcher3"
+verdict
+
+bg_case relaunch-android
+flow_file "$case_dir/flow.json" '{ "do": "relaunch" }'
+run_bg "$case_dir/flow.json"
+begin "relaunch: force-stop, then the launcher intent, data untouched"
+status_is 0; has adb/log "shell am force-stop com.example"; has adb/log "shell monkey -p com.example"; lacks adb/log "pm clear"
+has out.txt "relaunch: com.example started again as a new process (4242 -> 5001), its data kept"
+[ "$(grep -n 'force-stop com.example' "$case_dir/adb/log" | cut -d: -f1)" -lt "$(grep -n 'monkey -p com.example' "$case_dir/adb/log" | cut -d: -f1)" ] || no "the start came before the stop"
+verdict
+
+bg_case relaunch-not-stopped
+touch "$case_dir/adb/stop-ignored"
+flow_file "$case_dir/flow.json" '{ "do": "relaunch" }'
+run_bg "$case_dir/flow.json"
+begin "relaunch: the same process in front after it is a failure - nothing was stopped"
+status_is 1; has out.txt "relaunch: com.example is the same process as before (4242) - it was not stopped"
+verdict
+
+bg_case bg-no-variant
+flow_file "$case_dir/flow.json" '{ "do": "background" }'
+run_flow "$case_dir/flow.json" YUKTI_CONFIG="$case_dir/cfg.json"
+begin "background: a run with no variant says which variable to set"
+status_is 1; has out.txt "background: this run does not know which app it is about - set \$YUKTI_VARIANT"; lacks adb/log "keyevent"
+verdict
+
+new_case bg-check
+flow_file "$case_dir/ok.json" '{ "do": "background", "value": 5 }' '{ "do": "foreground" }' '{ "do": "relaunch" }'
+expect "background, foreground, relaunch: the builder takes them" 0 " - 3 steps" check "$case_dir/ok.json"
+flow_file "$case_dir/secs.json" '{ "do": "background", "value": "1.5" }'
+expect "background: seconds that are not whole are refused" 1 "step 1 'background': \"value\" is how many whole seconds the app stays in the background, got '1.5'" check "$case_dir/secs.json"
+flow_file "$case_dir/long.json" '{ "do": "background", "value": 6000 }'
+expect "background: more than 600 seconds is refused" 1 "step 1 'background': 6000 seconds - the most is 600" check "$case_dir/long.json"
+flow_file "$case_dir/fg.json" '{ "do": "foreground", "value": "qa" }'
+expect "foreground: a value is refused - it acts on the app of the run" 1 "step 1 'foreground' does not take a \"value\" - it acts on the app of \$YUKTI_VARIANT" check "$case_dir/fg.json"
+flow_file "$case_dir/rl.json" '{ "do": "relaunch", "value": "qa" }'
+expect "relaunch: a value is refused - it acts on the app of the run" 1 "step 1 'relaunch' does not take a \"value\"" check "$case_dir/rl.json"
+
+# iOS: the same app as "Example App", running as pid 4242, its tree with the
+# app's root in front.
+ibg_case(){ ios_case "$1"; mkdir -p "$case_dir/xcrun/Example.app"; app_cfg ios bundleId
+  "$PY3" -c 'import plistlib, sys
+with open(sys.argv[1], "wb") as fh: plistlib.dump({"CFBundleDisplayName": "Example App", "CFBundleName": "Example"}, fh)' "$case_dir/xcrun/Example.app/Info.plist"
+  printf '%s' "$case_dir/xcrun/Example.app" > "$case_dir/xcrun/container"
+  printf 'PID\tStatus\tLabel\n4242\t0\tUIKitApplication:com.example[1a2b][rb-legacy]\n' > "$case_dir/xcrun/launchctl"
+  tree "$case_dir/idb/desc-1.json" '{"type":"Application","role_description":"application","AXLabel":"Example App","frame":{"x":0,"y":0,"width":402,"height":874}}'; }
+run_ibg(){ run_ios "$1" PATH="$ROOT/tests/fake-sdk/xcrun-bin:$ROOT/tests/fake-sdk/idb-bin:$PATH" \
+  FAKE_XCRUN_DIR="$case_dir/xcrun" YUKTI_VARIANT=app YUKTI_CONFIG="$case_dir/cfg.json"; }
+PY3="$(command -v python3)"
+
+ibg_case ios-bg-and-back
+flow_file "$case_dir/flow.json" '{ "do": "background" }' '{ "do": "foreground" }'
+run_ibg "$case_dir/flow.json"
+begin "background and foreground on iOS: the Home button, simctl launch of the running app, the same process"
+status_is 0; has idb/log "ui button HOME --udid FAKE-UDID"; has xcrun/log "simctl launch FAKE-UDID com.example"
+has out.txt "background: com.example behind the home screen for 0 s"
+has out.txt "foreground: com.example back in front, the same process (4242)"
+verdict
+
+ibg_case ios-fg-second-launch
+printf '1' > "$case_dir/xcrun/launch-misses"
+flow_file "$case_dir/flow.json" '{ "do": "background" }' '{ "do": "foreground" }'
+run_ibg "$case_dir/flow.json"
+begin "foreground on iOS: a launch that left the home screen in front is sent once more"
+status_is 0; [ "$(grep -c '^simctl launch ' "$case_dir/xcrun/log")" = 2 ] || no "simctl launch ran $(grep -c '^simctl launch ' "$case_dir/xcrun/log") times, wanted 2"
+has out.txt "foreground: com.example back in front"
+verdict
+
+ibg_case ios-fg-two-misses
+printf '2' > "$case_dir/xcrun/launch-misses"
+flow_file "$case_dir/flow.json" '{ "do": "background" }' '{ "do": "foreground" }'
+run_ibg "$case_dir/flow.json"
+begin "foreground on iOS: two launches that left the home screen fail the step, no third"
+status_is 1; has out.txt "foreground: com.example is not in front after two launches - in front: the home screen"
+[ "$(grep -c '^simctl launch ' "$case_dir/xcrun/log")" = 2 ] || no "simctl launch ran $(grep -c '^simctl launch ' "$case_dir/xcrun/log") times, wanted 2"
+verdict
+
+ibg_case ios-fg-new-process
+touch "$case_dir/xcrun/launch-restarts"
+flow_file "$case_dir/flow.json" '{ "do": "background" }' '{ "do": "foreground" }'
+run_ibg "$case_dir/flow.json"
+begin "foreground on iOS: a new process is not a return"
+status_is 1; has out.txt "came back as a new process (pid 4242, now 4243)"
+verdict
+
+ibg_case ios-relaunch
+flow_file "$case_dir/flow.json" '{ "do": "relaunch" }'
+run_ibg "$case_dir/flow.json"
+begin "relaunch on iOS: simctl launch with --terminate-running-process"
+status_is 0; has xcrun/log "simctl launch --terminate-running-process FAKE-UDID com.example"
+has out.txt "relaunch: com.example started again as a new process (4242 -> 4243), its data kept"; grep -q '^4243' "$case_dir/xcrun/launchctl" || no "the app was not started as a new process"
+verdict
+
+ibg_case ios-relaunch-not-stopped
+touch "$case_dir/xcrun/terminate-ignored"
+flow_file "$case_dir/flow.json" '{ "do": "relaunch" }'
+run_ibg "$case_dir/flow.json"
+begin "relaunch on iOS: a launch that kept the running process is a failure"
+status_is 1; has out.txt "relaunch: com.example is the same process as before (4242) - it was not stopped"
+verdict
+
+ibg_case ios-bg-no-name
+rm -f "$case_dir/xcrun/container"
+flow_file "$case_dir/flow.json" '{ "do": "background" }'
+run_ibg "$case_dir/flow.json"
+begin "background on iOS: an app whose name cannot be read is refused before Home"
+status_is 1; has out.txt "background: could not read the name of 'com.example' from its Info.plist on the simulator"; lacks idb/log "button HOME"
+verdict
+
+ibg_case ios-bg-home-ignored
+touch "$case_dir/idb/home-ignored"
+flow_file "$case_dir/flow.json" '{ "do": "background" }'
+run_ibg "$case_dir/flow.json"
+begin "background on iOS: a Home button that did not land fails the step"
+status_is 1; has out.txt "background: com.example is still in front 5 s after Home"
+verdict
 # ── preparation, teardown and the fixture step (#55) ────────────────────────
 # fx_case <name> - an Android case with a fixture service of its own
 # (tests/fake-sdk/fixture-server) and a config whose variant "app" names it, the

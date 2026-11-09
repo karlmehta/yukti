@@ -6,7 +6,12 @@
 #   launchctl      what `simctl spawn <udid> launchctl list` prints
 # `simctl privacy` answers yes unless `privacy-refuses` is there (#51).
 # `simctl io <udid> screenshot <path>` writes a small PNG. Every call is logged.
-import os, sys
+# The app in front (#53): `simctl get_app_container <udid> <bundle> app` prints
+# the path in `container`; `simctl launch` takes the fake idb's home screen away
+# ($FAKE_IDB_DIR/home), except for as many launches as `launch-misses` counts,
+# and gives the app a new pid in `launchctl` with --terminate-running-process
+# (unless `terminate-ignored` is there), or always when `launch-restarts` is there.
+import os, re, sys
 
 d = os.environ["FAKE_XCRUN_DIR"]
 args = sys.argv[1:]
@@ -19,6 +24,31 @@ elif args[:2] == ["simctl", "privacy"] and len(args) == 6:
     try:
         with open(os.path.join(d, "privacy-refuses")) as fh: sys.stderr.write(fh.read()); sys.exit(1)
     except OSError: pass
+elif args[:2] == ["simctl", "get_app_container"] and args[4:] == ["app"]:
+    try:
+        with open(os.path.join(d, "container")) as fh: sys.stdout.write(fh.read().strip() + "\n")
+    except OSError: sys.exit(1)
+elif args[:2] == ["simctl", "launch"]:
+    ops = [a for a in args[2:] if not a.startswith("--")]
+    miss = os.path.join(d, "launch-misses")
+    try:
+        with open(miss) as fh: left = int(fh.read().strip() or 0)
+    except OSError: left = 0
+    if left > 0:
+        with open(miss, "w") as fh: fh.write(str(left - 1))
+    else:
+        home = os.path.join(os.environ.get("FAKE_IDB_DIR", d), "home")
+        if os.path.exists(home): os.remove(home)
+    lc = os.path.join(d, "launchctl")
+    if ("--terminate-running-process" in args and not os.path.exists(os.path.join(d, "terminate-ignored"))) \
+            or os.path.exists(os.path.join(d, "launch-restarts")):
+        try:
+            with open(lc) as fh: text = fh.read()
+        except OSError: text = ""
+        text = re.sub(r"^(\S+)(\t\S+\tUIKitApplication:%s\[)" % re.escape(ops[1]),
+                      lambda m: str(int(m.group(1)) + 1 if m.group(1).isdigit() else 7000) + m.group(2), text, flags=re.M)
+        with open(lc, "w") as fh: fh.write(text)
+    print("%s: 4242" % ops[1])
 elif args[:2] == ["simctl", "spawn"] and args[3:] == ["launchctl", "list"]:
     try:
         with open(os.path.join(d, "launchctl")) as fh: sys.stdout.write(fh.read())

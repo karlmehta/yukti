@@ -1312,6 +1312,127 @@ clear_state(){ local V="${1:-}" plat; [ -n "$V" ] || die "clearState needs a var
     Success*) ok "cleared $pkg - the app is stopped now, launch it before the next step";;
     *) die "clearState: pm clear refused '$pkg': ${out:-no output}";;
   esac; }
+# background, foreground, relaunch (#53). launch starts the app, stopApp stops it
+# and clearState wipes it; nothing sat between. A screen rebuilt from saved state
+# after a trip to the home screen, a session that survives a kill and what the
+# task switcher shows all live behind these three.
+#
+# They act on the app of $YUKTI_VARIANT, as openUrl and setPermission do:
+# background carries its seconds in "value", so the variant cannot travel there,
+# and one rule for the three is easier to keep than two.
+#
+# Each one asks the device what happened instead of trusting the command. A Home
+# that did not land, a launch that left the home screen in front, an app the
+# system killed while it was away and came back as a new process - each of these
+# used to be a step that passed.
+bg_app(){ local verb="$1" V
+  V="${YUKTI_VARIANT:-}"
+  [ -n "$V" ] || die "$verb: this run does not know which app it is about - set \$YUKTI_VARIANT to the variant in $CONFIG"
+  [ -n "$(cfg "variants.$V")" ] || die "$verb: there is no variant '$V' in $CONFIG"
+  APP_V="$V"; APP_PLAT="$(step_platform "$V")"
+  if [ "$APP_PLAT" = android ]; then apaths; APP_ID="$(cfg "variants.$V.package")"
+    [ -n "$APP_ID" ] || die "$verb: variant '$V' has no 'package' in $CONFIG"
+    return; fi
+  paths; APP_ID="$(cfg "variants.$V.bundleId")"
+  [ -n "$APP_ID" ] || die "$verb: variant '$V' has no 'bundleId' in $CONFIG"
+  APP_UDID="$(cat "$(udid_file)" 2>/dev/null)" || true
+  [ -n "$APP_UDID" ] || die "$verb: no simulator recorded in $(udid_file) - run 'yukti up <variant>' first"
+  APP_NAME="$(ios_app_name)" || true
+  [ -n "$APP_NAME" ] || die "$verb: could not read the name of '$APP_ID' from its Info.plist on the simulator - is it installed?"; }
+# The name the root element of the tree carries while the app is in front: the
+# display name of the installed build, else its bundle name. Read from the build
+# itself, so the config holds nothing more than the bundle id.
+ios_app_name(){ local dir
+  dir="$(xcrun simctl get_app_container "$APP_UDID" "$APP_ID" app 2>/dev/null)" || return 1
+  [ -n "$dir" ] && [ -f "$dir/Info.plist" ] || return 1
+  "$PY" -c 'import plistlib, sys
+with open(sys.argv[1], "rb") as fh: d = plistlib.load(fh)
+n = d.get("CFBundleDisplayName") or d.get("CFBundleName") or ""
+sys.stdout.write(" ".join(n.split()) if isinstance(n, str) else "")' "$dir/Info.plist"; }
+# Who is in front: 0 the app of this run, 1 something else, 2 no answer. APP_SEEN
+# holds what was there. Android names the window with focus by its package; a
+# moment with no focused window (an animation) is no answer rather than "someone
+# else", or a Home still on its way would pass for one that landed. iOS: the
+# root element of the tree is the app in front, labelled with its display name,
+# and " " on the home screen (measured, iOS 26.5).
+app_front(){ local out line
+  APP_SEEN=""
+  if [ "$APP_PLAT" = android ]; then
+    out="$(adb shell "dumpsys window | grep -E 'mCurrentFocus|mFocusedApp'" 2>/dev/null | tr -d '\r')" || true
+    line="$(printf '%s\n' "$out" | grep -m1 'mCurrentFocus=')" || line="$(printf '%s\n' "$out" | grep -m1 'mFocusedApp=')" || return 2
+    APP_SEEN="$(printf '%s\n' "${line#*=}" | sed -nE 's/.* u[0-9]+ +([A-Za-z0-9_.]+)\/.*/\1/p' | head -1)"
+    [ -n "$APP_SEEN" ] || return 2
+    [ "$APP_SEEN" != "$APP_ID" ] || return 0
+    return 1; fi
+  out="$(HELD_TREE="" ui 2>/dev/null)" || return 2
+  APP_SEEN="$(printf '%s' "$out" | "$PY" -c 'import json, sys
+try: t = json.load(sys.stdin)
+except ValueError: sys.exit(2)
+r = next((e for e in t if isinstance(e, dict) and e.get("type") == "Application"), None) if isinstance(t, list) else None
+if r is None: sys.exit(2)
+sys.stdout.write(" ".join(str(r.get("AXLabel") or "").split()))')" || return 2
+  [ "$APP_SEEN" != "$APP_NAME" ] || return 0
+  [ -n "$APP_SEEN" ] || APP_SEEN="the home screen"
+  return 1; }
+# Ask app_front every half second, for up to $2 seconds, until it answers $1.
+app_wait(){ local want="$1" n=$(( $2 * 2 )) st
+  while :; do st=0; app_front || st=$?
+    [ "$st" -ne "$want" ] || return 0
+    n=$((n - 1)); [ "$n" -gt 0 ] || return 1
+    sleep .5; done; }
+seen_words(){ [ -z "$APP_SEEN" ] || printf ' - in front: %s' "$APP_SEEN"; }
+# The process of the app, nothing when it is not running. iOS lists a running app
+# in launchctl as UIKitApplication:<bundle id>[...], its pid first.
+app_pid(){ if [ "$APP_PLAT" = android ]; then adb shell pidof "$APP_ID" 2>/dev/null | tr -d '\r' | awk '{ print $1; exit }'
+  else xcrun simctl spawn "$APP_UDID" launchctl list 2>/dev/null | awk -v l="UIKitApplication:$APP_ID[" 'index($3, l) == 1 && $1 != "-" { print $1; exit }'; fi; }
+# Android: the launcher intent launch already sends, which resumes the task that
+# is there. iOS: simctl launch exits 0 and prints a pid whether or not the app
+# came to the front - right after Home it left the home screen in front, and a
+# second launch brought the app (measured, iOS 26.5). So the front is asked after
+# it, and one more launch goes when the first did not take.
+bring_app(){ local verb="$1" opt="${2:-}" out
+  if [ "$APP_PLAT" = android ]; then
+    adb shell monkey -p "$APP_ID" -c android.intent.category.LAUNCHER 1 >/dev/null 2>&1 || die "$verb: the device refused to start '$APP_ID'"
+    app_wait 0 10 || die "$verb: $APP_ID is not in front 10 s after it was called$(seen_words)"
+    return; fi
+  out="$(xcrun simctl launch $opt "$APP_UDID" "$APP_ID" 2>&1)" || die "$verb: the simulator refused to launch '$APP_ID': ${out:-no output}"
+  app_wait 0 3 && return 0
+  out="$(xcrun simctl launch "$APP_UDID" "$APP_ID" 2>&1)" || die "$verb: the simulator refused to launch '$APP_ID': ${out:-no output}"
+  app_wait 0 7 || die "$verb: $APP_ID is not in front after two launches$(seen_words)"; }
+app_background(){ local s="${1:-0}"
+  bg_app background
+  app_wait 0 3 || die "background: $APP_ID is not in front$(seen_words) - there is nothing to send to the background"
+  if [ "$APP_PLAT" = android ]; then akey home >/dev/null 2>&1 || die "background: the device refused the Home key"
+  else idb ui button HOME --udid "$APP_UDID" >/dev/null 2>&1 || die "background: the simulator refused the Home button"; fi
+  app_wait 1 5 || die "background: $APP_ID is still in front 5 s after Home"
+  [ "$s" = 0 ] || sleep "$s"
+  ok "background: $APP_ID behind $APP_SEEN for $s s"; }
+# A return is a return to the same process. An app the system stopped while it
+# was away would be started afresh by the same command, and the flow would go on
+# checking a cold start it believes is a resumed one.
+app_foreground(){ local pid now st
+  bg_app foreground
+  pid="$(app_pid)"
+  [ -n "$pid" ] || die "foreground: $APP_ID is not running any more - it was stopped while it was away, and starting it now would be a launch, not a return"
+  st=0; app_front || st=$?
+  [ "$st" -ne 0 ] || die "foreground: $APP_ID is already in front - there is nothing to bring back"
+  bring_app foreground
+  now="$(app_pid)"
+  [ "$now" = "$pid" ] || die "foreground: $APP_ID came back as a new process (pid $pid, now ${now:-none}) - it was started afresh, not resumed"
+  ok "foreground: $APP_ID back in front, the same process ($pid)"; }
+# Stop and start, the data kept: what a user does when they swipe the app away and
+# open it again. clearState is the one that wipes. Asked of the device like the
+# other two: a stop that did not happen leaves the same process in front, and
+# that is a resumed app, not a restarted one.
+app_relaunch(){ local pid now
+  bg_app relaunch
+  pid="$(app_pid)"
+  if [ "$APP_PLAT" = android ]; then stop_app "$APP_V"; bring_app relaunch
+  else bring_app relaunch --terminate-running-process; fi
+  now="$(app_pid)"
+  [ -n "$now" ] || die "relaunch: $APP_ID is in front, and the device lists no process of it"
+  [ "$now" != "$pid" ] || die "relaunch: $APP_ID is the same process as before ($pid) - it was not stopped"
+  ok "relaunch: $APP_ID started again as a new process (${pid:-none} -> $now), its data kept"; }
 # setPermission (#51): one named permission of the app of this run, set before
 # it starts. Nothing else decided what a run starts with: the device kept what
 # the run before it left, a suite that grants everything up front cannot reach
@@ -4436,7 +4557,7 @@ def stopped_by():
             (plat == "ios" and f[:1] in (["camera"], ["notifications"], ["health"]))
     last = None
     for x in steps + ([failing] if failing else []):
-        if not x["skip"] and (x["verb"] in ("launch", "openUrl") or stops(x)): last = x
+        if not x["skip"] and (x["verb"] in ("launch", "openUrl", "foreground", "relaunch") or stops(x)): last = x
     return last["i"] if last and stops(last) else 0
 
 def android_state(app):
@@ -4933,7 +5054,7 @@ fixture_step(){ local out st=0
     *) die "$(cat "$FLOW_BOUND.err")";;
   esac; }
 # ── deterministic flow runner: a JSON list of steps ──────────────────────────
-# step keys: include[with]|launch|stopApp|clearState|wait|waitFor[timeout,match]|waitForId[timeout]|
+# step keys: include[with]|launch|stopApp|clearState|background|foreground|relaunch|wait|waitFor[timeout,match]|waitForId[timeout]|
 #            waitForNotText[timeout,match]|waitForNotId[timeout]|screenshot|
 #            openUrl|setPermission[state]|tap[x,y]|tapText[timeout]|optionalTapText|tapId[at]|type|clearText[x,y]|clearTextId|pressKey|hideKeyboard|
 #            scroll|swipe[x,y,toX,toY]|scrollToText[direction,edges,timeout]|dismiss|assertText[match]|assertId|assertNotText[match]|assertNotId|
@@ -5023,7 +5144,7 @@ cond_words(){ local spec="$1" pair kind val out=""
     esac
   done
   printf '%s' "$out"; }
-FLOW_VERBS="launch stopApp clearState openUrl setPermission fixture wait waitFor waitForId waitForNotText waitForNotId screenshot tap tapText optionalTapText tapId type clearText clearTextId pressKey hideKeyboard scroll swipe scrollToText dismiss assertText assertId assertNotText assertNotId assertBox assertBoxId assertCount assertCountId turnWheel swipeId swipeText"
+FLOW_VERBS="launch stopApp clearState background foreground relaunch openUrl setPermission fixture wait waitFor waitForId waitForNotText waitForNotId screenshot tap tapText optionalTapText tapId type clearText clearTextId pressKey hideKeyboard scroll swipe scrollToText dismiss assertText assertId assertNotText assertNotId assertBox assertBoxId assertCount assertCountId turnWheel swipeId swipeText"
 # The steps a condition switched off. They keep their numbers - the numbering is
 # end to end, and a skipped step that gave its number away would move every step
 # after it - they say so on the console, and they land in the report as `skipped`
@@ -5851,6 +5972,14 @@ PY
       # meant pressKey, and a key silently ignored is a flow that believes it
       # pressed something.
       case "$do_" in hideKeyboard) [ -z "$val" ] || die "step $FLOW_IDX 'hideKeyboard' does not take a \"value\" - it closes whatever keyboard is up; to press a named key use pressKey";; esac
+      # background takes seconds and nothing else; the other two act on the app
+      # of $YUKTI_VARIANT, so a value there is a variant name that would be ignored.
+      case "$do_" in
+        background) case "$val" in *[!0-9]*) die "step $FLOW_IDX 'background': \"value\" is how many whole seconds the app stays in the background, got '$val'";; esac
+                    # A typo of a few zeros would hold the run for hours.
+                    [ "${#val}" -le 3 ] && [ "${val:-0}" -le 600 ] 2>/dev/null || die "step $FLOW_IDX 'background': $val seconds - the most is 600";;
+        foreground|relaunch) [ -z "$val" ] || die "step $FLOW_IDX '$do_' does not take a \"value\" - it acts on the app of \$YUKTI_VARIANT";;
+      esac
       # Everything above this line is answerable without a device. Everything
       # below it touches one.
       if [ "$chk" = 1 ]; then continue; fi
@@ -5903,6 +6032,9 @@ PY
         launch)      launch "$val";;
         stopApp)     stop_app "$val";;
         clearState)  clear_state "$val";;
+        background)  app_background "${val:-0}";;
+        foreground)  app_foreground;;
+        relaunch)    app_relaunch;;
         openUrl)     open_url "$val";;
         setPermission) set_permission "$val" "$stt";;
         fixture)     say "fixture '$val'"; fixture_step "$val" "$fxw";;
@@ -6053,11 +6185,14 @@ ${_yk_B}yukti v$YUKTI_VERSION${_yk_R} — YUKTI — smart mobile-app QA automati
   yukti assert-not-id "<id>"
                             assert no element with this id is on the current screen
 
-  flow steps: wait · waitFor · waitForId · waitForNotText · waitForNotId · screenshot · tap · tapText · optionalTapText · tapId · scroll · swipe · scrollToText · dismiss · type · clearText · clearTextId · pressKey · hideKeyboard · assertText · assertId · assertNotText · assertNotId · assertBox · assertBoxId · assertCount · assertCountId · turnWheel · swipeId · swipeText · launch · stopApp · clearState · openUrl · setPermission · fixture · include
+  flow steps: wait · waitFor · waitForId · waitForNotText · waitForNotId · screenshot · tap · tapText · optionalTapText · tapId · scroll · swipe · scrollToText · dismiss · type · clearText · clearTextId · pressKey · hideKeyboard · assertText · assertId · assertNotText · assertNotId · assertBox · assertBoxId · assertCount · assertCountId · turnWheel · swipeId · swipeText · launch · stopApp · clearState · background · foreground · relaunch · openUrl · setPermission · fixture · include
               (clearText · clearTextId · pressKey · hideKeyboard · assertBox · assertBoxId: measured on Android, iOS not yet run;
                hideKeyboard's Back-first order on Android not yet run either;
               swipe and a share of the screen: not yet run on either platform)
               stopApp force-stops the app, clearState wipes its data (Android only); both take the variant name
+              background sends the app of \$YUKTI_VARIANT to the home screen for "value" seconds (0 when none) and
+              leaves it there; foreground brings it back and fails when it returns as a new process; relaunch
+              stops it and starts it again with its data kept. Each checks which app is in front afterwards
               setPermission sets one permission of the app of \$YUKTI_VARIANT before it starts: "value" is
               notifications, camera, microphone, location, photos, contacts, calendar, motion, reminders,
               health, or an Android name with a dot; "state" is granted, denied or unset. A permission the

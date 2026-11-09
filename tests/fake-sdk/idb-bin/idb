@@ -35,6 +35,10 @@
 #   done-closes    present: ANY `ui tap` closes the keyboard or the keypad - a
 #                  case puts a Done button in the tree and checks the tap's
 #                  coordinates, never "keyboard closed" alone
+#   home           present: the home screen is in front - `ui describe-all`
+#                  answers with SpringBoard's root alone, labelled " ". `ui button
+#                  HOME` puts it there unless `home-ignored` is there; the fake
+#                  xcrun's `simctl launch` takes it away (#53)
 import json, os, sys
 
 d = os.environ["FAKE_IDB_DIR"]
@@ -57,7 +61,13 @@ while i < len(args):
     if args[i] == "--udid": i += 2; continue
     ops.append(args[i]); i += 1
 
-if ops[:2] == ["ui", "describe-all"]:
+if ops[:2] == ["ui", "describe-all"] and has("home"):
+    write("describes", str(int(read("describes", "0") or 0) + 1))
+    sys.stdout.write(json.dumps([{"type": "Application", "role_description": "application", "AXLabel": " ",
+                                  "frame": {"x": 0, "y": 0, "width": 402, "height": 874}}]))
+elif ops[:3] == ["ui", "button", "HOME"]:
+    if not has("home-ignored"): write("home", "")
+elif ops[:2] == ["ui", "describe-all"]:
     n = int(read("describes", "0") or 0) + 1
     write("describes", str(n))
     while n > 1 and not has("desc-%d.json" % n): n -= 1
