@@ -50,6 +50,12 @@
 # `dumpsys package` prints after the manifest. `user10` adds a work profile after
 # User 0, every permission there not granted and not answered.
 #
+# The app in front (#53): Home (key 3) puts the launcher's window in `focus`,
+# unless `home-ignored` is there; `monkey -p <app>` puts the app's window there,
+# unless `launch-ignored` is there, and starts it - a pid in `app-pid` - when it
+# was not running or when `launch-restarts` is there (a new pid every time).
+# `am force-stop <app>` empties `app-pid`. `pm list packages` lists `packages`.
+#
 # `dumpsys input_method` answers that no keyboard is up, unless the file
 # `keyboard` is there; the escape key (111) removes it, and so does Back (4)
 # unless the file `back-stays` is there. `kb-reads` overrides the answer, one
@@ -110,6 +116,8 @@ elif args[:3] == ["shell", "input", "keyevent"]:
             if not has("keyboard"):
                 if has("modal"): os.remove(path("modal"))
             elif not has("back-stays"): os.remove(path("keyboard"))
+        if k == "3" and not has("home-ignored"):
+            write("focus", "  mCurrentFocus=Window{1a2b u0 com.android.launcher3/com.android.launcher3.Launcher}\n")
         if k == "67":
             # A delete takes the selection when there is one, else a character.
             if has("selected"): typed = ""; os.remove(path("selected"))
@@ -161,6 +169,16 @@ elif len(args) == 2 and args[0] == "shell" and args[1].startswith("pm ") and ("p
             elif f[1] == "set-permission-flags": e[1] |= {x.upper().replace("-", "_") for x in f[4:]}
             elif f[1] == "clear-permission-flags": e[1] -= {x.upper().replace("-", "_") for x in f[4:]}
         write("perms", "".join("%s %s %s\n" % (k, v[0], ",".join(sorted(v[1]))) for k, v in st.items()))
+elif args[:2] == ["shell", "monkey"] and "-p" in args:
+    app = args[args.index("-p") + 1]
+    if not has("launch-ignored"):
+        write("focus", "  mCurrentFocus=Window{3c4d u0 %s/%s.MainActivity}\n" % (app, app))
+        pid = read("app-pid").strip()
+        if not pid or has("launch-restarts"): write("app-pid", str(int(pid or 5000) + 1))
+elif args[:3] == ["shell", "am", "force-stop"] and len(args) == 4:
+    write("app-pid", "")
+elif args == ["shell", "pm", "list", "packages"]:
+    sys.stdout.write("".join("package:%s\n" % p for p in read("packages").split()))
 elif args[:3] == ["shell", "input", "tap"]:
     sys.exit(1 if has("tap-fails") else 0)
 elif args[:2] == ["exec-out", "screencap"]:
