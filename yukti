@@ -4830,7 +4830,9 @@ def call(at, name, body):
         with urllib.request.build_opener(Stay).open(req, timeout=30) as r: return r.read()
     except urllib.error.HTTPError as e:
         blocked("%s: fixture '%s' answered %d%s" % (at, name, e.code,
-                " (a redirect - fixtures are not followed elsewhere)" if 300 <= e.code < 400 else ""))
+                " (a redirect - fixtures are not followed elsewhere)" if 300 <= e.code < 400 else
+                (" - check the secret in $%s" % secret if secret else " - the config names no secret")
+                if e.code in (401, 403) else ""))
     except (urllib.error.URLError, OSError, ValueError) as e:
         blocked("%s: fixture '%s' could not be reached: %s" % (at, name, getattr(e, "reason", e)))
 
@@ -5077,10 +5079,17 @@ flow(){
   fi
   # Preparation (#55): checked in both modes, called only in a run, and before
   # the steps are built - a bound value reaches them like any other variable.
-  local fx
+  # The whole flow is checked first, as --check does it, with a stand-in for
+  # every bound value: a typo in a step stops the flow before anything is made
+  # on the server.
+  local fx ck
   fx="$(fixture_py check 2> "$FLOW_BOUND.err")" || die "$(cat "$FLOW_BOUND.err")"
   FLOW_TEARS="${fx#* }"
-  [ "$chk" = 1 ] || [ "${fx%% *}" = 0 ] || flow_prepare
+  if [ "$chk" = 0 ] && [ "${fx%% *}" != 0 ]; then
+    ck="$(env -u YUKTI_STEP_ERR -u YUKTI_LAST_TREE "$0" flow --check "$f" 2>&1 >/dev/null)" \
+      || die "$(printf '%s\n' "$ck" | sed $'s/\033\\[[0-9;]*m//g; s/^✗ //' | tail -1)"
+    flow_prepare
+  fi
   # The steps are built before the first one runs, and a flow file the builder
   # refuses never starts. It used to be generated straight into the loop, where
   # its status was lost with the process substitution: a flow file that is not

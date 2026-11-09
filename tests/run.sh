@@ -5275,6 +5275,26 @@ has out.txt "step 2 'assertText' skipped: blocked:"; lacks adb/log "uiautomator 
 has res/flow.xml '<property name="outcome" value="skipped"/>'
 verdict
 
+fx_case fx-typo-first
+cat > "$case_dir/flow.json" <<'JSON'
+{ "name": "flow", "prepare": [ { "fixture": "fresh-account", "bind": { "TEST_EMAIL": "email" } } ],
+  "steps": [ { "do": "asertText", "value": "${TEST_EMAIL}" } ] }
+JSON
+answer fresh-account 200 '{"email": "x@example.invalid"}'
+run_fx "$case_dir/flow.json" FX_TOKEN=synthetic-token
+fx_end
+begin "prepare: a typo in a step stops the flow before anything is made on the server"
+status_is 1; has out.txt "unknown step 'asertText'"; file_absent fx/requests
+verdict
+
+fx_case fx-401
+fx_flow; answer fresh-account 401 ''
+run_fx "$case_dir/flow.json" FX_TOKEN=synthetic-token
+fx_end
+begin "prepare: 401 says which variable holds the secret"
+status_is 0; has out.txt "fixture 'fresh-account' answered 401 - check the secret in \$FX_TOKEN"
+verdict
+
 dev_case fx-http-far
 printf '{"variants":{"app":{"platform":"android","package":"com.example","fixtures":{"url":"http://fixtures.example.invalid/"}}}}\n' > "$case_dir/cfg.json"
 flow_file "$case_dir/flow.json" '{ "do": "fixture", "value": "change-weight" }'
