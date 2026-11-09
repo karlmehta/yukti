@@ -56,7 +56,7 @@
 # was not running or when `launch-restarts` is there (a new pid every time).
 # All of this only in a case that wrote `app-pid` itself: the cases of a crash
 # (#63) launch and expect the app to stay gone.
-# `am force-stop <app>` empties `app-pid`. `pm list packages` lists `packages`.
+# `am force-stop <app>` empties `app-pid`, unless `stop-ignored` is there. `pm list packages` lists `packages`.
 #
 # `dumpsys input_method` answers that no keyboard is up, unless the file
 # `keyboard` is there; the escape key (111) removes it, and so does Back (4)
@@ -178,7 +178,7 @@ elif args[:2] == ["shell", "monkey"] and "-p" in args and has("app-pid"):
         pid = read("app-pid").strip()
         if not pid or has("launch-restarts"): write("app-pid", str(int(pid or 5000) + 1))
 elif args[:3] == ["shell", "am", "force-stop"] and len(args) == 4:
-    write("app-pid", "")
+    if not has("stop-ignored"): write("app-pid", "")
 elif args == ["shell", "pm", "list", "packages"]:
     sys.stdout.write("".join("package:%s\n" % p for p in read("packages").split()))
 elif args[:3] == ["shell", "input", "tap"]:

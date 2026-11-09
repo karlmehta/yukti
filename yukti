@@ -1421,12 +1421,18 @@ app_foreground(){ local pid now st
   [ "$now" = "$pid" ] || die "foreground: $APP_ID came back as a new process (pid $pid, now ${now:-none}) - it was started afresh, not resumed"
   ok "foreground: $APP_ID back in front, the same process ($pid)"; }
 # Stop and start, the data kept: what a user does when they swipe the app away and
-# open it again. clearState is the one that wipes.
-app_relaunch(){
+# open it again. clearState is the one that wipes. Asked of the device like the
+# other two: a stop that did not happen leaves the same process in front, and
+# that is a resumed app, not a restarted one.
+app_relaunch(){ local pid now
   bg_app relaunch
+  pid="$(app_pid)"
   if [ "$APP_PLAT" = android ]; then stop_app "$APP_V"; bring_app relaunch
   else bring_app relaunch --terminate-running-process; fi
-  ok "relaunch: $APP_ID started again, its data kept"; }
+  now="$(app_pid)"
+  [ -n "$now" ] || die "relaunch: $APP_ID is in front, and the device lists no process of it"
+  [ "$now" != "$pid" ] || die "relaunch: $APP_ID is the same process as before ($pid) - it was not stopped"
+  ok "relaunch: $APP_ID started again as a new process (${pid:-none} -> $now), its data kept"; }
 # setPermission (#51): one named permission of the app of this run, set before
 # it starts. Nothing else decided what a run starts with: the device kept what
 # the run before it left, a suite that grants everything up front cannot reach
@@ -5646,7 +5652,9 @@ PY
       # background takes seconds and nothing else; the other two act on the app
       # of $YUKTI_VARIANT, so a value there is a variant name that would be ignored.
       case "$do_" in
-        background) case "$val" in *[!0-9]*) die "step $FLOW_IDX 'background': \"value\" is how many whole seconds the app stays in the background, got '$val'";; esac;;
+        background) case "$val" in *[!0-9]*) die "step $FLOW_IDX 'background': \"value\" is how many whole seconds the app stays in the background, got '$val'";; esac
+                    # A typo of a few zeros would hold the run for hours.
+                    [ "${#val}" -le 3 ] && [ "${val:-0}" -le 600 ] 2>/dev/null || die "step $FLOW_IDX 'background': $val seconds - the most is 600";;
         foreground|relaunch) [ -z "$val" ] || die "step $FLOW_IDX '$do_' does not take a \"value\" - it acts on the app of \$YUKTI_VARIANT";;
       esac
       # Everything above this line is answerable without a device. Everything

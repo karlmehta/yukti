@@ -1080,7 +1080,7 @@ They act on the app of `$YUKTI_VARIANT`, as `openUrl` and `setPermission` do -
 variant name.
 
 - `background` presses Home and holds the app there for `"value"` whole seconds
-  (none: 0). The app stays in the background after the step: what is on the
+  (none: 0, at most 600). The app stays in the background after the step: what is on the
   screen now is the home screen, and a `foreground` brings the app back.
 - `foreground` brings the running app back to the front. A return is a return to
   the same process: when the app comes back with another pid, the system stopped
@@ -1089,7 +1089,8 @@ variant name.
   not running is not started, and one already in front fails too - nothing was
   brought back.
 - `relaunch` stops the app and starts it again with its data kept - the user who
-  swipes the app away and opens it again. It is not `clearState`: the session,
+  swipes the app away and opens it again. It fails when the app in front is the
+  same process as before: then nothing was stopped. It is not `clearState`: the session,
   the settings and the cache survive, which is exactly what a test of them
   needs.
 
@@ -1107,9 +1108,10 @@ prints a pid while the home screen stays in front (measured on iOS 26.5), so
 `foreground` launches once more when the first did not bring the app, and fails
 after the second.
 
-The iOS half is written from the documentation and that one measurement, and
-has not been run on a simulator; the engine's tests drive both platforms through
-fakes.
+Neither half has been run on a device by the engine yet: the Android half is
+built from the commands `launch` and `stopApp` already send, the iOS half from
+the documentation and that one measurement, and the engine's tests drive both
+through fakes.
 
 ### Permissions before the app starts
 

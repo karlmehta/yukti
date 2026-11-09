@@ -9,8 +9,8 @@
 # The app in front (#53): `simctl get_app_container <udid> <bundle> app` prints
 # the path in `container`; `simctl launch` takes the fake idb's home screen away
 # ($FAKE_IDB_DIR/home), except for as many launches as `launch-misses` counts,
-# and gives the app a new pid in `launchctl` with --terminate-running-process, or
-# always when `launch-restarts` is there.
+# and gives the app a new pid in `launchctl` with --terminate-running-process
+# (unless `terminate-ignored` is there), or always when `launch-restarts` is there.
 import os, re, sys
 
 d = os.environ["FAKE_XCRUN_DIR"]
@@ -40,7 +40,8 @@ elif args[:2] == ["simctl", "launch"]:
         home = os.path.join(os.environ.get("FAKE_IDB_DIR", d), "home")
         if os.path.exists(home): os.remove(home)
     lc = os.path.join(d, "launchctl")
-    if "--terminate-running-process" in args or os.path.exists(os.path.join(d, "launch-restarts")):
+    if ("--terminate-running-process" in args and not os.path.exists(os.path.join(d, "terminate-ignored"))) \
+            or os.path.exists(os.path.join(d, "launch-restarts")):
         try:
             with open(lc) as fh: text = fh.read()
         except OSError: text = ""

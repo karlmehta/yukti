@@ -5226,8 +5226,16 @@ flow_file "$case_dir/flow.json" '{ "do": "relaunch" }'
 run_bg "$case_dir/flow.json"
 begin "relaunch: force-stop, then the launcher intent, data untouched"
 status_is 0; has adb/log "shell am force-stop com.example"; has adb/log "shell monkey -p com.example"; lacks adb/log "pm clear"
-has out.txt "relaunch: com.example started again, its data kept"
+has out.txt "relaunch: com.example started again as a new process (4242 -> 5001), its data kept"
 [ "$(grep -n 'force-stop com.example' "$case_dir/adb/log" | cut -d: -f1)" -lt "$(grep -n 'monkey -p com.example' "$case_dir/adb/log" | cut -d: -f1)" ] || no "the start came before the stop"
+verdict
+
+bg_case relaunch-not-stopped
+touch "$case_dir/adb/stop-ignored"
+flow_file "$case_dir/flow.json" '{ "do": "relaunch" }'
+run_bg "$case_dir/flow.json"
+begin "relaunch: the same process in front after it is a failure - nothing was stopped"
+status_is 1; has out.txt "relaunch: com.example is the same process as before (4242) - it was not stopped"
 verdict
 
 bg_case bg-no-variant
@@ -5242,6 +5250,8 @@ flow_file "$case_dir/ok.json" '{ "do": "background", "value": 5 }' '{ "do": "for
 expect "background, foreground, relaunch: the builder takes them" 0 " - 3 steps" check "$case_dir/ok.json"
 flow_file "$case_dir/secs.json" '{ "do": "background", "value": "1.5" }'
 expect "background: seconds that are not whole are refused" 1 "step 1 'background': \"value\" is how many whole seconds the app stays in the background, got '1.5'" check "$case_dir/secs.json"
+flow_file "$case_dir/long.json" '{ "do": "background", "value": 6000 }'
+expect "background: more than 600 seconds is refused" 1 "step 1 'background': 6000 seconds - the most is 600" check "$case_dir/long.json"
 flow_file "$case_dir/fg.json" '{ "do": "foreground", "value": "qa" }'
 expect "foreground: a value is refused - it acts on the app of the run" 1 "step 1 'foreground' does not take a \"value\" - it acts on the app of \$YUKTI_VARIANT" check "$case_dir/fg.json"
 flow_file "$case_dir/rl.json" '{ "do": "relaunch", "value": "qa" }'
@@ -5299,7 +5309,15 @@ flow_file "$case_dir/flow.json" '{ "do": "relaunch" }'
 run_ibg "$case_dir/flow.json"
 begin "relaunch on iOS: simctl launch with --terminate-running-process"
 status_is 0; has xcrun/log "simctl launch --terminate-running-process FAKE-UDID com.example"
-has out.txt "relaunch: com.example started again, its data kept"; grep -q '^4243' "$case_dir/xcrun/launchctl" || no "the app was not started as a new process"
+has out.txt "relaunch: com.example started again as a new process (4242 -> 4243), its data kept"; grep -q '^4243' "$case_dir/xcrun/launchctl" || no "the app was not started as a new process"
+verdict
+
+ibg_case ios-relaunch-not-stopped
+touch "$case_dir/xcrun/terminate-ignored"
+flow_file "$case_dir/flow.json" '{ "do": "relaunch" }'
+run_ibg "$case_dir/flow.json"
+begin "relaunch on iOS: a launch that kept the running process is a failure"
+status_is 1; has out.txt "relaunch: com.example is the same process as before (4242) - it was not stopped"
 verdict
 
 ibg_case ios-bg-no-name
