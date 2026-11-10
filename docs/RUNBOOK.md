@@ -1495,6 +1495,13 @@ conditions and the negative assertions arrived together: an unreadable screen
 answers "is this visible?" with "no", and a suite that accepts that answer
 switches parts of itself off and stays green.
 
+A condition on the screen reads it once, and while the steps after it are
+skipped one after another, their conditions answer from that same read - a
+skipped step touches nothing. The first step that runs drops it, and the next
+condition reads the screen again. A condition on `platform` alone reads
+nothing. On iOS, where a read takes seconds, this is what keeps a block of
+guarded dialogs cheap when none of them is up.
+
 `visible` and `notVisible` ask the same oracle as `assertText` - perceivable
 text, whole label, case as written - and `visibleId` / `notVisibleId` the exact
 id. That is stricter than `tapText`, so a condition can skip a step `tapText`

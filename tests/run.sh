@@ -2633,6 +2633,42 @@ begin "zeroSizeId: a screen that cannot be read stops the flow"
 status_is 1; fake_used; has out.txt "when (zeroSizeId 'btn')"; has res/flow.xml 'name="00 flow"'
 verdict
 
+# ── one read for a run of skipped steps (#172) ──────────────────────────────
+# A step that is skipped touches nothing, so the conditions in a run of them
+# answer from one read; the first step that runs makes the next condition read
+# again. SKIP is a guarded step that does not run on a screen without the button.
+SKIP='{ "do": "wait", "value": "0", "when": { "visibleId": "btn" } }'
+SKIPN='{ "do": "wait", "value": "0", "when": { "notVisibleId": "title" } }'
+# Two terms, as the sign-in block guards its steps, and both are asked (the
+# builder sorts them: notVisibleId holds, visibleId does not): still one read.
+SKIP2='{ "do": "wait", "value": "0", "when": { "notVisibleId": "btn", "visibleId": "btn" } }'
+dev_case when-run-one-read
+screen "$case_dir/adb/dump-1.xml" "$ROOT_NODE" "$(node TextView title Today)"
+flow_file "$case_dir/flow.json" "$SKIP2" "$SKIPN" "$SKIP" "$SKIPN" "$SKIP" "$SKIP2" "$SKIPN" "$SKIP" "$SKIPN" "$SKIP"
+run_flow "$case_dir/flow.json"
+begin "when: ten guarded steps in a row, all skipped, read the screen once"
+status_is 0; fake_used; reads_are 1; count_is out.txt "skipped: " 10
+verdict
+
+dev_case when-step-reads-again
+screen "$case_dir/adb/dump-1.xml" "$ROOT_NODE" "$(node TextView title Today)"
+screen "$case_dir/adb/dump-2.xml" "$ROOT_NODE" "$SIZED_BTN"
+flow_file "$case_dir/flow.json" "$SKIP" '{ "do": "wait", "value": "0", "title": "the step between" }' \
+  '{ "do": "wait", "value": "0", "title": "guarded step", "when": { "visibleId": "btn" } }'
+run_flow "$case_dir/flow.json"
+begin "when: a step that runs between two guarded steps makes the next condition read again"
+status_is 0; fake_used; reads_are 2; has out.txt '"the step between"'; has out.txt '"guarded step"'
+verdict
+
+dev_case when-platform-no-read
+screen "$case_dir/adb/dump-1.xml" "$ROOT_NODE"
+flow_file "$case_dir/flow.json" '{ "do": "wait", "value": "0", "when": { "platform": "ios" } }' \
+  '{ "do": "wait", "value": "0", "when": { "platform": "ios" } }'
+run_flow "$case_dir/flow.json"
+begin "when: a condition on the platform alone reads no screen"
+status_is 0; reads_are 0; count_is out.txt "skipped: " 2
+verdict
+
 # iOS: the same states in an idb tree. The window comes first, as the engine
 # takes it for the screen.
 IAPP='{"type":"Application","role_description":"application","AXLabel":"App","frame":{"x":0,"y":0,"width":402,"height":874}}'
@@ -2723,6 +2759,24 @@ flow_file "$case_dir/flow.json" "$RAN"
 run_ios "$case_dir/flow.json"
 begin "zeroSizeId on iOS: a screen that cannot be read stops the flow"
 status_is 1; has out.txt "when (zeroSizeId 'btn')"
+verdict
+
+ios_case ios-when-run-one-read
+tree "$case_dir/idb/desc-1.json" "$IAPP" '{"type":"StaticText","role_description":"text","AXUniqueId":"title","AXLabel":"Today","frame":{"x":20,"y":120,"width":200,"height":30}}'
+flow_file "$case_dir/flow.json" "$SKIP2" "$SKIPN" "$SKIP" "$SKIPN" "$SKIP" "$SKIP2" "$SKIPN" "$SKIP" "$SKIPN" "$SKIP"
+run_ios "$case_dir/flow.json"
+begin "when on iOS: ten guarded steps in a row, all skipped, read the screen once"
+status_is 0; ireads_are 1; count_is out.txt "skipped: " 10
+verdict
+
+ios_case ios-when-step-reads-again
+tree "$case_dir/idb/desc-1.json" "$IAPP"
+tree "$case_dir/idb/desc-2.json" "$IAPP" "$ISIZED"
+flow_file "$case_dir/flow.json" "$SKIP" '{ "do": "wait", "value": "0", "title": "the step between" }' \
+  '{ "do": "wait", "value": "0", "title": "guarded step", "when": { "visibleId": "btn" } }'
+run_ios "$case_dir/flow.json"
+begin "when on iOS: a step that runs between two guarded steps makes the next condition read again"
+status_is 0; ireads_are 2; has out.txt '"the step between"'; has out.txt '"guarded step"'
 verdict
 
 # The builder: what a file says is checked before anything runs.
