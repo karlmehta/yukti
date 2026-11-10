@@ -2639,8 +2639,9 @@ verdict
 # again. SKIP is a guarded step that does not run on a screen without the button.
 SKIP='{ "do": "wait", "value": "0", "when": { "visibleId": "btn" } }'
 SKIPN='{ "do": "wait", "value": "0", "when": { "notVisibleId": "title" } }'
-# Two terms, as the sign-in block guards its steps: still one read between them.
-SKIP2='{ "do": "wait", "value": "0", "when": { "visibleId": "btn", "notVisibleId": "title" } }'
+# Two terms, as the sign-in block guards its steps, and both are asked (the
+# builder sorts them: notVisibleId holds, visibleId does not): still one read.
+SKIP2='{ "do": "wait", "value": "0", "when": { "notVisibleId": "btn", "visibleId": "btn" } }'
 dev_case when-run-one-read
 screen "$case_dir/adb/dump-1.xml" "$ROOT_NODE" "$(node TextView title Today)"
 flow_file "$case_dir/flow.json" "$SKIP2" "$SKIPN" "$SKIP" "$SKIPN" "$SKIP" "$SKIP2" "$SKIPN" "$SKIP" "$SKIPN" "$SKIP"
