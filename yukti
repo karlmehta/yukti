@@ -230,7 +230,9 @@ ashot(){ apaths; local o; o="$(shot_path "${1:-}")" || return 1; mkdir -p "$(dir
 # once per thing, and every read after the first was of a screen that nothing
 # had touched. A step fills this, reads as often as it likes, and empties it
 # before anything taps: a held tree outliving a tap would be a step deciding
-# against a screen that is no longer there.
+# against a screen that is no longer there. The one holder that is not a step is
+# a `when` (#172): a run of skipped steps touches nothing, so the conditions in
+# it answer from one read, and the next step that runs empties it.
 HELD_TREE=""
 # The tree a step read last, kept for the result of a failed flow (#94). Nearly
 # every read happens inside $(...), so a variable would die with the subshell;
@@ -5097,6 +5099,15 @@ fixture_step(){ local out st=0
 # guide: a condition is stricter than tapText, so it can skip a step tapText
 # would have found - and the skip is never silent.
 COND_KV=$'\x1d'; COND_SEP=$'\x1e'
+# One read for a run of conditions (#172). On iOS every lookup used to read the
+# screen again, at 5-6 s a read on a CI simulator, and a block that dismisses a
+# few optional dialogs is twenty guarded steps that mostly do not run. The read
+# happens here, in the loop's own shell - a lookup runs in $(...) and what it
+# holds dies with it - and only for a condition that looks at the screen: a
+# platform term needs none. A screen that cannot be read stops the run as it
+# did, with the condition in the words.
+cond_tree(){ [ -z "$HELD_TREE" ] || return 0
+  HELD_TREE="$(ui)" || { HELD_TREE=""; die "when ($1 '$2'): $(lookup_err 1)"; }; }
 cond_holds(){ local spec="$1" pair kind val xy st
   while [ -n "$spec" ]; do
     case "$spec" in *"$COND_SEP"*) pair="${spec%%"$COND_SEP"*}"; spec="${spec#*"$COND_SEP"}";; *) pair="$spec"; spec="";; esac
@@ -5109,7 +5120,7 @@ cond_holds(){ local spec="$1" pair kind val xy st
       # the step did not run instead of wondering.
       platform) [ "$val" = "${YUKTI_PLATFORM:-}" ] || return 1;;
       visible|notVisible|visibleId|notVisibleId)
-        st=0
+        cond_tree "$kind" "$val"; st=0
         case "$kind" in
           visible|notVisible)     xy="$(find_el "$val" assert exact)" || st=$?;;
           visibleId|notVisibleId) xy="$(find_el "$val" id)" || st=$?;;
@@ -5124,7 +5135,7 @@ cond_holds(){ local spec="$1" pair kind val xy st
       # and also when the id is not in the tree at all - this is the one that
       # tells the two apart.
       zeroSizeId)
-        st=0; xy="$(find_el "$val" id exact why)" || st=$?
+        cond_tree "$kind" "$val"; st=0; xy="$(find_el "$val" id exact why)" || st=$?
         [ "$st" -eq 0 ] || die "when ($kind '$val'): $(lookup_err "$st")"
         case "$xy" in zero\ *) ;; *) return 1;; esac;;
       # The builder refuses an unknown condition before the run starts. This arm
@@ -5928,6 +5939,9 @@ PY
       # Record the step BEFORE running it and again once it survived: the one
       # step that has a start and no end is the step that failed, and that is
       # the single fact a report cannot reconstruct from console text.
+      # A step runs from here: whatever a `when` held before it is of the screen
+      # this step is about to change, and the next condition reads again.
+      HELD_TREE=""
       FLOW_IDX=$((FLOW_IDX+1)); FLOW_S0="$(now)"; FLOW_ART=""
       # The number the run counts and the number the author has to look for are
       # the same file only while a flow has no includes. Once it has one, step 4
