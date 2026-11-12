@@ -4237,7 +4237,7 @@ swipe_pts(){ local t0 rc=0 why=""; t0="$(now)"; SWIPED_BY=adb
       # second time, which can skip rows and fail the step, never pass it.
       helper_http POST "/session/$(cat "$(run_dir)/helper-session")/actions" "$(helper_read_timeout)" \
         "$(printf "$SWIPE_ACTIONS" "$1" "$2" "$3" "$4" "$3" "$4")" >/dev/null || rc=$?
-      if [ "$rc" -eq 0 ]; then rm -f "$(run_dir)/gesture-refused"; SWIPED_BY=helper; SCROLL_N=$(( ${SCROLL_N:-0} + 1 )); swipe_note helper "$t0"; return 0; fi
+      if [ "$rc" -eq 0 ]; then rm -f "$(run_dir)/gesture-refused"; SWIPED_BY=helper; SCROLL_N=$(( ${SCROLL_N:-0} + 1 )); swipe_note helper "$t0" " $1,$2 -> $3,$4"; return 0; fi
       why=" (helper: rc $rc)"
       # Nothing answered (2), or nothing in time (4): the helper is gone or hung,
       # and a read would wait for it three times over. Given up on now, for the

@@ -739,7 +739,8 @@ that ran past does.
 Searching up, left or right, without the helper and on iOS is as it was.
 Without the helper, and on iOS, a swipe lets go at the speed it moved and the
 list runs on a little, so the swipe stays at 40%. Each swipe prints how it went
-and what it cost (`· swipe helper 1300 ms`, `· swipe adb 830 ms`), and each
+and what it cost (`· swipe helper 1300 ms 540,1800 -> 540,600`, with where the
+helper's finger went down and lifted; `· swipe adb 830 ms`), and each
 search its total (`· search 4 swipes 5120 ms`). A search stops after two
 minutes of swiping, which on the slowest reader is the thirty swipes it used
 to be allowed.

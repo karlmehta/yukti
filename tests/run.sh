@@ -1740,6 +1740,7 @@ begin "scroll: with the helper a search swipes a screen at a time, with a finger
 status_is 0; file_absent adb/dumps; gestures_are 2; count_is adb/http-log "/actions" 2
 gesture_line 1 540 1900 540 300; gesture_line 2 540 1900 540 300
 lacks adb/log "input swipe"; count_is out.txt "· swipe helper" 2; has out.txt "· search 2 swipes"
+count_is out.txt " ms 540,1900 -> 540,300" 2
 lacks out.txt "went past the gesture"
 verdict; helper_done
 
