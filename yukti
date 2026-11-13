@@ -1038,7 +1038,8 @@ best=best[:6]
 if count:
     # Both quote forms, as at() reads them. A field without an id has no
     # namesakes to tell apart and no id to be taken by: 0.
-    ids=[a if a is not None else b for a,b in
+    # findall gives "" for the form that did not match, never None.
+    ids=[a or b for a,b in
          re.findall(r"<node[^>]*?resource-id=(?:\"([^\"]*)\"|\x27([^\x27]*)\x27)", xml)]
     sys.stdout.write("%d\x1f" % (ids.count(best[3]) if best[3] else 0))
 sys.stdout.write("%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s" % best)
@@ -1140,7 +1141,7 @@ aclear(){ apaths; local x="$1" y="$2" vb="${3:-clearText}" sdk before after prob
       || die "$vb: focus is in a different field than the one at $x,$y"
   fi
   if [ "$box" != "$box2" ]; then
-    warn "$vb: the field moved to $box2 when the keyboard opened"
+    warn "$vb: the field moved to $box2 after the tap (a keyboard, a scrolled form or a field that grew)"
   fi
   [ -n "$after" ] || { ok "$vb: field empty at $x,$y"; return 0; }
   # Any text left is unresolved, whatever it is and whether or not it changed:

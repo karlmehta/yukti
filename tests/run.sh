@@ -635,6 +635,31 @@ has out.txt "focus is in a different field than the one at 500,1550"
 lacks adb/log "keycombination"
 verdict
 
+# Both halves of "only one, before the tap and after it": a namesake that
+# appears after the tap, or one that was there before and is gone, keeps the
+# shape as the proof.
+dev_case clear-namesake-appears
+printf 'old text' > "$case_dir/adb/typed"
+screen "$case_dir/adb/dump-1.xml" "$(field email false 100,1500,900,1600)"
+screen "$case_dir/adb/dump-2.xml" "$(field email true 150,300,700,420)" "$(field email false 100,1700,900,1800 Other)"
+flow_file "$case_dir/flow.json" '{ "do": "clearTextId", "value": "email" }'
+run_flow "$case_dir/flow.json"
+begin "clearTextId: an id that a second field carries after the tap does not take the moved field"
+status_is 1; reads_are 2
+has out.txt "focus is in a different field than the one at 500,1550"
+verdict
+
+dev_case clear-namesake-gone
+printf 'old text' > "$case_dir/adb/typed"
+screen "$case_dir/adb/dump-1.xml" "$(field email false 100,1500,900,1600)" "$(field email false 100,1700,900,1800 Other)"
+screen "$case_dir/adb/dump-2.xml" "$(field email true 0,300,1080,420)"
+flow_file "$case_dir/flow.json" '{ "do": "clearTextId", "value": "email" }'
+run_flow "$case_dir/flow.json"
+begin "clearTextId: an id that a second field carried before the tap does not take the moved field"
+status_is 1; reads_are 2
+has out.txt "focus is in a different field than the one at 500,1550"
+verdict
+
 # iOS: the fake idb first in PATH, the simulator id where the engine keeps it.
 ios_case(){ new_case "$1"; mkdir -p "$case_dir/idb" "$case_dir/res" "$case_dir/tmp"
   printf 'FAKE-UDID' > "$case_dir/tmp/yukti-udid"; }
