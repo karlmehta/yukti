@@ -675,7 +675,8 @@ if scope and mode in ("assert","text","id"):
     for m in re.finditer(r"<node\b[^>]*>", xml):
         tag=m.group(0)
         r=re.search(r"resource-id=(?:\"([^\"]*)\"|\x27([^\x27]*)\x27)",tag)
-        if not r or norm(html.unescape(r.group(1) if r.group(1) is not None else r.group(2))).split("/")[-1].lower()!=scope: continue
+        rv=norm(html.unescape(r.group(1) if r.group(1) is not None else r.group(2))).lower() if r else ""
+        if not r or (rv if ":id/" in scope else rv.split("/")[-1])!=scope: continue
         b=re.search(r"bounds=\"\[(-?\d+),(-?\d+)\]\[(-?\d+),(-?\d+)\]\"",tag)
         if not b: continue
         x1,y1,x2,y2=map(int,b.groups())
@@ -749,13 +750,17 @@ for m in re.finditer(r"<node\b[^>]*>", xml):
     text_raw=a("text"); desc_raw=a("content-desc")
     text=text_raw.lower(); desc=desc_raw.lower()
     rid=a("resource-id"); rid_seg=rid.split("/")[-1].lower()  # com.app:id/email -> email
+    # A query that names the package (com.app:id/email, #177) is the full
+    # resource-id and matches only that: it is also the precise choice when two
+    # apps on the screen (a system dialog over the app) share a segment.
+    rid_key=rid.lower() if ":id/" in q else rid_seg
     cls=a("class"); editable=cls.endswith("EditText")
     clickable=a("clickable")=="true"; focusable=a("focusable")=="true"
     if mode=="id":
         # An empty query must match nothing. The flow runner passes value="" for a
         # missing or misspelled key, and "" is the resource-id of most nodes: the
         # step would then report success and tapId would tap an arbitrary point.
-        if not q or q!=rid_seg: continue
+        if not q or q!=rid_key: continue
         score=10
     elif mode=="assert":
         # An assertion is the test oracle: it may only match what a person can

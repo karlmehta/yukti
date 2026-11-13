@@ -287,6 +287,28 @@ status_is 0; fake_used; file_full res/flow.xml
 file_absent res/flow-fail.png; file_absent res/flow-fail.xml
 verdict
 
+# An id step takes the full resource-id when the value names the package
+# (#177): a system dialog's button is found by com.android...:id/<name>, the
+# last segment still works, and a full id of another package matches nothing.
+SYSBTN='<node index="0" text="Don&apos;t allow" resource-id="com.android.permissioncontroller:id/permission_deny_button" class="android.widget.Button" package="com.android.permissioncontroller" content-desc="" checkable="false" checked="false" clickable="true" enabled="true" focusable="true" focused="false" scrollable="false" long-clickable="false" password="false" selected="false" bounds="[100,1500][980,1600]" />'
+for form in full segment; do
+  dev_case "id-$form-resource-id"
+  screen "$case_dir/adb/dump-1.xml" "$SYSBTN"
+  if [ "$form" = full ]; then v="com.android.permissioncontroller:id/permission_deny_button"; else v="permission_deny_button"; fi
+  flow_file "$case_dir/flow.json" "{ \"do\": \"waitForId\", \"value\": \"$v\", \"timeout\": 1 }"
+  run_flow "$case_dir/flow.json"
+  begin "id step: the $form resource-id of a system dialog's button is found"
+  status_is 0; fake_used
+  verdict
+done
+dev_case id-full-resource-id-other-package
+screen "$case_dir/adb/dump-1.xml" "$SYSBTN"
+flow_file "$case_dir/flow.json" '{ "do": "waitForId", "value": "com.example:id/permission_deny_button", "timeout": 1 }'
+run_flow "$case_dir/flow.json"
+begin "id step: a full resource-id of another package does not match the segment"
+status_is 1; fake_used
+verdict
+
 # A step of a block four levels down is named with its block in the result.
 dev_case capture-deep-block
 screen "$case_dir/adb/dump-1.xml" "$(node TextView title Today)"
