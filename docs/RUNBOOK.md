@@ -533,7 +533,12 @@ one the tap focused: when the keyboard opens and the layout moves, the field is
 no longer under the coordinates that reached it, and the step says so in a
 warning rather than reading a different node. A field the keyboard moved keeps
 its left and right edges, its height and its id; a focused field that does not
-is another field, and the step fails. On Android the step reads the screen twice:
+is another field, and the step fails. `clearTextId` also takes the focused field
+as its own when the id is non-empty and no other node on the screen carries it,
+before the tap and after it - wherever the field moved and whatever width it has
+(a form that scrolled when focus left the field above, a clear button that goes
+away with the text). An id that several fields share (list rows) settles
+nothing, and `clearText` by coordinates keeps to the shape. On Android the step reads the screen twice:
 once before the tap, once after the delete. A third read comes in two cases -
 the field shows text after the delete, which may be its hint, and one more
 delete tells the two apart; or another field held focus before the tap, and the

@@ -548,13 +548,14 @@ status_is 0; reads_are 2; typed_is ""
 has out.txt "the field moved to 100 900 900 1000"
 verdict
 
+# An id that another row shares does not settle it (#165): the shape has to.
 dev_case clear-other-shape
 printf 'old text' > "$case_dir/adb/typed"
-screen "$case_dir/adb/dump-1.xml" "$(field email false 100,1500,900,1600)"
-screen "$case_dir/adb/dump-2.xml" "$(field email true 0,300,1080,420)"
+screen "$case_dir/adb/dump-1.xml" "$(field email false 100,1500,900,1600)" "$(field email false 100,1700,900,1800 Other)"
+screen "$case_dir/adb/dump-2.xml" "$(field email true 0,300,1080,420)" "$(field email false 100,1700,900,1800 Other)"
 flow_file "$case_dir/flow.json" '{ "do": "clearTextId", "value": "email" }'
 run_flow "$case_dir/flow.json"
-begin "clearTextId: a focused field of another width is another field"
+begin "clearTextId: a focused field of another width, with an id another row shares, is another field"
 status_is 1; reads_are 2
 has out.txt "focus is in a different field than the one at 500,1550"
 verdict
@@ -605,6 +606,80 @@ flow_file "$case_dir/flow.json" '{ "do": "clearTextId", "value": "email" }'
 run_flow "$case_dir/flow.json"
 begin "clearTextId: focus taken from another field costs one read more, and clears"
 status_is 0; reads_are 3; typed_is ""
+verdict
+
+# #165. The field is taken by its id when no other node on the screen carries
+# it, before the tap and after it: a search field that drops its clear button
+# with its text is wider when empty, and a form that scrolls when focus moves
+# from the field above carries the field to a new place.
+dev_case clear-width-grows
+printf 'old text' > "$case_dir/adb/typed"
+screen "$case_dir/adb/dump-1.xml" "$(field search false 150,500,934,600)"
+screen "$case_dir/adb/dump-2.xml" "$(field search true 150,500,1004,600)"
+flow_file "$case_dir/flow.json" '{ "do": "clearTextId", "value": "search" }'
+run_flow "$case_dir/flow.json"
+begin "clearTextId: a field with an id of its own that grows wider when emptied is still the field"
+status_is 0; reads_are 2; typed_is ""
+has out.txt "field empty at 542,550"
+verdict
+
+dev_case clear-width-grows-coords
+printf 'old text' > "$case_dir/adb/typed"
+screen "$case_dir/adb/dump-1.xml" "$(field search false 150,1150,934,1250)"
+screen "$case_dir/adb/dump-2.xml" "$(field search true 150,1150,1004,1250)"
+flow_file "$case_dir/flow.json" '{ "do": "clearText", "x": "50%", "y": "50%" }'
+run_flow "$case_dir/flow.json"
+begin "clearText by coordinates: a field of another width is still another field"
+status_is 1; reads_are 2
+has out.txt "focus is in a different field than the one at 540,1200"
+verdict
+
+dev_case clear-focus-moves-scrolled
+printf 'old text' > "$case_dir/adb/typed"
+screen "$case_dir/adb/dump-1.xml" "$(field email false 100,1500,900,1600 Mine)" "$(field name true 100,300,900,400 Name)"
+screen "$case_dir/adb/dump-2.xml" "$(field email true 100,900,900,1000)" "$(field name false 100,-300,900,-200 Name)"
+flow_file "$case_dir/flow.json" '{ "do": "clearTextId", "value": "email" }'
+run_flow "$case_dir/flow.json"
+begin "clearTextId: focus taken from the field above, the form scrolled - the field with its own id is cleared"
+status_is 0; reads_are 3; typed_is ""
+has out.txt "the field moved to 100 900 900 1000"
+verdict
+
+dev_case clear-focus-moves-scrolled-shared-id
+printf 'old text' > "$case_dir/adb/typed"
+screen "$case_dir/adb/dump-1.xml" "$(field email false 100,1500,900,1600 Mine)" "$(field email false 100,1700,900,1800 Other)" "$(field name true 100,300,900,400 Name)"
+screen "$case_dir/adb/dump-2.xml" "$(field email true 100,900,900,1000)" "$(field email false 100,1100,900,1200 Other)" "$(field name false 100,-300,900,-200 Name)"
+flow_file "$case_dir/flow.json" '{ "do": "clearTextId", "value": "email" }'
+run_flow "$case_dir/flow.json"
+begin "clearTextId: focus moved, the form scrolled, the id is shared - stopped before any key"
+status_is 1; reads_are 2; typed_is "old text"
+has out.txt "focus is in a different field than the one at 500,1550"
+lacks adb/log "keycombination"
+verdict
+
+# Both halves of "only one, before the tap and after it": a namesake that
+# appears after the tap, or one that was there before and is gone, keeps the
+# shape as the proof.
+dev_case clear-namesake-appears
+printf 'old text' > "$case_dir/adb/typed"
+screen "$case_dir/adb/dump-1.xml" "$(field email false 100,1500,900,1600)"
+screen "$case_dir/adb/dump-2.xml" "$(field email true 150,300,700,420)" "$(field email false 100,1700,900,1800 Other)"
+flow_file "$case_dir/flow.json" '{ "do": "clearTextId", "value": "email" }'
+run_flow "$case_dir/flow.json"
+begin "clearTextId: an id that a second field carries after the tap does not take the moved field"
+status_is 1; reads_are 2
+has out.txt "focus is in a different field than the one at 500,1550"
+verdict
+
+dev_case clear-namesake-gone
+printf 'old text' > "$case_dir/adb/typed"
+screen "$case_dir/adb/dump-1.xml" "$(field email false 100,1500,900,1600)" "$(field email false 100,1700,900,1800 Other)"
+screen "$case_dir/adb/dump-2.xml" "$(field email true 0,300,1080,420)"
+flow_file "$case_dir/flow.json" '{ "do": "clearTextId", "value": "email" }'
+run_flow "$case_dir/flow.json"
+begin "clearTextId: an id that a second field carried before the tap does not take the moved field"
+status_is 1; reads_are 2
+has out.txt "focus is in a different field than the one at 500,1550"
 verdict
 
 # iOS: the fake idb first in PATH, the simulator id where the engine keeps it.

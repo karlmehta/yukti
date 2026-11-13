@@ -1001,6 +1001,11 @@ akb_shown(){ apaths; local s
 afield(){ apaths; aui | "$PY" -c '
 import re,sys,html
 mode=sys.argv[1]
+# "atn" and "focusedn" are "at" and "focused" that also say, first, how many
+# nodes on the screen carry the resource-id of the field (0 for one without):
+# clearTextId takes a field by that id when it is the only one (#165).
+count=mode in ("atn","focusedn")
+if count: mode=mode[:-1]
 x0,y0=(int(sys.argv[2]),int(sys.argv[3])) if mode=="at" else (0,0)
 best=None; best_area=0; best_edit=False
 xml=sys.stdin.read()
@@ -1037,6 +1042,13 @@ if mode=="typed":
     t=html.unescape(best[5])
     sys.stdout.write("%s\x1f%d\x1f%s" % (best[6], len(t), t)); sys.exit(0)
 best=best[:6]
+if count:
+    # Both quote forms, as at() reads them. A field without an id has no
+    # namesakes to tell apart and no id to be taken by: 0.
+    # findall gives "" for the form that did not match, never None.
+    ids=[a or b for a,b in
+         re.findall(r"<node[^>]*?resource-id=(?:\"([^\"]*)\"|\x27([^\x27]*)\x27)", xml)]
+    sys.stdout.write("%d\x1f" % (ids.count(best[3]) if best[3] else 0))
 sys.stdout.write("%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s" % best)
 ' "$@"; }
 # Two rectangles "x1 y1 x2 y2" with the same left and right edges and the same
@@ -1044,6 +1056,19 @@ sys.stdout.write("%s\x1f%s\x1f%s\x1f%s\x1f%s\x1f%s" % best)
 same_column(){ local a1 b1 a2 b2 c1 d1 c2 d2
   read -r a1 b1 a2 b2 <<<"$1"; read -r c1 d1 c2 d2 <<<"$2"
   [ "$a1" = "$c1" ] && [ "$a2" = "$c2" ] && [ $((b2 - b1)) -eq $((d2 - d1)) ]; }
+# The focused field after the tap is the field the step was given (#165): the
+# same rectangle; or the same resource id and the same column, when <column> is
+# 1 - a keyboard moved the field straight up; or, for clearTextId, a non-empty
+# id that only this field carries on the screen, before the tap and after it.
+# Then the field may have moved anywhere and changed its width (a form that
+# scrolled when focus moved, a clear button that goes away with the text). An
+# id that several fields share (list rows, repeated rows of a form) settles
+# nothing by itself.
+# same_field <vb> <column> <res> <box> <n before> <res2> <box2> <n after>
+same_field(){ [ "$4" = "$7" ] && return 0
+  [ "$3" = "$6" ] || return 1
+  [ "$2" = 1 ] && same_column "$4" "$7" && return 0
+  case "$1" in clearTextId*) [ -n "$3" ] && [ "$5" = 1 ] && [ "$8" = 1 ];; *) return 1;; esac; }
 # Select all, then one delete. Forty blind deletes were a guess about how much
 # was in the field and about where the caret sat; two calls are neither. The
 # result is then read back, because the only fact that matters here is the state
@@ -1058,7 +1083,7 @@ aclear(){ apaths; local x="$1" y="$2" vb="${3:-clearText}" sdk before after prob
   # ever turns out to be wrong again. No quiet fallback to deleting character by
   # character: a clear that only looks like one is what this verb exists to end.
   [ "$sdk" -ge 31 ] || die "$vb needs Android 12 (API 31) or newer - 'input keycombination' does not exist on API $sdk"
-  local cls enb fcb res box out res2 box2 txt2 st pre="" prebox="" asked=""
+  local cls enb fcb res box out res2 box2 txt2 st pre="" prebox="" asked="" n1 n2
   # What the flow aimed at, read BEFORE the tap: a disabled or read-only field
   # takes no focus and no keys, and its text would sit there unchanged through
   # select-all, delete and the probe below - three readings agreeing on a lie.
@@ -1066,9 +1091,9 @@ aclear(){ apaths; local x="$1" y="$2" vb="${3:-clearText}" sdk before after prob
   # has already found the field in it: one tree for everything known before the
   # first touch (#106).
   [ -n "$HELD_TREE" ] || { HELD_TREE="$(aui)" || exit 1; }
-  st=0; out="$(afield at "$x" "$y")" || st=$?
+  st=0; out="$(afield atn "$x" "$y")" || st=$?
   [ "$st" -eq 0 ] || { HELD_TREE=""; lookup_die "$st" "$vb: no element at $x,$y"; }
-  IFS=$'\x1f' read -r cls enb fcb res box before <<<"$out"
+  IFS=$'\x1f' read -r n1 cls enb fcb res box before <<<"$out"
   st=0; pre="$(afield focused)" || st=$?
   HELD_TREE=""
   case "$st" in 0) IFS=$'\x1f' read -r _ _ _ _ prebox _ <<<"$pre";; 3) ;; *) lookup_die "$st";; esac
@@ -1084,25 +1109,29 @@ aclear(){ apaths; local x="$1" y="$2" vb="${3:-clearText}" sdk before after prob
   # field is asked for before any key, and a wrong one is left untouched.
   # Otherwise the read after the keys answers both questions at once (#106).
   if [ -n "$prebox" ] && [ "$prebox" != "$box" ]; then
-    out="$(afield focused)" || die "$vb: the tap at $x,$y did not put focus in a text field"
-    IFS=$'\x1f' read -r cls enb fcb res2 box2 txt2 <<<"$out"
+    out="$(afield focusedn)" || die "$vb: the tap at $x,$y did not put focus in a text field"
+    IFS=$'\x1f' read -r n2 cls enb fcb res2 box2 txt2 <<<"$out"
     # Two ids that differ settle it. Two that MATCH settle nothing: a resource id
     # is not unique - the rows of a list and the repeated rows of a form share
     # one. So the second question is asked every time: the same rectangle, or the
-    # same text it had before the tap. A field that is neither is another field.
+    # same text it had before the tap, or an id only this field carries (#165:
+    # the form scrolled when focus moved). The column proves nothing here: focus
+    # left in the field above sits in the same column. A field that is none of
+    # these is another field.
     if [ -n "$res" ] && [ -n "$res2" ] && [ "$res" != "$res2" ]; then
       die "$vb: focus is in a different field ($res2), not the one at $x,$y ($res)"
     fi
-    if [ "$box" != "$box2" ] && [ "$before" != "$txt2" ]; then
+    if [ "$box" != "$box2" ] && [ "$before" != "$txt2" ] \
+       && ! same_field "$vb" 0 "$res" "$box" "$n1" "$res2" "$box2" "$n2"; then
       die "$vb: focus is in a different field than the one at $x,$y"
     fi
     asked=1
   fi
   adb shell input keycombination 113 29 || die "$vb: the device refused select-all (Ctrl+A)"
   adb shell input keyevent 67 || die "$vb: the device refused the delete key"
-  st=0; out="$(afield focused)" || st=$?
+  st=0; out="$(afield focusedn)" || st=$?
   [ "$st" -eq 0 ] || lookup_die "$st" "$vb: the tap at $x,$y did not put focus in a text field"
-  IFS=$'\x1f' read -r cls enb fcb res2 box2 after <<<"$out"
+  IFS=$'\x1f' read -r n2 cls enb fcb res2 box2 after <<<"$out"
   # Nothing else held focus before the tap, so the focused field is the one the
   # tap reached - or the one a picker it opened brought up. The ids tell them
   # apart when both have one. The rectangle does it the rest of the time: the
@@ -1115,11 +1144,11 @@ aclear(){ apaths; local x="$1" y="$2" vb="${3:-clearText}" sdk before after prob
     fi
     # A node keeps its resource id when the keyboard moves it, so a rectangle that
     # changed has to bring the same id with it - an empty one included.
-    [ "$box" = "$box2" ] || { [ "$res" = "$res2" ] && same_column "$box" "$box2"; } \
+    same_field "$vb" 1 "$res" "$box" "$n1" "$res2" "$box2" "$n2" \
       || die "$vb: focus is in a different field than the one at $x,$y"
   fi
   if [ "$box" != "$box2" ]; then
-    warn "$vb: the field moved to $box2 when the keyboard opened"
+    warn "$vb: the field moved to $box2 after the tap (a keyboard, a scrolled form or a field that grew)"
   fi
   [ -n "$after" ] || { ok "$vb: field empty at $x,$y"; return 0; }
   # Any text left is unresolved, whatever it is and whether or not it changed:
