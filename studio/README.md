@@ -58,7 +58,8 @@ again** takes a new one). The right column shows the tree and the properties of
 the selected element: id, text, class, bounds. Point at the screen to see the
 box under the cursor; click to select it, or click a row of the tree. **Copy
 id** copies the id that `tapId`, `waitForId` and `assertVisibleId` take - the
-`resource-id` segment on Android, `AXUniqueId` on iOS. A text with no id of
+`resource-id` segment on Android (a step also takes the full `resource-id`
+when the value names the package), `AXUniqueId` on iOS. A text with no id of
 its own shows the id of the nearest element above it. While recording, Inspect
 is off and a click taps, as before. On iOS idb gives a flat list, so the tree
 has no levels.

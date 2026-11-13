@@ -173,8 +173,9 @@ count (#102):
 ```
 
 The element is the one `tapId` would tap: the first with that id, of real size,
-on the screen - the last segment of `resource-id` on Android, the accessibility
-identifier on iOS. When it is not there the step says `no element with id` in
+on the screen - the last segment of `resource-id` on Android, or the full
+`resource-id` when the value names the package (`com.app:id/greeting-text`), the
+accessibility identifier on iOS. When it is not there the step says `no element with id` in
 the words of `tapId`; when it is there without the text, `not in the element
 with id`. `assertText`, `assertNotText`, `waitFor`, `assertCount` and
 `assertCountId` take the key; `waitFor`

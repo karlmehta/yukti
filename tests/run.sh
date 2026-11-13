@@ -3317,6 +3317,28 @@ begin "in: waitFor times out naming the missing element"
 status_is 1; has out.txt "'Ada' not on screen after 1s - no element with id 'greeting'"
 verdict
 
+# "in" with a full resource-id (#177): two elements share the segment, the
+# app's first in the tree. The full id picks the system dialog's message, not
+# the first namesake, and the app's full id looks only inside the app's element.
+pnode(){ printf '<node index="0" text="%s" resource-id="%s:id/permission_message" class="android.widget.TextView" package="%s" content-desc="" checkable="false" checked="false" clickable="false" enabled="true" focusable="false" focused="false" scrollable="false" long-clickable="false" password="false" selected="false" bounds="[%s][%s]" />' \
+  "$2" "$1" "$1" "$(printf '%s' "$3" | cut -d, -f1-2)" "$(printf '%s' "$3" | cut -d, -f3-4)"; }
+IN_APPMSG="$(pnode com.example "Allow notifications?" 0,100,1080,300)"
+IN_SYSMSG="$(pnode com.android.permissioncontroller "Allow the app to access your calendar?" 0,1000,1080,1200)"
+dev_case in-full-resource-id
+screen "$case_dir/adb/dump-1.xml" "$IN_ROOT" "$IN_APPMSG" "$IN_SYSMSG"
+flow_file "$case_dir/flow.json" '{ "do": "assertText", "value": "calendar", "match": "contains", "in": "com.android.permissioncontroller:id/permission_message" }'
+run_flow "$case_dir/flow.json"
+begin "in: a full resource-id picks its own element when another app shares the segment"
+status_is 0; fake_used; has out.txt "on screen at 540 1100"
+verdict
+dev_case in-full-resource-id-other-package
+screen "$case_dir/adb/dump-1.xml" "$IN_ROOT" "$IN_APPMSG" "$IN_SYSMSG"
+flow_file "$case_dir/flow.json" '{ "do": "assertText", "value": "calendar", "match": "contains", "in": "com.example:id/permission_message" }'
+run_flow "$case_dir/flow.json"
+begin "in: the full resource-id of the app looks only inside the app's element"
+status_is 1; has out.txt "not in the element with id 'com.example:id/permission_message'"
+verdict
+
 # iOS: the same contract by frame and accessibility identifier.
 ilabel(){ printf '{"type":"StaticText","role_description":"text","AXUniqueId":"%s","AXLabel":"%s","frame":{"x":%s,"y":%s,"width":%s,"height":%s}}' "$1" "$2" $(printf '%s' "$3" | tr , ' '); }
 I_BOX="$(ilabel greeting "" 0,60,402,100)"

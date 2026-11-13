@@ -603,7 +603,8 @@ import sys,re,html
 # the "Forgot Password?" link. A node now must be relevant (query appears in its
 # text / content-desc / resource-id) AND scores highest to win; an editable /
 # clickable / focusable node outranks a plain caption.
-# mode="id": explicit selector. The resource-id segment must match EXACTLY and
+# mode="id": explicit selector. The resource-id segment (the full resource-id
+# when the query names the package, ":id/" in it, #177) must match EXACTLY and
 # nothing else is considered — a flow that asks for an id gets that element or fails.
 # Whitespace is normalised on both sides. unescape turns &#10; into a real line
 # break, and a two-line caption would otherwise be assertable only by writing the
@@ -653,7 +654,8 @@ if _m: SX1,SY1,SX2,SY2=map(int,_m.groups())
 # cannot be judged has to say so in a way the caller can read.
 if mode in ("assert","id") and not (SX2>SX1 and SY2>SY1): sys.exit(3)
 # "in" (#102): an assertion limited to one element. The element is the one tapId
-# would tap - the first node whose resource-id segment is the id, of real size,
+# would tap - the first node whose resource-id segment (or full resource-id, for
+# a value with ":id/", #177) is the id, of real size,
 # its centre on the screen - and the candidates are that node and the nodes that
 # lie within its bounds; every other text on the screen is ignored. No such
 # element is status 4: the screen was read and the element the check is about
@@ -6178,9 +6180,11 @@ ${_yk_B}yukti v$YUKTI_VERSION${_yk_R} — YUKTI — smart mobile-app QA automati
   yukti wait-for-not-id "<id>" [s]
                             poll until no element with this id is on the screen, fail on timeout (default 10s)
   yukti tap-id "<id>" [x%] [y%]
-                            tap the element with this a11y id / resource-id segment;
+                            tap the element with this a11y id / resource-id segment
+                            (or the full resource-id, pkg:id/name);
                             with shares, that point inside it (tap-id slider-track 50%)
   yukti clear-id "<id>"     empty the text field with this a11y id / resource-id segment
+                            (or the full resource-id, pkg:id/name)
   yukti assert-id "<id>"    assert an element with this id is on screen
   yukti assert-box "<q>" <assert|id> minWidth=48dp minHeight=48dp
                             assert the box of that element: minWidth, minHeight,
