@@ -287,6 +287,28 @@ status_is 0; fake_used; file_full res/flow.xml
 file_absent res/flow-fail.png; file_absent res/flow-fail.xml
 verdict
 
+# An id step takes the full resource-id when the value names the package
+# (#177): a system dialog's button is found by com.android...:id/<name>, the
+# last segment still works, and a full id of another package matches nothing.
+SYSBTN='<node index="0" text="Don&apos;t allow" resource-id="com.android.permissioncontroller:id/permission_deny_button" class="android.widget.Button" package="com.android.permissioncontroller" content-desc="" checkable="false" checked="false" clickable="true" enabled="true" focusable="true" focused="false" scrollable="false" long-clickable="false" password="false" selected="false" bounds="[100,1500][980,1600]" />'
+for form in full segment; do
+  dev_case "id-$form-resource-id"
+  screen "$case_dir/adb/dump-1.xml" "$SYSBTN"
+  if [ "$form" = full ]; then v="com.android.permissioncontroller:id/permission_deny_button"; else v="permission_deny_button"; fi
+  flow_file "$case_dir/flow.json" "{ \"do\": \"waitForId\", \"value\": \"$v\", \"timeout\": 1 }"
+  run_flow "$case_dir/flow.json"
+  begin "id step: the $form resource-id of a system dialog's button is found"
+  status_is 0; fake_used
+  verdict
+done
+dev_case id-full-resource-id-other-package
+screen "$case_dir/adb/dump-1.xml" "$SYSBTN"
+flow_file "$case_dir/flow.json" '{ "do": "waitForId", "value": "com.example:id/permission_deny_button", "timeout": 1 }'
+run_flow "$case_dir/flow.json"
+begin "id step: a full resource-id of another package does not match the segment"
+status_is 1; fake_used
+verdict
+
 # A step of a block four levels down is named with its block in the result.
 dev_case capture-deep-block
 screen "$case_dir/adb/dump-1.xml" "$(node TextView title Today)"
@@ -3293,6 +3315,28 @@ flow_file "$case_dir/flow.json" '{ "do": "waitFor", "value": "Ada", "match": "co
 run_flow "$case_dir/flow.json"
 begin "in: waitFor times out naming the missing element"
 status_is 1; has out.txt "'Ada' not on screen after 1s - no element with id 'greeting'"
+verdict
+
+# "in" with a full resource-id (#177): two elements share the segment, the
+# app's first in the tree. The full id picks the system dialog's message, not
+# the first namesake, and the app's full id looks only inside the app's element.
+pnode(){ printf '<node index="0" text="%s" resource-id="%s:id/permission_message" class="android.widget.TextView" package="%s" content-desc="" checkable="false" checked="false" clickable="false" enabled="true" focusable="false" focused="false" scrollable="false" long-clickable="false" password="false" selected="false" bounds="[%s][%s]" />' \
+  "$2" "$1" "$1" "$(printf '%s' "$3" | cut -d, -f1-2)" "$(printf '%s' "$3" | cut -d, -f3-4)"; }
+IN_APPMSG="$(pnode com.example "Allow notifications?" 0,100,1080,300)"
+IN_SYSMSG="$(pnode com.android.permissioncontroller "Allow the app to access your calendar?" 0,1000,1080,1200)"
+dev_case in-full-resource-id
+screen "$case_dir/adb/dump-1.xml" "$IN_ROOT" "$IN_APPMSG" "$IN_SYSMSG"
+flow_file "$case_dir/flow.json" '{ "do": "assertText", "value": "calendar", "match": "contains", "in": "com.android.permissioncontroller:id/permission_message" }'
+run_flow "$case_dir/flow.json"
+begin "in: a full resource-id picks its own element when another app shares the segment"
+status_is 0; fake_used; has out.txt "on screen at 540 1100"
+verdict
+dev_case in-full-resource-id-other-package
+screen "$case_dir/adb/dump-1.xml" "$IN_ROOT" "$IN_APPMSG" "$IN_SYSMSG"
+flow_file "$case_dir/flow.json" '{ "do": "assertText", "value": "calendar", "match": "contains", "in": "com.example:id/permission_message" }'
+run_flow "$case_dir/flow.json"
+begin "in: the full resource-id of the app looks only inside the app's element"
+status_is 1; has out.txt "not in the element with id 'com.example:id/permission_message'"
 verdict
 
 # iOS: the same contract by frame and accessibility identifier.
