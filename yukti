@@ -2095,7 +2095,7 @@ tap_text(){ local xy st=0 grow="${2:-$SCROLL_GROW_WAIT}" in="${3:-}" idx="${4:-}
     [ -n "$xy" ] || die "no element matching '$1' on the screen"
     tap_checked "$1" text $xy "" "$idx"; return; fi
   xy="$(scroll_to "$1" down "" tapText "$grow")" || st=$?
-  case "$st" in 0) ;; 5) die "no element matching '$1'";; 6|7|8) die "no element matching '$1' - $(scroll_miss "$st" "$1" down "$grow")";; *) lookup_die "$st";; esac
+  case "$st" in 0) ;; 5) die "no element matching '$1'";; 6|7|8) die "no element matching '$1' - $(scroll_miss "$st" "'$1'" down "$grow")";; *) lookup_die "$st";; esac
   [ -n "$xy" ] || die "no element matching '$1'"; tap_checked "$1" text $xy; }  # auto-scrolls off-screen elements into view
 # The exception these two verbs enjoy is about an ABSENT label, and nothing else.
 # A device that refuses the tap is not an absent label: the status of `tap` is
@@ -3992,8 +3992,8 @@ scroll_to(){ local t0 st=0; t0="$(now)"; SCROLL_N=0; SWIPED_BY=adb; SWIPE_FAR=""
   scroll_search "$@" || st=$?
   printf '  · search %s swipes %d ms\n' "$SCROLL_N" $(( ($(us_of "$(now)") - $(us_of "$t0")) / 1000 )) >&2
   return "$st"; }
-scroll_search(){ local lbl="$1" dir="${2:-down}" clear="${3:-}" verb="${4:-scrollToText}" grow="${5:-$SCROLL_GROW_WAIT}" xy c lo hi blo bhi m w h seen="" nudge st probe prev="" ctl=0 ended="" flat="" kb="" end0="" far t1 tn waited=0 tw="" budget exp="" lost="" backed="" nofar="" bdir dmode="" dprev="" dlen=0 dlast="" k100=100 full r e aim want dprobe dkeep dt dk above=""
-  case "$dir" in up|down|left|right) ;; *) die "scrollToText: '$dir' is not a direction - use up, down, left or right";; esac
+scroll_search(){ local lbl="$1" dir="${2:-down}" clear="${3:-}" verb="${4:-scrollToText}" grow="${5:-$SCROLL_GROW_WAIT}" mode="${6:-text}" xy c lo hi blo bhi m w h seen="" nudge st probe prev="" ctl=0 ended="" flat="" kb="" end0="" far t1 tn waited=0 tw="" budget exp="" lost="" backed="" nofar="" bdir dmode="" dprev="" dlen=0 dlast="" k100=100 full r e aim want dprobe dkeep dt dk above=""
+  case "$dir" in up|down|left|right) ;; *) die "$verb: '$dir' is not a direction - use up, down, left or right";; esac
   case "$dir" in down) bdir=up;; up) bdir=down;; left) bdir=right;; right) bdir=left;; esac
   set -- $(screen_wh); w="${1:-$BASIS_W}"; h="${2:-$BASIS_H}"
   case "$dir" in
@@ -4014,7 +4014,7 @@ scroll_search(){ local lbl="$1" dir="${2:-down}" clear="${3:-}" verb="${4:-scrol
     # would cost a second dump, and could disagree about a screen that did not
     # change in between. Emptied before the swipe, as in dismiss.
     HELD_TREE=""; HELD_TREE="$(ui)" || exit 1
-    st=0; xy="$(find_el "$lbl")" || st=$?; [ "$st" -eq 0 ] || { HELD_TREE=""; lookup_die "$st"; }
+    st=0; xy="$(find_el "$lbl" "$mode")" || st=$?; [ "$st" -eq 0 ] || { HELD_TREE=""; lookup_die "$st"; }
     nudge="$dir"; [ -z "$lost$above" ] || nudge="$bdir"
     if [ -n "$xy" ]; then
       # Found on the way back: the way back is over, and where to swipe now is
@@ -4110,7 +4110,7 @@ scroll_search(){ local lbl="$1" dir="${2:-down}" clear="${3:-}" verb="${4:-scrol
         r=""; e=""; dt=""; dk=""
         if full="$(helper_full_tree)"; then
           dkeep="$HELD_TREE"; HELD_TREE="$full"
-          r="$(afind "$lbl" text exact full "${18} ${19} ${16} ${17}")" || r=""
+          r="$(afind "$lbl" "$mode" exact full "${18} ${19} ${16} ${17}")" || r=""
           [ -n "$r" ] || [ "$dmode" = t ] || e="$(afind - text exact fullend "${18} ${19} ${16} ${17}")" || e=""
           HELD_TREE="$dkeep"
           case "$r" in below\ *) dt="${r#below }"; dk=t;; esac
@@ -4206,7 +4206,7 @@ scroll_search(){ local lbl="$1" dir="${2:-down}" clear="${3:-}" verb="${4:-scrol
   # here as it is inside the loop, because the last swipe of the loop can be the
   # one that placed it: without this test such an element would be reported as
   # "never landed clear" while sitting exactly where it was asked to be.
-  st=0; xy="$(find_el "$lbl")" || st=$?; [ "$st" -eq 0 ] || lookup_die "$st"
+  st=0; xy="$(find_el "$lbl" "$mode")" || st=$?; [ "$st" -eq 0 ] || lookup_die "$st"
   if [ -n "$xy" ]; then
     printf '%s' "$xy"
     case "$dir" in up|down) c="${xy##* }";; *) c="${xy%% *}";; esac
@@ -4302,9 +4302,9 @@ swipe_pts(){ local t0 rc=0 why=""; t0="$(now)"; SWIPED_BY=adb
   else SCROLL_N=$(( ${SCROLL_N:-0} + 1 )); paths; iswipe "$1" "$2" "$3" "$4"; swipe_note idb "$t0"; fi; }
 # The words for a miss that never saw the element, for the two verbs that search.
 scroll_miss(){ case "$1" in
-    6) printf "reached the end of the list going %s and it did not grow for %ss, '%s' is not in it" "$3" "${4:-$SCROLL_GROW_WAIT}" "$2";;
-    7) printf "still moving after %ss of swiping %s, '%s' not found" "$(scroll_budget)" "$3" "$2";;
-    8) printf "no scrollable list on screen - searched %s swipes %s, '%s' not found" "$SCROLL_TRIES_BLIND" "$3" "$2";;
+    6) printf "reached the end of the list going %s and it did not grow for %ss, %s is not in it" "$3" "${4:-$SCROLL_GROW_WAIT}" "$2";;
+    7) printf "still moving after %ss of swiping %s, %s not found" "$(scroll_budget)" "$3" "$2";;
+    8) printf "no scrollable list on screen - searched %s swipes %s, %s not found" "$SCROLL_TRIES_BLIND" "$3" "$2";;
   esac; }
 # scroll_to is a locator and stays one: it is also the first half of tapText,
 # which has its own words for a miss. As a STEP, though, scrollToText is a
@@ -4313,26 +4313,29 @@ scroll_miss(){ case "$1" in
 # last lookup came back empty, and the step passed. The runbook recommends this
 # step in front of an assertion, so the documented way to reach something below
 # the fold was also the way to miss it in silence.
-scroll_to_step(){ local lbl="${1:-}" dir="${2:-down}" clear="${3:-}" grow="${4:-$SCROLL_GROW_WAIT}" xy st=0
-  [ -n "$lbl" ] || die "scrollToText needs a non-empty value"
-  case "$dir" in up|down|left|right) ;; *) die "scrollToText: '$dir' is not a direction - use up, down, left or right";; esac
-  case "$clear" in ''|clear) ;; *) die "scrollToText: '$clear' is not a value for \"edges\" - the only one is clear";; esac
+scroll_to_step(){ local lbl="${1:-}" dir="${2:-down}" clear="${3:-}" grow="${4:-$SCROLL_GROW_WAIT}" mode="${5:-text}" xy st=0 verb what
+  # scrollToId (#181) is the same search with the element matched by its id: a
+  # target below the fold is reached by its testID, not by its copy.
+  verb=scrollToText; what="'$lbl'"; [ "$mode" = id ] && { verb=scrollToId; what="id '$lbl'"; }
+  [ -n "$lbl" ] || die "$verb needs a non-empty value"
+  case "$dir" in up|down|left|right) ;; *) die "$verb: '$dir' is not a direction - use up, down, left or right";; esac
+  case "$clear" in ''|clear) ;; *) die "$verb: '$clear' is not a value for \"edges\" - the only one is clear";; esac
   # The same knob as waitFor: how long to wait, here at the end of the list.
-  case "$grow" in ''|*[!0-9]*|0) die "scrollToText: timeout must be a whole number of seconds greater than zero, got '$grow'";; esac
-  xy="$(scroll_to "$lbl" "$dir" "$clear" scrollToText "$grow")" || st=$?
+  case "$grow" in ''|*[!0-9]*|0) die "$verb: timeout must be a whole number of seconds greater than zero, got '$grow'";; esac
+  xy="$(scroll_to "$lbl" "$dir" "$clear" "$verb" "$grow" "$mode")" || st=$?
   # Neither 4, 5 nor 9 says the direction: once the element is on the screen the
   # swipes follow its position, not the direction the search came from.
   case "$st" in
     0) ;;
-    4) die "scrollToText: '$lbl' came into view but never landed clear of the band edges in $(scroll_budget)s of swiping - it is at $xy";;
-    5) die "scrollToText: '$lbl' came into view at $xy and the swipes took it out of view again - it is not on the screen now";;
-    6|7|8) die "scrollToText: $(scroll_miss "$st" "$lbl" "$dir" "$grow")";;
-    9) die "scrollToText: '$lbl' is at the end of the list and cannot be moved clear of the band edge - it is at $xy; content may be hidden under a fixed bar";;
+    4) die "$verb: $what came into view but never landed clear of the band edges in $(scroll_budget)s of swiping - it is at $xy";;
+    5) die "$verb: $what came into view at $xy and the swipes took it out of view again - it is not on the screen now";;
+    6|7|8) die "$verb: $(scroll_miss "$st" "$what" "$dir" "$grow")";;
+    9) die "$verb: $what is at the end of the list and cannot be moved clear of the band edge - it is at $xy; content may be hidden under a fixed bar";;
     *) lookup_die "$st";;
   esac
   # Not reached today - every miss above has its own status - and kept so that a
   # new path through scroll_to cannot pass this step with nothing to show.
-  [ -n "$xy" ] || die "scrollToText: '$lbl' not on screen"
+  [ -n "$xy" ] || die "$verb: $what not on screen"
   printf '%s\n' "$xy"; }
 
 # ── per-flow results ─────────────────────────────────────────────────────────
@@ -5095,7 +5098,7 @@ fixture_step(){ local out st=0
 # step keys: include[with]|launch|stopApp|clearState|background|foreground|relaunch|wait|waitFor[timeout,match]|waitForId[timeout]|
 #            waitForNotText[timeout,match]|waitForNotId[timeout]|screenshot|
 #            openUrl|setPermission[state]|tap[x,y]|tapText[timeout]|optionalTapText|tapId[at]|type|clearText[x,y]|clearTextId|pressKey|hideKeyboard|
-#            scroll|swipe[x,y,toX,toY]|scrollToText[direction,edges,timeout]|dismiss|assertText[match]|assertId|assertNotText[match]|assertNotId|
+#            scroll|swipe[x,y,toX,toY]|scrollToText[direction,edges,timeout]|scrollToId[direction,edges,timeout]|dismiss|assertText[match]|assertId|assertNotText[match]|assertNotId|
 #            assertBox[box]|assertBoxId[box]|turnWheel[wheel]|swipeId[direction]|swipeText[direction]
 #            any step, and an include, may carry "when": {visible|notVisible|
 #            visibleId|notVisibleId|zeroSizeId|platform} - all of them have to hold;
@@ -5191,7 +5194,7 @@ cond_words(){ local spec="$1" pair kind val out=""
     esac
   done
   printf '%s' "$out"; }
-FLOW_VERBS="launch stopApp clearState background foreground relaunch openUrl setPermission fixture wait waitFor waitForId waitForNotText waitForNotId screenshot tap tapText optionalTapText tapId type clearText clearTextId pressKey hideKeyboard scroll swipe scrollToText dismiss assertText assertId assertNotText assertNotId assertBox assertBoxId assertCount assertCountId turnWheel swipeId swipeText"
+FLOW_VERBS="launch stopApp clearState background foreground relaunch openUrl setPermission fixture wait waitFor waitForId waitForNotText waitForNotId screenshot tap tapText optionalTapText tapId type clearText clearTextId pressKey hideKeyboard scroll swipe scrollToText scrollToId dismiss assertText assertId assertNotText assertNotId assertBox assertBoxId assertCount assertCountId turnWheel swipeId swipeText"
 # The steps a condition switched off. They keep their numbers - the numbering is
 # end to end, and a skipped step that gave its number away would move every step
 # after it - they say so on the console, and they land in the report as `skipped`
@@ -6007,13 +6010,13 @@ PY
       # Same rule for the two keys scrollToText reads: a key a step ignores is a
       # line of the flow file that does not do what it says. `scroll` carries its
       # direction in "value", the way it always has.
-      [ -z "$dir" ] || case "$do_" in scrollToText|swipeId|swipeText) ;; *) die "step $FLOW_IDX '$do_' does not take a \"direction\" - only scrollToText, swipeId and swipeText do; scroll takes its direction as its \"value\"";; esac
+      [ -z "$dir" ] || case "$do_" in scrollToText|scrollToId|swipeId|swipeText) ;; *) die "step $FLOW_IDX '$do_' does not take a \"direction\" - only scrollToText, scrollToId, swipeId and swipeText do; scroll takes its direction as its \"value\"";; esac
       # A swipe on an element has no direction of its own to fall back on: left
       # shows a row's actions, right often does something else entirely.
       case "$do_" in swipeId|swipeText)
         case "$dir" in up|down|left|right) ;; "") die "step $FLOW_IDX '$do_' needs a \"direction\" - up, down, left or right, where the finger goes";;
           *) die "step $FLOW_IDX '$do_': '$dir' is not a direction - use up, down, left or right";; esac;; esac
-      [ -z "$edg" ] || case "$do_" in scrollToText) ;; *) die "step $FLOW_IDX '$do_' does not take an \"edges\" - only scrollToText does";; esac
+      [ -z "$edg" ] || case "$do_" in scrollToText|scrollToId) ;; *) die "step $FLOW_IDX '$do_' does not take an \"edges\" - only scrollToText and scrollToId do";; esac
       # tapText with "in" reads the screen once and does not scroll, so the wait
       # at the end of a list that "timeout" sets is not there to set (#146).
       [ "$do_" != tapText ] || [ -z "$inid" ] || [ -z "$tmo" ] || die "step $FLOW_IDX 'tapText' takes \"in\" or \"timeout\", not both - with \"in\" it does not scroll, and the timeout is the wait at the end of a scroll"
@@ -6061,6 +6064,7 @@ PY
         scroll)      scroll_step "${val:-down}";;
         swipe)       swipe_step "$x" "$y" "${to% *}" "${to#* }";;
         scrollToText) scroll_to_step "$val" "${dir:-down}" "$edg" "$tmo" >/dev/null;;
+        scrollToId)   scroll_to_step "$val" "${dir:-down}" "$edg" "$tmo" id >/dev/null;;
         dismiss)     dismiss;;
         clearText)   clear_field $(flow_xy "$x" "$y");;
         clearTextId) say "clear id '$val'${idx:+ index $idx}"; clear_id "$val" "$idx";;
@@ -6237,7 +6241,7 @@ ${_yk_B}yukti v$YUKTI_VERSION${_yk_R} — YUKTI — smart mobile-app QA automati
   yukti assert-not-id "<id>"
                             assert no element with this id is on the current screen
 
-  flow steps: wait · waitFor · waitForId · waitForNotText · waitForNotId · screenshot · tap · tapText · optionalTapText · tapId · scroll · swipe · scrollToText · dismiss · type · clearText · clearTextId · pressKey · hideKeyboard · assertText · assertId · assertNotText · assertNotId · assertBox · assertBoxId · assertCount · assertCountId · turnWheel · swipeId · swipeText · launch · stopApp · clearState · background · foreground · relaunch · openUrl · setPermission · fixture · include
+  flow steps: wait · waitFor · waitForId · waitForNotText · waitForNotId · screenshot · tap · tapText · optionalTapText · tapId · scroll · swipe · scrollToText · scrollToId · dismiss · type · clearText · clearTextId · pressKey · hideKeyboard · assertText · assertId · assertNotText · assertNotId · assertBox · assertBoxId · assertCount · assertCountId · turnWheel · swipeId · swipeText · launch · stopApp · clearState · background · foreground · relaunch · openUrl · setPermission · fixture · include
               (clearText · clearTextId · pressKey · hideKeyboard · assertBox · assertBoxId: measured on Android, iOS not yet run;
                hideKeyboard's Back-first order on Android not yet run either;
               swipe and a share of the screen: not yet run on either platform)
@@ -6284,6 +6288,7 @@ ${_yk_B}yukti v$YUKTI_VERSION${_yk_R} — YUKTI — smart mobile-app QA automati
               scroll takes up, down, left or right as its "value"; scrollToText takes the same four as "direction"
               (default down) and "edges":"clear" to land the element away from the band edges, failing if it cannot;
               at the end of the list it waits for the list to grow ("timeout": seconds, default 5) before it fails
+              scrollToId is the same search with the element found by its id instead of its label (#181)
               swipeId / swipeText swipe across one element to show what it hides (a row's delete): "direction"
               is where the finger goes - left reveals actions on the right, the other way round from scroll;
               the stroke is 60% of the element on the screen (YUKTI_SWIPE_SHARE, 1-90), centred on it; neither scrolls;
@@ -6354,7 +6359,7 @@ case "$cmd" in
   flow) case " $* " in *" --check "*) ;; *) resolve_platform;; esac;;
   install) resolve_platform "$(install_variant "$@")";;
   build|pull|launch|up|"stop-app"|stopApp|"clear-state"|clearState) resolve_platform "${1:-}";;
-  boot|shot|ui|find|tap|"tap-text"|tapText|scroll|swipe|"scroll-to"|scrollToText|dismiss|type|clear|assert|"open-url"|openUrl|\
+  boot|shot|ui|find|tap|"tap-text"|tapText|scroll|swipe|"scroll-to"|scrollToText|"scroll-to-id"|scrollToId|dismiss|type|clear|assert|"open-url"|openUrl|\
   "tap-id"|tapId|"clear-id"|clearTextId|"assert-id"|assertId|"assert-box"|assertBox|"assert-count"|assertCount|"swipe-id"|swipeId|"swipe-text"|swipeText|"assert-not"|assertNotText|"assert-not-id"|assertNotId|"wait-for"|waitFor|\
   "wait-for-not"|waitForNotText|"wait-for-not-id"|waitForNotId)
     resolve_platform;;
@@ -6389,6 +6394,7 @@ case "$cmd" in
   scroll) scroll_step "$@";;
   swipe) swipe_args "$@";;
   "scroll-to"|scrollToText) scroll_to_step "$@";;
+  "scroll-to-id"|scrollToId) scroll_to_step "${1:-}" "${2:-down}" "${3:-}" "${4:-$SCROLL_GROW_WAIT}" id;;
   dismiss) dismiss;;
   type) type_str "$@";;
   clear) clear_args "$@";;
