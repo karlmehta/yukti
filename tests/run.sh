@@ -2554,6 +2554,19 @@ begin "scrollToId: an id below the fold is swiped to by its distance, as a label
 status_is 0; gestures_are 1; gesture_line 1 540 1900 540 650; full_reads_are 1
 verdict; helper_done
 
+# A row below the fold whose LABEL is the value is not the id: the distance goes
+# to the lowest row, a screen-long swipe, not to that label.
+helper_case scroll-id-dist-not-label
+: > "$case_dir/adb/running"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hlist @1)"
+helper_screen "$case_dir/adb/helper-full-1.xml" "$(hfull "$(hlist @1)" 'target:2450' 'R 15:3050')"
+helper_screen "$case_dir/adb/helper-2.xml" "$(idify "$(hlist @9 Target 1100)")"
+flow_file "$case_dir/flow.json" '{ "do": "scrollToId", "value": "target" }'
+run_helper flow "$case_dir/flow.json"
+begin "scrollToId: a label below the fold that is the value is not swiped to by its distance"
+status_is 0; gestures_are 1; gesture_line 1 540 1900 540 300
+verdict; helper_done
+
 # The label is the id's word, and no element has the id: the label must not do.
 helper_case scroll-id-not-label
 : > "$case_dir/adb/running"
@@ -2567,8 +2580,10 @@ begin "scrollToId: a row whose label is the value is not the element - the usual
 status_is 1; has out.txt "scrollToId: reached the end of the list going down and it did not grow for 1s, id 'target' is not in it"
 verdict; helper_done
 
+# The one row on the screen carries the value as its label, under another id:
+# the last lookup after the swipes must not take it.
 dev_case scroll-id-blind
-screen "$case_dir/adb/dump-1.xml" "$(node TextView title Today)"
+screen "$case_dir/adb/dump-1.xml" "$(node TextView title target)"
 flow_file "$case_dir/flow.json" '{ "do": "scrollToId", "value": "target" }'
 run_flow "$case_dir/flow.json"
 begin "scrollToId: a screen with no list gets the eight swipes, and the miss names the id"
