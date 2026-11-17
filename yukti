@@ -2595,7 +2595,7 @@ assert_text(){ local q="${1:-}" m="${2:-exact}" in="${3:-}" idx="${4:-}" xy st=0
 # land on a neighbouring caption; these two take an accessibility id / resource-id
 # segment and match it exactly, or fail. An empty id is a failure, never a match:
 # a flow step with a missing or misspelled `value` must stop the run, not tap a
-# random point. Neither scrolls — use scrollToText first for a target below the fold.
+# random point. Neither scrolls — use scrollToId (or scrollToText) first for a target below the fold.
 # A miss by id says which of two different screens it saw (#64): nothing in the
 # tree carries the id - a wrong id, or not the screen expected - or the id is
 # there on a node that was dropped for having no area or lying off the screen,
@@ -3360,7 +3360,7 @@ scroll(){ local d="${1:-down}" w h
 # the list must not move.
 #
 # The element is found the way tapId and tapText find it, and a miss reads in
-# their words. Neither scrolls - scrollToText first for a row below the fold.
+# their words. Neither scrolls - scrollToId or scrollToText first for a row below the fold.
 # The direction is where the finger goes: "left" draws it from right to left
 # across the row, which is the swipe that shows a delete button on its right.
 # That is the other way round from `scroll`, whose direction names what comes
@@ -6194,6 +6194,7 @@ ${_yk_B}yukti v$YUKTI_VERSION${_yk_R} — YUKTI — smart mobile-app QA automati
                             swipe from one point to the other, pixels or a share of the screen
   yukti scroll <up|down|left|right>
                             scroll the screen · yukti scroll-to "<label>" [dir] [clear] [timeout] scroll a label into view, fail on a miss
+                            yukti scroll-to-id "<id>" [dir] [clear] [timeout] the same, the element found by its id
   yukti dismiss             auto-dismiss common modals (Not Now / Skip / OK / Close…)
   yukti assert "<text>" [exact|contains] [<id>]
                             assert the text is on screen (perceivable text only, no scroll);
@@ -6393,7 +6394,7 @@ case "$cmd" in
   "tap-text"|tapText) tap_text "${@:1:2}";;
   scroll) scroll_step "$@";;
   swipe) swipe_args "$@";;
-  "scroll-to"|scrollToText) scroll_to_step "$@";;
+  "scroll-to"|scrollToText) scroll_to_step "${1:-}" "${2:-down}" "${3:-}" "${4:-$SCROLL_GROW_WAIT}";;
   "scroll-to-id"|scrollToId) scroll_to_step "${1:-}" "${2:-down}" "${3:-}" "${4:-$SCROLL_GROW_WAIT}" id;;
   dismiss) dismiss;;
   type) type_str "$@";;

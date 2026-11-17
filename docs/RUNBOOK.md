@@ -651,6 +651,13 @@ the step then does not depend on the copy, which a renamed label, another
 locale or the same words elsewhere on the screen would break. Like
 `scrollToText` it takes no `"index"` and no `"in"`.
 
+One difference on iOS. idb lists elements outside the window too, and the
+search by label keeps them: a label above the screen is found there, and
+`scrollToText` swipes towards it whatever its `"direction"`. The search by id
+keeps only what is on the screen, as every search does on Android: a target
+above the screen needs `"direction":"up"`. Written and checked against the fake
+idb and the fake adb only; not yet run on a device or a simulator.
+
 On Android an up or down swipe goes down the middle of the screen, from 70% of
 its height to 30% of it (the other way for `up`). It used to be a fixed 400 pixels
 near the top, a sixth of a 1080x2400 screen, and eight of those did not reach the
