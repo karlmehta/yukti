@@ -2526,6 +2526,82 @@ status_is 0; count_is idb/log "ui swipe" 1; has out.txt "· swipe idb"; lacks ou
 count_is idb/log "--duration " 1
 verdict
 
+# ── scrollToId: the same search, the element found by its id (#181) ─────────
+# idify <xml> - the row labelled "Target" becomes a row with the id "target" and
+# another label, so only a lookup by id can find it.
+idify(){ printf '%s' "$1" | sed 's/text="Target" resource-id=""/text="Weigh in" resource-id="com.example:id\/target"/g'; }
+
+helper_case scroll-id-far
+: > "$case_dir/adb/running"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hlist @1)"
+helper_screen "$case_dir/adb/helper-2.xml" "$(hlist @9)"
+helper_screen "$case_dir/adb/helper-3.xml" "$(idify "$(hlist @17 Target 1100)")"
+flow_file "$case_dir/flow.json" '{ "do": "scrollToId", "value": "target" }'
+run_helper flow "$case_dir/flow.json"
+begin "scrollToId: swipes a screen at a time, as scrollToText, until the id is in the band"
+status_is 0; gestures_are 2; gesture_line 1 540 1900 540 300; gesture_line 2 540 1900 540 300
+has out.txt "· search 2 swipes"
+verdict; helper_done
+
+helper_case scroll-id-dist
+: > "$case_dir/adb/running"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hlist @1)"
+helper_screen "$case_dir/adb/helper-full-1.xml" "$(idify "$(hfull "$(hlist @1)" Target:2450)")"
+helper_screen "$case_dir/adb/helper-2.xml" "$(idify "$(hlist @7 Target 1300)")"
+flow_file "$case_dir/flow.json" '{ "do": "scrollToId", "value": "target" }'
+run_helper flow "$case_dir/flow.json"
+begin "scrollToId: an id below the fold is swiped to by its distance, as a label is"
+status_is 0; gestures_are 1; gesture_line 1 540 1900 540 650; full_reads_are 1
+verdict; helper_done
+
+# A row below the fold whose LABEL is the value is not the id: the distance goes
+# to the lowest row, a screen-long swipe, not to that label.
+helper_case scroll-id-dist-not-label
+: > "$case_dir/adb/running"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hlist @1)"
+helper_screen "$case_dir/adb/helper-full-1.xml" "$(hfull "$(hlist @1)" 'target:2450' 'R 15:3050')"
+helper_screen "$case_dir/adb/helper-2.xml" "$(idify "$(hlist @9 Target 1100)")"
+flow_file "$case_dir/flow.json" '{ "do": "scrollToId", "value": "target" }'
+run_helper flow "$case_dir/flow.json"
+begin "scrollToId: a label below the fold that is the value is not swiped to by its distance"
+status_is 0; gestures_are 1; gesture_line 1 540 1900 540 300
+verdict; helper_done
+
+# The label is the id's word, and no element has the id: the label must not do.
+helper_case scroll-id-not-label
+: > "$case_dir/adb/running"
+helper_screen "$case_dir/adb/helper-1.xml" "$(hlist @1)"
+helper_screen "$case_dir/adb/helper-full-1.xml" "$(hfull "$(hlist @1)" 'R 11:2250' 'R 15:3050')"
+helper_screen "$case_dir/adb/helper-2.xml" "$(hlist @9 target 1100)"
+helper_screen "$case_dir/adb/helper-full-2.xml" "$(hlist @9 target 1100)"
+flow_file "$case_dir/flow.json" '{ "do": "scrollToId", "value": "target", "timeout": 1 }'
+run_helper flow "$case_dir/flow.json"
+begin "scrollToId: a row whose label is the value is not the element - the usual miss at the end"
+status_is 1; has out.txt "scrollToId: reached the end of the list going down and it did not grow for 1s, id 'target' is not in it"
+verdict; helper_done
+
+# The one row on the screen carries the value as its label, under another id:
+# the last lookup after the swipes must not take it.
+dev_case scroll-id-blind
+screen "$case_dir/adb/dump-1.xml" "$(node TextView title target)"
+flow_file "$case_dir/flow.json" '{ "do": "scrollToId", "value": "target" }'
+run_flow "$case_dir/flow.json"
+begin "scrollToId: a screen with no list gets the eight swipes, and the miss names the id"
+status_is 1; has out.txt "scrollToId: no scrollable list on screen - searched 8 swipes down, id 'target' not found"
+verdict
+
+ios_case scroll-id-ios
+tree "$case_dir/idb/desc-1.json" '{"type":"ScrollView","role_description":"scroll view","AXLabel":"","frame":{"x":0,"y":100,"width":402,"height":700}}' \
+  '{"type":"StaticText","role_description":"text","AXLabel":"Row 1","frame":{"x":20,"y":200,"width":300,"height":40}}' \
+  '{"type":"StaticText","role_description":"text","AXLabel":"target","frame":{"x":20,"y":600,"width":300,"height":40}}'
+tree "$case_dir/idb/desc-2.json" '{"type":"ScrollView","role_description":"scroll view","AXLabel":"","frame":{"x":0,"y":100,"width":402,"height":700}}' \
+  '{"type":"StaticText","role_description":"text","AXUniqueId":"target","AXLabel":"Weigh in","frame":{"x":20,"y":400,"width":300,"height":40}}'
+flow_file "$case_dir/flow.json" '{ "do": "scrollToId", "value": "target" }'
+run_ios "$case_dir/flow.json"
+begin "scrollToId on iOS: the AXUniqueId is the id, a label with the same word is not"
+status_is 0; count_is idb/log "ui swipe" 1
+verdict
+
 # iOS swipes move the finger at IOS_SWIPE_PT_S points a second (default 150):
 # left to idb they often did not scroll, faster ones fling (see the engine). The
 # fake idb has no screen size, so the 402x874 basis is used: a scroll down goes
@@ -4403,7 +4479,7 @@ expect "check: swipeText with a direction that is not one is refused" 1 \
 new_case swipe-direction-elsewhere
 flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "row-1", "direction": "left" }'
 expect "check: direction on a step that does not take it names the three that do" 1 \
-  "does not take a \"direction\" - only scrollToText, swipeId and swipeText do" check "$case_dir/flow.json"
+  "does not take a \"direction\" - only scrollToText, scrollToId, swipeId and swipeText do" check "$case_dir/flow.json"
 
 new_case swipe-check-ok
 flow_file "$case_dir/flow.json" '{ "do": "swipeId", "value": "row-1", "direction": "left" }' '{ "do": "swipeText", "value": "${ROW}", "direction": "up" }'
@@ -4981,6 +5057,19 @@ new_case idx-scroll
 flow_file "$case_dir/flow.json" '{ "do": "scrollToText", "value": "Item", "index": 2 }'
 expect "check: a verb that does not look one element up refuses an index" 1 \
   "step 'scrollToText' does not take \"index\" - only tapText, optionalTapText, tapId" check "$case_dir/flow.json"
+
+new_case scroll-id-keys
+flow_file "$case_dir/flow.json" '{ "do": "scrollToId", "value": "target", "direction": "up", "edges": "clear", "timeout": 3 }'
+expect "check: scrollToId builds with the keys of scrollToText" 0 " - 1 steps" "$YUKTI" flow --check "$case_dir/flow.json"
+
+new_case scroll-id-index
+flow_file "$case_dir/flow.json" '{ "do": "scrollToId", "value": "row", "index": 1 }'
+expect "check: scrollToId refuses an index, as scrollToText does" 1 \
+  "step 'scrollToId' does not take \"index\" - only tapText, optionalTapText, tapId" check "$case_dir/flow.json"
+
+new_case scroll-id-in
+flow_file "$case_dir/flow.json" '{ "do": "scrollToId", "value": "row", "in": "list" }'
+expect "check: scrollToId refuses \"in\"" 1 "does not take \"in\"" check "$case_dir/flow.json"
 
 ios_case ios-idx-tap
 tree "$case_dir/idb/desc-1.json" "$IAPP" "$(ilabel "" Continue 20,500,160,40)" "$(ilabel "" Continue 220,200,160,40)" "$(ilabel "" Continue 20,205,160,40)"

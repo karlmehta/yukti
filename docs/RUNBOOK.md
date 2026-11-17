@@ -124,7 +124,7 @@ breaks several steps later on an assert about something unrelated.
 Flows are JSON in `flows/`. Steps: `wait`, `waitFor`, `waitForId`,
 `waitForNotText`, `waitForNotId`, `screenshot`,
 `tap {x,y}`, `tapText`, `optionalTapText`, `tapId`, `type`, `clearText {x,y}`,
-`clearTextId`, `pressKey`, `hideKeyboard`, `scroll`, `swipe {x,y,toX,toY}`, `scrollToText`,
+`clearTextId`, `pressKey`, `hideKeyboard`, `scroll`, `swipe {x,y,toX,toY}`, `scrollToText`, `scrollToId`,
 `dismiss`, `assertText`, `assertId`, `assertBox`, `assertBoxId`, `assertCount`,
 `assertCountId`, `swipeId`, `swipeText`, `launch`,
 `stopApp`, `clearState`, `background`, `foreground`, `relaunch`, `fixture`, `include`. Recorded coordinates are
@@ -643,6 +643,20 @@ from the band edges instead of merely inside the band, and `"timeout"` - how
 long to wait at the end of the list for it to grow (seconds, default 5; see
 below). A plain `scroll` takes the
 same four directions as its `"value"`.
+
+`scrollToId` (#181) is the same search, with the same keys, misses and wait at
+the end of the list; it finds the element by its id, the way `tapId` does,
+instead of by its label. Use it for a target below the fold that has a testID:
+the step then does not depend on the copy, which a renamed label, another
+locale or the same words elsewhere on the screen would break. Like
+`scrollToText` it takes no `"index"` and no `"in"`.
+
+One difference on iOS. idb lists elements outside the window too, and the
+search by label keeps them: a label above the screen is found there, and
+`scrollToText` swipes towards it whatever its `"direction"`. The search by id
+keeps only what is on the screen, as every search does on Android: a target
+above the screen needs `"direction":"up"`. Written and checked against the fake
+idb and the fake adb only; not yet run on a device or a simulator.
 
 On Android an up or down swipe goes down the middle of the screen, from 70% of
 its height to 30% of it (the other way for `up`). It used to be a fixed 400 pixels
