@@ -6346,5 +6346,37 @@ begin "iOS: a link in place of the mark is not taken for one and not followed"
 status_is 0; iconnects_are 1; [ ! -e "$case_dir/victim" ] || no "the mark followed a link"
 verdict
 
+ios_case idb-udid-path-create
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$I3"; mkdir -p "$case_dir/tmp/yukti-idb-x"; printf 'x/../../victim' > "$case_dir/tmp/yukti-udid"
+flow_file "$case_dir/flow.json" "$I3FLOW" '{ "do": "assertId", "value": "a" }'
+run_ios "$case_dir/flow.json"
+begin "iOS: a udid with a path in it creates nothing outside TMPDIR"
+status_is 0; iconnects_are 2; [ ! -e "$case_dir/victim" ] || no "a file outside TMPDIR was created"
+verdict
+
+ios_case idb-udid-path-delete
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$I3"; mkdir -p "$case_dir/tmp/yukti-idb-x"; printf 'x/../../victim' > "$case_dir/tmp/yukti-udid"
+printf 'keep' > "$case_dir/victim"; : > "$case_dir/idb/stale"
+flow_file "$case_dir/flow.json" "$I3FLOW"
+run_ios "$case_dir/flow.json"
+begin "iOS: a udid with a path in it deletes nothing outside TMPDIR"
+status_is 0; [ "$(cat "$case_dir/victim" 2>/dev/null)" = keep ] || no "a file outside TMPDIR was removed"
+verdict
+
+ios_case idb-mark-link-live
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$I3"; printf 'keep' > "$case_dir/target"; ln -s "$case_dir/target" "$(imark)"
+flow_file "$case_dir/flow.json" "$I3FLOW"
+run_ios "$case_dir/flow.json"
+begin "iOS: a link to a real file is not taken for the mark"
+status_is 0; iconnects_are 1; [ "$(cat "$case_dir/target" 2>/dev/null)" = keep ] || no "the link's target was touched"
+verdict
+
+ios_case idb-connect-child
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$I3"; : > "$case_dir/idb/connect-child"
+ui_ios
+begin "iOS: a process the connect leaves behind does not hold the read"
+status_is 0; iconnects_are 1; [ ! -e "$case_dir/idb/child-done" ] || no "the read waited for what the connect left behind"
+verdict
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

@@ -1785,10 +1785,15 @@ idb_forget(){ local f; f="$(idb_mark "${1:-}")" || return 0; rm -f "$f" 2>/dev/n
 # IDB_DID: whether this call ran a connect, refused or not - a read connects
 # again only when it has not connected yet.
 IDB_DID=""
-idb_ready(){ local u="${1:-}" f t0 err rc=0; paths; IDB_DID=""; f="$(idb_mark "$u")" || f=""
+idb_ready(){ local u="${1:-}" f t0 ef err="" rc=0; paths; IDB_DID=""; f="$(idb_mark "$u")" || f=""
   if [ -n "$f" ] && [ -f "$f" ] && [ ! -L "$f" ]; then return 0; fi
-  IDB_DID=1; t0="$(now)"; err="$(idb connect "$u" 2>&1 >/dev/null)" || rc=$?
-  idb_connect_note "$t0" "$rc" "$err"
+  # idb's words go to a file, not through $(...): a pipe would hold the read
+  # until every process that inherited it - a companion connect left behind -
+  # let go of it.
+  IDB_DID=1; t0="$(now)"; ef="$(mktemp "${TMPDIR:-/tmp}/yukti-connect-err.XXXXXX" 2>/dev/null)" || ef=""
+  idb connect "$u" >/dev/null 2>"${ef:-/dev/null}" || rc=$?
+  [ -z "$ef" ] || { err="$(tail -n 1 "$ef" 2>/dev/null || true)"; rm -f "$ef" 2>/dev/null || true; }
+  idb_connect_note "$t0" "$rc" "${err:-}"
   if [ "$rc" -eq 0 ] && [ -n "$f" ]; then (set -C; : > "$f") 2>/dev/null || true; fi
   return 0; }
 # A refused connect says so, with the last line idb wrote: without it a runner

@@ -45,6 +45,8 @@
 #   empty          present: `ui describe-all` answers nothing with status 0
 #   exit-1         present: `ui describe-all` answers its tree and exits 1
 #   connect-fails  present: `connect` exits 1 with a line on stderr
+#   connect-child  present: `connect` leaves a process behind that holds its
+#                  stderr for 5 s and then writes `child-done`
 import json, os, sys
 
 d = os.environ["FAKE_IDB_DIR"]
@@ -135,6 +137,9 @@ elif ops[:1] == ["connect"]:
     if has("connect-fails"):
         sys.stderr.write("idb: no companion for this target\n"); sys.exit(1)
     if has("stale"): os.remove(path("stale"))
+    if has("connect-child"):
+        import subprocess
+        subprocess.Popen(["sh", "-c", "sleep 5; : > \"$1\"", "sh", path("child-done")])
 else:
     sys.exit(1)
 if ops[:2] == ["ui", "describe-all"] and has("exit-1"): sys.exit(1)
