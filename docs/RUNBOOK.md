@@ -941,6 +941,29 @@ wrapper with the id while the state sits on a child, too - so it proves
 something only next to a `"selected": true` on its neighbour. The iOS half is written from the idb and React Native sources and has not
 been run on a simulator yet.
 
+`"expanded"` takes the same two steps and the same two values, for a section
+or an accordion row that a tap opens and closes:
+`{"do":"assertId","value":"card-disclosure","expanded":true}`. React Native sets
+it from `accessibilityState.expanded`, and the two platforms carry it
+differently. Android has no attribute for it: an expanded node offers the
+accessibility action `ACTION_COLLAPSE` and a collapsed one `ACTION_EXPAND`. A
+uiautomator dump does not list actions, and the screen helper lists them only
+when asked to, so a step with `"expanded"` asks for them on its own reads and
+puts the setting back after each; no other step pays for it. A node with
+neither action has no expanded state and fails both values by name; a node
+with both (the app also declares them in `accessibilityActions`) cannot be
+told and fails both too; a read with no actions in it at all - a run without
+the helper, or a helper that does not know the setting - fails by name instead
+of passing. iOS has the word `expanded` in the value, and only when the section
+is expanded: a collapsed section adds nothing, the same as an element with no
+such state. So on iOS `"expanded": false` passes on any element without the
+word, and proves something only next to an `"expanded": true` on the same
+element; on Android the same step fails by name on an element with no state.
+Only the English word is read: on a device in another language an expanded
+section reads as collapsed - `true` fails, `false` passes. Written from the
+helper (appium-uiautomator2-server v10.6.6) and React Native 0.81 sources,
+not run on a device yet.
+
 The step sees only what outlives one poll - the sleep plus the lookup itself,
 about a second on a device. Wait for a state that stays, not for something that
 flashes: a toast that shows for two seconds will be caught some runs and missed
