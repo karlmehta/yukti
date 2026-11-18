@@ -524,14 +524,15 @@ helper_tree(){ local d out rc i; d="$(run_dir)"; HELPER_WHY=""
 # status of the first request that failed, which helper_tree repairs by. A
 # server that does not know the setting answers 200 and leaves it out of the
 # tree, so a tree without any "actions" is told apart where it is read, not
-# here. A session that did not take the setting back is forgotten, as after
-# the full tree (#116), and the next read opens a new one.
+# here. A session that did not take the setting back is forgotten and a new
+# one is opened at once, as after the full tree (#116) - also when the read
+# itself failed, so the next try of helper_tree has a session to read on.
 helper_actions_read(){ local sid="$1" d out rc=0; d="$(run_dir)"
   helper_http POST "/session/$sid/appium/settings" 5 '{"settings":{"includeA11yActionsInPageSource":true}}' >/dev/null || return $?
   out="$(helper_http GET "/session/$sid/source" "$(helper_read_timeout)")" || rc=$?
   if ! helper_http POST "/session/$sid/appium/settings" 5 '{"settings":{"includeA11yActionsInPageSource":false}}' >/dev/null; then
     rm -f "$d/helper-session" "$(helper_cache)/session-$(helper_key "$(helper_serial)")" 2>/dev/null || true
-    [ "$rc" -ne 0 ] || helper_connect >/dev/null 2>&1 || true
+    helper_connect >/dev/null 2>&1 || true
   fi
   [ "$rc" -eq 0 ] || return "$rc"
   printf '%s' "$out"; }
@@ -644,10 +645,11 @@ match=(sys.argv[3] if len(sys.argv)>3 else "exact")
 # an empty answer leaves open: "on cx cy" for the winner, else "zero x1 y1 x2 y2"
 # for a match of zero area, else "off x1 y1 x2 y2" for one outside the screen,
 # else nothing - not in the tree. The iOS path answers the same. "state" (#103)
-# prints the centre and then the selected and checked state of the winner:
-# "cx cy true|false true|false|none" - "none" for a node that is not checkable,
-# whose checked="false" says nothing (React Native marks a node checkable
-# exactly when accessibilityState has "checked"). "count" (#47) prints how many
+# prints the centre and then the selected, checked and expanded state of the
+# winner: "cx cy true|false true|false|none true|false|none|both|unread" -
+# "none" for a node that is not checkable, whose checked="false" says nothing
+# (React Native marks a node checkable exactly when accessibilityState has
+# "checked"); expanded as expanded_of below words it (#183). "count" (#47) prints how many
 # elements match (see pick below). The seventh argument, an index (#46), picks
 # one of them instead of the winner and prints it as above; an index past the
 # last match leaves with status 5 and the number of matches on its output.
@@ -2754,7 +2756,7 @@ assert_count(){ local q="${1:-}" kind="${2:-assert}" op="${3:-}" n="${4:-}" m="$
   ok "$what: $q on the screen, $words $n"; }
 # The state a step asks of an element (#103): "selected=true checked=false", as
 # the flow builder writes it. state_miss <id> <want> <cx> <cy> <selected>
-# <checked> prints what does not hold, in words, or nothing; state_words says
+# <checked> <expanded> prints what does not hold, in words, or nothing; state_words says
 # what was asked. A checked state asked of an element that has none ("none":
 # not checkable on Android, no checked word on iOS) is a miss, never a pass:
 # checked="false" on a plain view would otherwise satisfy "checked": false.
