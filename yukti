@@ -2607,6 +2607,10 @@ assert_text(){ local q="${1:-}" m="${2:-exact}" in="${3:-}" idx="${4:-}" xy st=0
 # elements instead and is not promised here. One more read of the screen, made
 # only when the step has already failed - or none, when the step holds its tree.
 # A second argument goes right after the id: what the id was wanted for.
+# tapId with "at", swipeId and the element an "in" names word their misses
+# here as well (#167); for "in" the second argument is IN_FOR, so the reader
+# knows the missing id is the container's and not the one looked for in it.
+IN_FOR=' (named by "in")'
 id_miss(){ local q="$1" for="${2:-}" w unit
   # The step has failed already, on a read that worked: a second read that does
   # not work - the device gone in between - leaves the words as they were rather
@@ -2645,7 +2649,7 @@ tap_id_at(){ local q="$1" xs="$2" ys="$3" idx="${4:-}" out st=0 x1 y1 x2 y2 sx1 
   out="$(find_el "$q" id exact box "" "$idx")" || st=$?
   [ "$st" -ne 5 ] || die "$(index_miss "$idx" "$out" "id '$q'")"
   [ "$st" -eq 0 ] || die "$(lookup_err "$st")"
-  [ -n "$out" ] || die "no element with id '$q'"
+  [ -n "$out" ] || die "$(id_miss "$q")"
   read -r x1 y1 x2 y2 sx1 sy1 sx2 sy2 <<<"$out"
   if [ -n "$xs" ]; then px=$(( x1 + (x2 - x1) * xs / 100 )); [ "$px" -lt "$x2" ] || px=$(( x2 - 1 )); [ "$px" -ge "$x1" ] || px=$x1; else px=$(( (x1 + x2) / 2 )); fi
   if [ -n "$ys" ]; then py=$(( y1 + (y2 - y1) * ys / 100 )); [ "$py" -lt "$y2" ] || py=$(( y2 - 1 )); [ "$py" -ge "$y1" ] || py=$y1; else py=$(( (y1 + y2) / 2 )); fi
@@ -3043,7 +3047,9 @@ lookup_err(){ case "${1:-1}" in
     2) device_fault; printf '%s' "the device answered, but not with a tree that can be read";;
     3) printf '%s' "the screen was read but does not report its own bounds, so nothing on it can be called visible";;
     # The element an "in" names is not on the screen (#102); the id comes second.
-    4) printf "no element with id '%s'" "${2:-}";;
+    # It says why as tapId does (#167): not in the tree, or there with no area
+    # or off the screen - and that the id is the container's, not the target's.
+    4) if [ -n "${2:-}" ]; then id_miss "$2" "$IN_FOR"; else printf "no element with id ''"; fi;;
     *) printf '%s' "cannot read the screen - see the error above";; esac; }
 # The negative assertions. Absence is the one verdict where an EMPTY answer is the
 # pass, which makes it the one verdict that a missing answer passes by accident:
@@ -3203,7 +3209,7 @@ wait_for(){ local q="${1:-}" t="${2:-10}" m="${3:-exact}" mode="${4:-assert}" op
     else lst=$?; [ "$lst" -eq 5 ] || die "$label FAILED after ${t}s waiting for '$q': $(lookup_err "$lst")"; case "$xy" in "0 "*) ;; *) many="$xy";; esac; fi
   fi
   if [ -n "$in" ]; then
-    [ "$nosc" = 1 ] && why="no element with id '$in'" || why="not in the element with id '$in'"
+    [ "$nosc" = 1 ] && why="$(id_miss "$in" "$IN_FOR")" || why="not in the element with id '$in'"
   fi
   [ -z "$many" ] || why="$(index_miss "$idx" "$many" "$([ "$mode" = id ] && printf "id '%s'" "$q" || printf "'%s'" "$q")${in:+ in the element with id '$in'}")"
   msg="'$q' not on screen after ${t}s${why:+ - $why}"
@@ -3409,7 +3415,7 @@ swipe_el(){ local q="${1:-}" mode="$2" d="${3:-}" verb what out st=0 v
   kb_before_swipe "$verb" || :
   out="$(find_el "$q" "$mode" exact box)" || st=$?
   [ "$st" -eq 0 ] || die "$(lookup_err "$st")"
-  if [ -z "$out" ]; then [ "$mode" = id ] && die "no element with id '$q'"; die "no element matching '$q'"; fi
+  if [ -z "$out" ]; then [ "$mode" = id ] && die "$(id_miss "$q")"; die "no element matching '$q'"; fi
   local x1 y1 x2 y2 sx1 sy1 sx2 sy2 vx1 vy1 vx2 vy2 cx cy half fx fy tx ty least
   read -r x1 y1 x2 y2 sx1 sy1 sx2 sy2 <<<"$out"
   # The part on the screen.
@@ -6272,7 +6278,8 @@ ${_yk_B}yukti v$YUKTI_VERSION${_yk_R} — YUKTI — smart mobile-app QA automati
               compare: "op": "atLeast", "exact" or "atMost", "count": a whole number; the number found
               is in the line and in the report either way; both take "in": "<id>" to count inside one element
               assertText, assertNotText, waitFor, assertCount and assertCountId take "in": "<id>" - only the element tapId would tap
-              and what lies within its bounds count; that element missing fails as "no element with id"
+              and what lies within its bounds count; that element missing fails as "no element with id ... (named by "in")",
+              with its frame when it is in the tree at zero size or outside the screen
               tapText takes "in" too: a link inside a longer text is tapped on its own element, found inside
               the one named by id by its whole words; one read, no scroll, no "timeout"; words that are only
               part of a longer text fail by name

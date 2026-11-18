@@ -3405,7 +3405,7 @@ screen "$case_dir/adb/dump-1.xml" "$IN_ROOT" "$IN_HI" "$IN_CARD"
 flow_file "$case_dir/flow.json" '{ "do": "assertText", "value": "Ada", "match": "contains", "in": "greeting" }'
 run_flow "$case_dir/flow.json"
 begin "in: a missing element is named in the words of tapId"
-status_is 1; has out.txt "assert FAILED: no element with id 'greeting'"
+status_is 1; has out.txt "assert FAILED: no element with id 'greeting' (named by \"in\")"; lacks out.txt "in the tree at"; lacks out.txt "outside the screen"
 verdict
 
 # A namesake of zero size is not the element: the next one with the id is.
@@ -3465,7 +3465,7 @@ screen "$case_dir/adb/dump-1.xml" "$IN_ROOT" "$IN_CARD"
 flow_file "$case_dir/flow.json" '{ "do": "waitFor", "value": "Ada", "match": "contains", "in": "greeting", "timeout": 1 }'
 run_flow "$case_dir/flow.json"
 begin "in: waitFor times out naming the missing element"
-status_is 1; has out.txt "'Ada' not on screen after 1s - no element with id 'greeting'"
+status_is 1; has out.txt "'Ada' not on screen after 1s - no element with id 'greeting' (named by \"in\")"; lacks out.txt "in the tree at"; lacks out.txt "outside the screen"
 verdict
 
 # "in" with a full resource-id (#177): two elements share the segment, the
@@ -3543,7 +3543,7 @@ tree "$case_dir/idb/desc-1.json" "$IAPP" "$I_HI" "$I_CARD"
 flow_file "$case_dir/flow.json" '{ "do": "assertNotText", "value": "Ada", "match": "contains", "in": "greeting" }'
 run_ios "$case_dir/flow.json"
 begin "in on iOS: a missing element is named in the words of tapId"
-status_is 1; has out.txt "assertNot FAILED: no element with id 'greeting'"
+status_is 1; has out.txt "assertNot FAILED: no element with id 'greeting' (named by \"in\")"; lacks out.txt "in the tree at"; lacks out.txt "outside the screen"
 verdict
 
 # The builder.
@@ -4543,7 +4543,7 @@ screen "$case_dir/adb/dump-1.xml" "$(sroot "$(bnode row-1 0 400 1080 560)")"
 flow_file "$case_dir/flow.json" '{ "do": "swipeId", "value": "row-9", "direction": "left" }'
 run_flow "$case_dir/flow.json"
 begin "swipeId: a missing element in the words of tapId, nothing swiped"
-status_is 1; has out.txt "no element with id 'row-9'"; lacks adb/log "input swipe"
+status_is 1; has out.txt "no element with id 'row-9'"; lacks out.txt "in the tree at"; lacks out.txt "outside the screen"; lacks adb/log "input swipe"
 verdict
 
 dev_case swipe-miss-text
@@ -4718,7 +4718,7 @@ screen "$case_dir/adb/dump-1.xml" "$(sroot "$(bnode track 40 1000 1040 1080)")"
 flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "slider", "at": { "x": "50%" } }'
 run_flow "$case_dir/flow.json"
 begin "tapId at: a missing element in the words of tapId"
-status_is 1; has out.txt "no element with id 'slider'"; taps_are ""
+status_is 1; has out.txt "no element with id 'slider'"; lacks out.txt "in the tree at"; lacks out.txt "outside the screen"; taps_are ""
 verdict
 
 dev_case at-cli
@@ -5787,6 +5787,193 @@ flow_file "$case_dir/sname.json" '{ "do": "fixture", "value": "a/b" }'
 expect "fixture step: a name with a slash is refused" 1 "step 1 'fixture': \"value\" is the name of a fixture" check "$case_dir/sname.json"
 flow_file "$case_dir/with.json" '{ "do": "tapText", "value": "x", "with": { "a": "b" } }'
 expect "with: still refused on a step that is not include or fixture" 1 "only include and fixture take it" check "$case_dir/with.json"
+
+# ── a miss by id says why in four more places (#167) ─────────────────────────
+# tapId with "at", swipeId, and the element an "in" names: a node there with no
+# area or off the screen reads apart from an id that is not in the tree.
+dev_case at-miss-zero
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(bnode slider 116 974 564 954)")"
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "slider", "at": { "x": "50%" } }'
+run_flow "$case_dir/flow.json"
+begin "tapId at: an id on a node with no area says so, with the frame, nothing tapped"
+status_is 1; has out.txt "no element with id 'slider' on the screen - it is in the tree at zero size [116,974][564,954] (pixels)"; taps_are ""; reads_are 2
+verdict
+
+dev_case at-miss-off
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(bnode slider 0 2500 1080 2600)")"
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "slider", "at": { "x": "50%" } }'
+run_flow "$case_dir/flow.json"
+begin "tapId at: an id on a node outside the screen says so, with the frame, nothing tapped"
+status_is 1; has out.txt "no element with id 'slider' on the screen - it is in the tree outside the screen at [0,2500][1080,2600] (pixels)"; taps_are ""
+verdict
+
+dev_case swipe-miss-zero
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(bnode row-9 0 400 1080 400)")"
+flow_file "$case_dir/flow.json" '{ "do": "swipeId", "value": "row-9", "direction": "left" }'
+run_flow "$case_dir/flow.json"
+begin "swipeId: an id on a node with no area says so, nothing swiped"
+status_is 1; has out.txt "no element with id 'row-9' on the screen - it is in the tree at zero size [0,400][1080,400] (pixels)"; lacks adb/log "input swipe"; reads_are 2
+verdict
+
+dev_case swipe-miss-off
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(bnode row-9 0 2500 1080 2660)")"
+flow_file "$case_dir/flow.json" '{ "do": "swipeId", "value": "row-9", "direction": "left" }'
+run_flow "$case_dir/flow.json"
+begin "swipeId: an id on a node outside the screen says so, nothing swiped"
+status_is 1; has out.txt "no element with id 'row-9' on the screen - it is in the tree outside the screen at [0,2500][1080,2660] (pixels)"; lacks adb/log "input swipe"
+verdict
+
+IN_BOX0="$(tnode greeting "" 0,100,1080,100)"
+IN_BOXOFF="$(tnode greeting "" 0,2500,1080,2700)"
+
+dev_case in-miss-zero-tap
+screen "$case_dir/adb/dump-1.xml" "$IN_ROOT" "$IN_BOX0" "$IN_HI"
+flow_file "$case_dir/flow.json" '{ "do": "tapText", "value": "Good morning, Ada!", "in": "greeting" }'
+run_flow "$case_dir/flow.json"
+begin "in: tapText names the element with no area as the one \"in\" names, nothing tapped"
+status_is 1; has out.txt "no element with id 'greeting' on the screen (named by \"in\") - it is in the tree at zero size [0,100][1080,100] (pixels), which is what a keyboard over it looks like"; taps_are ""; reads_are 2
+verdict
+
+dev_case in-miss-off-assert
+screen "$case_dir/adb/dump-1.xml" "$IN_ROOT" "$IN_BOXOFF" "$IN_CARD"
+flow_file "$case_dir/flow.json" '{ "do": "assertText", "value": "Ada", "match": "contains", "in": "greeting" }'
+run_flow "$case_dir/flow.json"
+begin "in: assertText names the element outside the screen as the one \"in\" names"
+status_is 1; has out.txt "assert FAILED: no element with id 'greeting' on the screen (named by \"in\") - it is in the tree outside the screen at [0,2500][1080,2700] (pixels)"
+verdict
+
+dev_case in-miss-zero-wait
+screen "$case_dir/adb/dump-1.xml" "$IN_ROOT" "$IN_BOX0" "$IN_CARD"
+flow_file "$case_dir/flow.json" '{ "do": "waitFor", "value": "Ada", "match": "contains", "in": "greeting", "timeout": 1 }'
+run_flow "$case_dir/flow.json"
+begin "in: waitFor times out naming the element with no area and its frame"
+status_is 1; has out.txt "'Ada' not on screen after 1s - no element with id 'greeting' on the screen (named by \"in\") - it is in the tree at zero size [0,100][1080,100] (pixels)"
+verdict
+
+dev_case in-miss-zero-full-id
+screen "$case_dir/adb/dump-1.xml" "$IN_ROOT" "$IN_BOX0" "$IN_CARD"
+flow_file "$case_dir/flow.json" '{ "do": "assertText", "value": "Ada", "match": "contains", "in": "com.example:id/greeting" }'
+run_flow "$case_dir/flow.json"
+begin "in: a full resource-id is looked up for the words as it is for the element"
+status_is 1; has out.txt "no element with id 'com.example:id/greeting' on the screen (named by \"in\") - it is in the tree at zero size [0,100][1080,100] (pixels)"
+verdict
+
+dev_case in-miss-off-wait
+screen "$case_dir/adb/dump-1.xml" "$IN_ROOT" "$IN_BOXOFF" "$IN_CARD"
+flow_file "$case_dir/flow.json" '{ "do": "waitFor", "value": "Ada", "match": "contains", "in": "greeting", "timeout": 1 }'
+run_flow "$case_dir/flow.json"
+begin "in: waitFor times out naming the element outside the screen and its frame"
+status_is 1; has out.txt "'Ada' not on screen after 1s - no element with id 'greeting' on the screen (named by \"in\") - it is in the tree outside the screen at [0,2500][1080,2700] (pixels)"
+verdict
+
+dev_case in-miss-zero-count
+screen "$case_dir/adb/dump-1.xml" "$IN_ROOT" "$IN_BOX0" "$(bnode chip 40 120 300 180)"
+flow_file "$case_dir/flow.json" '{ "do": "assertCountId", "value": "chip", "op": "atLeast", "count": 1, "in": "greeting" }'
+run_flow "$case_dir/flow.json"
+begin "in: assertCountId names the element with no area as the one \"in\" names"
+status_is 1; has out.txt "assertCount FAILED: no element with id 'greeting' on the screen (named by \"in\") - it is in the tree at zero size [0,100][1080,100] (pixels)"
+verdict
+
+dev_case in-miss-off-not
+screen "$case_dir/adb/dump-1.xml" "$IN_ROOT" "$IN_BOXOFF" "$IN_CARD"
+flow_file "$case_dir/flow.json" '{ "do": "assertNotText", "value": "Ada", "match": "contains", "in": "greeting" }'
+run_flow "$case_dir/flow.json"
+begin "in: assertNotText fails naming the element outside the screen"
+status_is 1; has out.txt "assertNot FAILED: no element with id 'greeting' on the screen (named by \"in\") - it is in the tree outside the screen at [0,2500][1080,2700] (pixels)"
+verdict
+
+ios_case ios-at-miss-zero
+tree "$case_dir/idb/desc-1.json" "$IAPP" \
+  '{"type":"Slider","role_description":"slider","AXUniqueId":"slider","AXLabel":"Slider","frame":{"x":20,"y":300,"width":0,"height":40}}'
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "slider", "at": { "x": "50%" } }'
+run_ios "$case_dir/flow.json"
+begin "tapId at on iOS: a node with no area is named in points, with no keyboard promised"
+status_is 1; has out.txt "no element with id 'slider' on the screen - it is in the tree at zero size [20,300][20,340] (points)"
+lacks out.txt "keyboard over it"; lacks idb/log "ui tap"; ireads_are 2
+verdict
+
+ios_case ios-swipe-miss-off
+tree "$case_dir/idb/desc-1.json" "$IAPP" \
+  '{"type":"Button","role_description":"button","AXUniqueId":"row-9","AXLabel":"Row","frame":{"x":20,"y":900,"width":360,"height":44}}'
+flow_file "$case_dir/flow.json" '{ "do": "swipeId", "value": "row-9", "direction": "left" }'
+run_ios "$case_dir/flow.json"
+begin "swipeId on iOS: a node outside the screen is named in points, nothing swiped"
+status_is 1; has out.txt "no element with id 'row-9' on the screen - it is in the tree outside the screen at [20,900][380,944] (points)"; lacks idb/log "ui swipe"
+verdict
+
+ios_case ios-in-miss-zero-wait
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$(ilabel greeting "" 0,60,0,100)" "$I_CARD"
+flow_file "$case_dir/flow.json" '{ "do": "waitFor", "value": "Ada", "match": "contains", "in": "greeting", "timeout": 1 }'
+run_ios "$case_dir/flow.json"
+begin "in on iOS: waitFor times out naming the element with no area, in points"
+status_is 1; has out.txt "'Ada' not on screen after 1s - no element with id 'greeting' on the screen (named by \"in\") - it is in the tree at zero size [0,60][0,160] (points)"
+verdict
+
+ios_case ios-in-miss-zero-not
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$(ilabel greeting "" 0,60,0,100)" "$I_CARD"
+flow_file "$case_dir/flow.json" '{ "do": "assertNotText", "value": "Ada", "match": "contains", "in": "greeting" }'
+run_ios "$case_dir/flow.json"
+begin "in on iOS: assertNotText fails naming the element with no area, in points"
+status_is 1; has out.txt "assertNot FAILED: no element with id 'greeting' on the screen (named by \"in\") - it is in the tree at zero size [0,60][0,160] (points)"; ireads_are 2
+verdict
+
+ios_case ios-at-miss-off
+tree "$case_dir/idb/desc-1.json" "$IAPP" \
+  '{"type":"Slider","role_description":"slider","AXUniqueId":"slider","AXLabel":"Slider","frame":{"x":20,"y":900,"width":360,"height":40}}'
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "slider", "at": { "x": "50%" } }'
+run_ios "$case_dir/flow.json"
+begin "tapId at on iOS: a node outside the screen is named in points, nothing tapped"
+status_is 1; has out.txt "no element with id 'slider' on the screen - it is in the tree outside the screen at [20,900][380,940] (points)"; lacks idb/log "ui tap"
+verdict
+
+ios_case ios-at-miss-none
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$I_CARD"
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "slider", "at": { "x": "50%" } }'
+run_ios "$case_dir/flow.json"
+begin "tapId at on iOS: an id nowhere in the tree keeps the old words, with nothing added"
+status_is 1; has out.txt "no element with id 'slider'"; lacks out.txt "in the tree at"; lacks out.txt "outside the screen"; lacks idb/log "ui tap"
+verdict
+
+ios_case ios-swipe-miss-zero
+tree "$case_dir/idb/desc-1.json" "$IAPP" \
+  '{"type":"Button","role_description":"button","AXUniqueId":"row-9","AXLabel":"Row","frame":{"x":20,"y":200,"width":360,"height":0}}'
+flow_file "$case_dir/flow.json" '{ "do": "swipeId", "value": "row-9", "direction": "left" }'
+run_ios "$case_dir/flow.json"
+begin "swipeId on iOS: a node with no area is named in points, nothing swiped"
+status_is 1; has out.txt "no element with id 'row-9' on the screen - it is in the tree at zero size [20,200][380,200] (points)"; lacks out.txt "keyboard over it"; lacks idb/log "ui swipe"; ireads_are 3
+verdict
+
+ios_case ios-swipe-miss-none
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$I_CARD"
+flow_file "$case_dir/flow.json" '{ "do": "swipeId", "value": "row-9", "direction": "left" }'
+run_ios "$case_dir/flow.json"
+begin "swipeId on iOS: an id nowhere in the tree keeps the old words, with nothing added"
+status_is 1; has out.txt "no element with id 'row-9'"; lacks out.txt "in the tree at"; lacks out.txt "outside the screen"; lacks idb/log "ui swipe"
+verdict
+
+ios_case ios-in-miss-off-assert
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$(ilabel greeting "" 0,900,402,100)" "$I_CARD"
+flow_file "$case_dir/flow.json" '{ "do": "assertText", "value": "Ada", "match": "contains", "in": "greeting" }'
+run_ios "$case_dir/flow.json"
+begin "in on iOS: assertText names the element outside the screen, in points"
+status_is 1; has out.txt "assert FAILED: no element with id 'greeting' on the screen (named by \"in\") - it is in the tree outside the screen at [0,900][402,1000] (points)"
+verdict
+
+ios_case ios-in-miss-off-wait
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$(ilabel greeting "" 0,900,402,100)" "$I_CARD"
+flow_file "$case_dir/flow.json" '{ "do": "waitFor", "value": "Ada", "match": "contains", "in": "greeting", "timeout": 1 }'
+run_ios "$case_dir/flow.json"
+begin "in on iOS: waitFor times out naming the element outside the screen, in points"
+status_is 1; has out.txt "'Ada' not on screen after 1s - no element with id 'greeting' on the screen (named by \"in\") - it is in the tree outside the screen at [0,900][402,1000] (points)"
+verdict
+
+ios_case ios-in-miss-none-wait
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$I_CARD"
+flow_file "$case_dir/flow.json" '{ "do": "waitFor", "value": "Ada", "match": "contains", "in": "greeting", "timeout": 1 }'
+run_ios "$case_dir/flow.json"
+begin "in on iOS: waitFor names the missing element as the one \"in\" names, with no frame"
+status_is 1; has out.txt "'Ada' not on screen after 1s - no element with id 'greeting' (named by \"in\")"; lacks out.txt "in the tree at"; lacks out.txt "outside the screen"
+verdict
 
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
