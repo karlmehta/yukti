@@ -10,12 +10,18 @@
 #   settings       the last settings posted; a new session removes it (the
 #                  real server resets its settings per session)
 #   settings-mode  "fail-false": a post that switches allowInvisibleElements
-#                  off answers 500 and changes nothing
+#                  off answers 500 and changes nothing; "fail-actions-false":
+#                  the same for includeA11yActionsInPageSource (#183)
 #   helper-<n>.xml the tree for the n-th source; past the last one, the last
 #   sources        how many sources were asked for
 #   helper-full-<n>.xml, full-sources - the same for a source asked while the
 #                  last settings switch allowInvisibleElements on (#116); with
 #                  no such file at all, the tree of the last source, uncounted
+#   helper-actions-<n>.xml, actions-sources - the tree for the n-th source
+#                  asked while the last settings switch
+#                  includeA11yActionsInPageSource on (#183), counted apart and
+#                  also counted in sources; with no such file at all, the plain
+#                  tree - what a server that skips the setting answers
 #   source-mode    "nonxml": every source answers something that is not a
 #                  tree; "nonxml-once": only the next one; "slow": every
 #                  source answers after 3 s; "die": the next source stops the
@@ -44,6 +50,10 @@ def write(n, t):
 def invisible(body):
     try: return json.loads(body or "{}").get("settings", {}).get("allowInvisibleElements")
     except ValueError: return None
+# includeA11yActionsInPageSource in a body of settings, the same way.
+def actions(body):
+    try: return json.loads(body or "{}").get("settings", {}).get("includeA11yActionsInPageSource")
+    except ValueError: return None
 
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a): pass
@@ -70,6 +80,8 @@ class H(BaseHTTPRequestHandler):
             return self.answer(404, {"error": "invalid session id"})
         if parts[2:] == ["appium", "settings"] and method == "POST":
             if read("settings-mode").strip() == "fail-false" and invisible(body) is False:
+                return self.answer(500, {"error": "unknown error"}, sid)
+            if read("settings-mode").strip() == "fail-actions-false" and actions(body) is False:
                 return self.answer(500, {"error": "unknown error"}, sid)
             write("settings", body); return self.answer(200, None, sid)
         if parts[2:] == ["actions"] and method == "POST":
@@ -106,6 +118,10 @@ class H(BaseHTTPRequestHandler):
             if mode in ("nonxml", "nonxml-once"):
                 if mode == "nonxml-once": os.remove(path("source-mode"))
                 return self.answer(200, "not a tree", sid)
+            if actions(read("settings")) and any(f.startswith("helper-actions-") for f in os.listdir(d)):
+                k = int(read("actions-sources", "0") or 0) + 1; write("actions-sources", str(k))
+                while k > 1 and not has("helper-actions-%d.xml" % k): k -= 1
+                return self.answer(200, read("helper-actions-%d.xml" % k), sid)
             while k > 1 and not has("helper-%d.xml" % k): k -= 1
             return self.answer(200, read("helper-%d.xml" % k), sid)
         return self.answer(404, {"error": "unknown command"})

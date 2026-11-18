@@ -500,11 +500,17 @@ helper_give_up(){ local d; d="$(run_dir)"; : > "$d/helper-off"
 # tree is a failed try and not a dead helper, and on a moving screen one try
 # can miss. What failed decides the repair before the next try - a lost
 # forward is made again, a lost session is opened again.
+# With AUI_ACTIONS=1 (a step that asks "expanded", #183) every try is a read
+# with the accessibility actions of each node in it: the setting on, the tree,
+# the setting off, on the session of that try - a session opened again starts
+# from the server's defaults and gets the setting again with the next try.
 helper_tree(){ local d out rc i; d="$(run_dir)"; HELPER_WHY=""
   [ "${YUKTI_HELPER:-1}" != 0 ] && [ -n "$d" ] && [ ! -e "$d/helper-off" ] || return 1
   helper_connect || { helper_give_up; return 1; }
   for i in 1 2 3; do
-    rc=0; out="$(helper_http GET "/session/$(cat "$d/helper-session")/source" "$(helper_read_timeout)")" || rc=$?
+    rc=0
+    if [ "${AUI_ACTIONS:-}" = 1 ]; then out="$(helper_actions_read "$(cat "$d/helper-session")")" || rc=$?
+    else out="$(helper_http GET "/session/$(cat "$d/helper-session")/source" "$(helper_read_timeout)")" || rc=$?; fi
     case "$rc" in
       0) printf '%s' "$out"; return 0;;
       2) rm -f "$d/helper-port"; helper_connect || { helper_give_up; return 1; };;
@@ -513,6 +519,23 @@ helper_tree(){ local d out rc i; d="$(run_dir)"; HELPER_WHY=""
     esac
   done
   HELPER_WHY="three reads in a row gave no tree"; helper_give_up; return 1; }
+# One read with the actions (#183): includeA11yActionsInPageSource on, the tree,
+# off again, so no other read carries them. Prints the tree and returns the
+# status of the first request that failed, which helper_tree repairs by. A
+# server that does not know the setting answers 200 and leaves it out of the
+# tree, so a tree without any "actions" is told apart where it is read, not
+# here. A session that did not take the setting back is forgotten and a new
+# one is opened at once, as after the full tree (#116) - also when the read
+# itself failed, so the next try of helper_tree has a session to read on.
+helper_actions_read(){ local sid="$1" d out rc=0; d="$(run_dir)"
+  helper_http POST "/session/$sid/appium/settings" 5 '{"settings":{"includeA11yActionsInPageSource":true}}' >/dev/null || return $?
+  out="$(helper_http GET "/session/$sid/source" "$(helper_read_timeout)")" || rc=$?
+  if ! helper_http POST "/session/$sid/appium/settings" 5 '{"settings":{"includeA11yActionsInPageSource":false}}' >/dev/null; then
+    rm -f "$d/helper-session" "$(helper_cache)/session-$(helper_key "$(helper_serial)")" 2>/dev/null || true
+    helper_connect >/dev/null 2>&1 || true
+  fi
+  [ "$rc" -eq 0 ] || return "$rc"
+  printf '%s' "$out"; }
 # The whole screen, rows below the fold included (#116). The helper leaves out
 # what is not displayed, so a row below the fold is in no read at all, and a
 # search can only swipe until it comes into view. Told to keep such rows
@@ -622,10 +645,11 @@ match=(sys.argv[3] if len(sys.argv)>3 else "exact")
 # an empty answer leaves open: "on cx cy" for the winner, else "zero x1 y1 x2 y2"
 # for a match of zero area, else "off x1 y1 x2 y2" for one outside the screen,
 # else nothing - not in the tree. The iOS path answers the same. "state" (#103)
-# prints the centre and then the selected and checked state of the winner:
-# "cx cy true|false true|false|none" - "none" for a node that is not checkable,
-# whose checked="false" says nothing (React Native marks a node checkable
-# exactly when accessibilityState has "checked"). "count" (#47) prints how many
+# prints the centre and then the selected, checked and expanded state of the
+# winner: "cx cy true|false true|false|none true|false|none|both|unread" -
+# "none" for a node that is not checkable, whose checked="false" says nothing
+# (React Native marks a node checkable exactly when accessibilityState has
+# "checked"); expanded as expanded_of below words it (#183). "count" (#47) prints how many
 # elements match (see pick below). The seventh argument, an index (#46), picks
 # one of them instead of the winner and prints it as above; an index past the
 # last match leaves with status 5 and the number of matches on its output.
@@ -739,6 +763,22 @@ def pick(cands):
         else: rows.append((cy,h,[c]))
     return [c for r in rows for c in sorted(r[2],key=lambda c:(c[1][0]+c[1][2])/2)]
 idx=(sys.argv[7] if len(sys.argv)>7 else ""); enum=bool(idx) or out=="count"; cands=[]
+# Expanded (#183) has no attribute: React Native gives an expanded node the
+# action ACTION_COLLAPSE and a collapsed one ACTION_EXPAND, and the screen
+# helper lists the actions of a node in "actions" only when asked to - the read
+# of a step that asks "expanded" does (helper_tree). A node with no actions has
+# no such attribute, so "none" - no expanded state - needs at least one in the
+# tree; a tree with none at all is a read without actions (a plain dump, or a
+# helper that did not know the setting): "unread". Both actions at once (a node
+# that also declares them in accessibilityActions) cannot be told: "both".
+ACTS=re.search(r"<node\b[^>]*\sactions=",xml) is not None
+def expanded_of(v):
+    acts=[x.strip() for x in v.split(",")]
+    col,exp="ACTION_COLLAPSE" in acts,"ACTION_EXPAND" in acts
+    if col and exp: return "both"
+    if col: return "true"
+    if exp: return "false"
+    return "none" if ACTS else "unread"
 for m in re.finditer(r"<node\b[^>]*>", xml):
     tag=m.group(0)
     def a(n):
@@ -810,7 +850,8 @@ for m in re.finditer(r"<node\b[^>]*>", xml):
         continue
     if enum:
         cands.append((score,(x1,y1,x2,y2),(cx,cy),("true" if a("selected")=="true" else "false",
-                      ("true" if a("checked")=="true" else "false") if a("checkable")=="true" else "none")))
+                      ("true" if a("checked")=="true" else "false") if a("checkable")=="true" else "none",
+                      expanded_of(a("actions")))))
         continue
     # A tie goes to the candidate that lies inside the current winner. A dialog
     # whose whole window carries the label of the button at its bottom ranks both
@@ -822,7 +863,8 @@ for m in re.finditer(r"<node\b[^>]*>", xml):
     if score==best_score and not (mode not in ("assert","id") and inside((x1,y1,x2,y2),best_box)): continue
     best=(cx,cy); best_box=(x1,y1,x2,y2); best_score=score
     best_state=("true" if a("selected")=="true" else "false",
-                ("true" if a("checked")=="true" else "false") if a("checkable")=="true" else "none")
+                ("true" if a("checked")=="true" else "false") if a("checkable")=="true" else "none",
+                expanded_of(a("actions")))
 if enum:
     ms=pick(cands)
     if out=="count": print(len(ms)); sys.exit(0)
@@ -1841,6 +1883,12 @@ def emit(e,xy):
 # one, is no state. Only the English words are read: a value in another
 # language reads as no state and fails by name instead of passing. Written from the idb and React Native
 # sources, not run on a simulator yet (#87).
+# Expanded (#183) is the part "expanded", which React Native adds only when it
+# is true: a collapsed section adds nothing, the same as an element with no
+# such state, so on iOS false is the absence of the word and "none" is never
+# answered - a step that asks false proves something only next to one that
+# asks true of the same element. A value in another language has no "expanded"
+# and reads as false.
 def state(e):
     tr=e.get("traits") or []
     if isinstance(tr,str): tr=tr.replace(","," ").split()
@@ -1853,7 +1901,8 @@ def state(e):
     elif w=="unchecked" or ("switch" in t and v=="0"): chk="false"
     elif w=="mixed": chk="mixed"
     else: chk="none"
-    return sel,chk
+    exp="true" if "expanded" in [x.strip() for x in v.split(",")] else "false"
+    return sel,chk,exp
 best=None; best_el=None; best_score=-1; zero=None; off=None
 # Corners (x1,y1,x2,y2): a lies entirely inside b and is not b itself. The
 # Android path defines the same function; keep the two identical. A tap match
@@ -2660,6 +2709,8 @@ tap_id_at(){ local q="$1" xs="$2" ys="$3" idx="${4:-}" out st=0 x1 y1 x2 y2 sx1 
   tap_checked "$q" id "$px" "$py" "" "$idx" || return
   ok "tap id '$q'${idx:+ index $idx} at ${xs:-50}% x ${ys:-50}% of $((x2 - x1))x$((y2 - y1)): $px,$py"; }
 assert_id(){ local q="${1:-}" want="${2:-}" idx="${3:-}"; [ -n "$q" ] || die "assertId needs a non-empty id"; local xy st=0 miss
+  # Expanded is read from the actions of a node, which a read carries only when asked (#183).
+  case " $want " in *" expanded="*) local AUI_ACTIONS=1;; esac
   [ -z "$want" ] || { xy="$(find_el "$q" id exact state "" "$idx")" || st=$?; [ "$st" -ne 5 ] || die "assert FAILED: $(index_miss "$idx" "$xy" "id '$q'")"; [ "$st" -eq 0 ] || die "assert FAILED: $(lookup_err "$st")"
     [ -n "$xy" ] || die "assert FAILED: $(id_miss "$q")"
     miss="$(state_miss "$q" "$want" $xy)"; [ -z "$miss" ] || die "assert FAILED: $miss"
@@ -2705,11 +2756,11 @@ assert_count(){ local q="${1:-}" kind="${2:-assert}" op="${3:-}" n="${4:-}" m="$
   ok "$what: $q on the screen, $words $n"; }
 # The state a step asks of an element (#103): "selected=true checked=false", as
 # the flow builder writes it. state_miss <id> <want> <cx> <cy> <selected>
-# <checked> prints what does not hold, in words, or nothing; state_words says
+# <checked> <expanded> prints what does not hold, in words, or nothing; state_words says
 # what was asked. A checked state asked of an element that has none ("none":
 # not checkable on Android, no checked word on iOS) is a miss, never a pass:
 # checked="false" on a plain view would otherwise satisfy "checked": false.
-state_miss(){ local q="$1" want="$2" sel="$5" chk="$6" k v out=""
+state_miss(){ local q="$1" want="$2" sel="$5" chk="$6" exp="${7:-unread}" k v out=""
   for k in $want; do v="${k#*=}"
     case "${k%%=*}" in
       selected) [ "$sel" = "$v" ] || { [ "$v" = true ] && out="${out:+$out; }'$q' is not selected" || out="${out:+$out; }'$q' is selected"; };;
@@ -2718,11 +2769,17 @@ state_miss(){ local q="$1" want="$2" sel="$5" chk="$6" k v out=""
           mixed) out="${out:+$out; }'$q' is partly checked (mixed)";;
           *) [ "$chk" = "$v" ] || { [ "$v" = true ] && out="${out:+$out; }'$q' is not checked" || out="${out:+$out; }'$q' is checked"; };;
         esac;;
+      expanded) case "$exp" in
+          none)   out="${out:+$out; }'$q' has no expanded state - the app does not mark it as expandable";;
+          both)   out="${out:+$out; }'$q' offers both expand and collapse - its expanded state cannot be told";;
+          unread) out="${out:+$out; }'$q': the expanded state is read only through the screen helper, and this read had no actions in it";;
+          *) [ "$exp" = "$v" ] || { [ "$v" = true ] && out="${out:+$out; }'$q' is not expanded" || out="${out:+$out; }'$q' is expanded"; };;
+        esac;;
     esac
   done
   printf '%s' "$out"; }
 state_words(){ local k out=""
-  for k in $1; do case "$k" in selected=true) k="selected";; selected=false) k="not selected";; checked=true) k="checked";; checked=false) k="not checked";; esac; out="${out:+$out, }$k"; done
+  for k in $1; do case "$k" in selected=true) k="selected";; selected=false) k="not selected";; checked=true) k="checked";; checked=false) k="not checked";; expanded=true) k="expanded";; expanded=false) k="not expanded";; esac; out="${out:+$out, }$k"; done
   printf '%s' "$out"; }
 # The density of the screen, for a constraint written in dp. Read once per run
 # and kept: it cannot change under a run, and every box assertion would
@@ -3161,6 +3218,7 @@ wait_s(){ sleep "${1:-2}"; }
 # there yet", and the timeout says how many there were.
 wait_for(){ local q="${1:-}" t="${2:-10}" m="${3:-exact}" mode="${4:-assert}" opt="${5:-}" in="${6:-}" want="${7:-}" idx="${8:-}" xy readable=1 lst=1 nosc=0 t0 el label why="" msg miss="" many=""
   [ -n "$q" ] || die "waitFor needs a non-empty value"
+  case " $want " in *" expanded="*) local AUI_ACTIONS=1;; esac
   case "$t" in ''|*[!0-9]*|0) die "waitFor: timeout must be a whole number of seconds greater than zero, got '$t'";; esac
   case "$m" in exact|contains) ;; *) die "waitFor: unknown match '$m' - use exact or contains";; esac
   [ "$mode" = id ] && label="waitFor id" || label="waitFor ($m match)${in:+ in '$in'}"
@@ -5309,8 +5367,9 @@ BOX_RELATIONS = ("above", "apart", "below", "leftOf", "rightOf")
 # takes it.
 # "in" limits a text check to one element, named by id (#102).
 # "shows" is what a field that filters its input holds after `type` (#128).
-# "selected" and "checked" ask an element found by id for its state (#103).
-STATE_KEYS = ("selected", "checked")
+# "selected" and "checked" ask an element found by id for its state (#103),
+# and "expanded" (#183).
+STATE_KEYS = ("selected", "checked", "expanded")
 STATE_VERBS = ("assertId", "waitForId")
 # "wheel" is the number of the wheel turnWheel turns, top to bottom, then
 # left to right (#120).
@@ -6285,8 +6344,10 @@ ${_yk_B}yukti v$YUKTI_VERSION${_yk_R} — YUKTI — smart mobile-app QA automati
               part of a longer text fail by name
               type takes "shows": the text a field that filters its input holds once the value is typed
               ("value":"12a!","shows":"12" in a digits-only field); the read-back and its retries check that
-              assertId and waitForId take "selected" and "checked" (true or false): the element found by the id has
+              assertId and waitForId take "selected", "checked" and "expanded" (true or false): the element found by the id has
               to be in that state - waitForId waits for it; a "checked" asked of an element that is not checkable fails
+              by name; "expanded" is read on Android from the actions of the node, through the screen helper only,
+              and on iOS false is the absence of the word "expanded" in the value, which an element without the state passes too
               waitFor polls for an element and fails on timeout ("timeout": seconds, default 10); it never scrolls.
               waitForId names on timeout which case it ended in: not in the tree, at zero size, or outside the screen;
               "optional": true on it skips the step on timeout instead of failing the flow, with those words

@@ -5975,5 +5975,267 @@ begin "in on iOS: waitFor names the missing element as the one \"in\" names, wit
 status_is 1; has out.txt "'Ada' not on screen after 1s - no element with id 'greeting' (named by \"in\")"; lacks out.txt "in the tree at"; lacks out.txt "outside the screen"
 verdict
 
+# ── expanded by id (#183) ────────────────────────────────────────────────────
+# Android reads it from the actions of a node, which the helper lists only when
+# the read asks for them; iOS from the word "expanded" in the value.
+# enode <id> <y> <actions or empty> [selected] - a control as the helper writes it.
+enode(){ printf '<android.view.ViewGroup index="0" package="com.example" class="android.view.ViewGroup" text="" resource-id="com.example:id/%s" clickable="true" enabled="true" focusable="true" selected="%s" bounds="[0,%d][1080,%d]" displayed="true"%s />' \
+  "$1" "${4:-false}" "$2" "$(( $2 + 100 ))" "${3:+ actions=\"$3\"}"; }
+XOTHER="$(enode other 900 ACTION_CLICK)"
+# xcase <name> <file of the actions tree or empty> - a helper case whose plain
+# tree has the same nodes with no actions, as the server gives them unasked.
+xscreen(){ local n="$1"; shift
+  helper_screen "$case_dir/adb/helper-actions-$n.xml" "$@"
+  helper_screen "$case_dir/adb/helper-$n.xml" "$(printf '%s' "$*" | sed 's/ actions="[^"]*"//g')"; }
+
+helper_case exp-true
+: > "$case_dir/adb/running"; xscreen 1 "$(enode card-disclosure 300 ACTION_CLICK,ACTION_COLLAPSE)" "$XOTHER"
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "card-disclosure", "expanded": true }'
+run_helper flow "$case_dir/flow.json"
+begin "assertId expanded: a node that offers collapse is expanded; the actions are asked for that read and put back"
+status_is 0; has out.txt "assert id: 'card-disclosure' on screen at 540 350, expanded"
+has adb/http-log '"includeA11yActionsInPageSource":true'; has adb/http-log '"includeA11yActionsInPageSource":false'
+value_is adb/actions-sources 1; has out.txt "screen reads: 1 by the helper, 0 by uiautomator dump"
+verdict; helper_done
+
+helper_case exp-false
+: > "$case_dir/adb/running"; xscreen 1 "$(enode card-disclosure 300 ACTION_CLICK,ACTION_EXPAND)" "$XOTHER"
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "card-disclosure", "expanded": false }'
+run_helper flow "$case_dir/flow.json"
+begin "assertId expanded: a node that offers expand is not expanded"
+status_is 0; has out.txt "'card-disclosure' on screen at 540 350, not expanded"
+verdict; helper_done
+
+helper_case exp-miss
+: > "$case_dir/adb/running"; xscreen 1 "$(enode card-disclosure 300 ACTION_CLICK,ACTION_EXPAND)" "$XOTHER"
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "card-disclosure", "expanded": true }'
+run_helper flow "$case_dir/flow.json"
+begin "assertId expanded: a collapsed node fails expanded true, and the tree of the failure keeps the actions"
+status_is 1; has out.txt "assert FAILED: 'card-disclosure' is not expanded"; has res/flow-fail.xml 'ACTION_EXPAND'
+verdict; helper_done
+
+helper_case exp-none
+: > "$case_dir/adb/running"; xscreen 1 "$(enode card-disclosure 300 ACTION_CLICK)" "$XOTHER"
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "card-disclosure", "expanded": false }'
+run_helper flow "$case_dir/flow.json"
+begin "assertId expanded: a node with actions but neither expand nor collapse has no state, and false is not green"
+status_is 1; has out.txt "'card-disclosure' has no expanded state - the app does not mark it as expandable"
+verdict; helper_done
+
+helper_case exp-none-bare
+: > "$case_dir/adb/running"; xscreen 1 "$(enode card-disclosure 300 "")" "$XOTHER"
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "card-disclosure", "expanded": false }'
+run_helper flow "$case_dir/flow.json"
+begin "assertId expanded: a node with no actions at all, among nodes that have them, has no state"
+status_is 1; has out.txt "'card-disclosure' has no expanded state"
+verdict; helper_done
+
+helper_case exp-both
+: > "$case_dir/adb/running"; xscreen 1 "$(enode card-disclosure 300 ACTION_EXPAND,ACTION_COLLAPSE)" "$XOTHER"
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "card-disclosure", "expanded": true }'
+run_helper flow "$case_dir/flow.json"
+begin "assertId expanded: a node that offers both expand and collapse cannot be told, true is not green"
+status_is 1; has out.txt "'card-disclosure' offers both expand and collapse - its expanded state cannot be told"
+verdict; helper_done
+
+helper_case exp-both-false
+: > "$case_dir/adb/running"; xscreen 1 "$(enode card-disclosure 300 ACTION_EXPAND,ACTION_COLLAPSE)" "$XOTHER"
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "card-disclosure", "expanded": false }'
+run_helper flow "$case_dir/flow.json"
+begin "assertId expanded: both actions, false is not green either"
+status_is 1; has out.txt "offers both expand and collapse"
+verdict; helper_done
+
+helper_case exp-unread-helper
+: > "$case_dir/adb/running"; helper_screen "$case_dir/adb/helper-1.xml" "$(enode card-disclosure 300 "")" "$(enode other 900 "")"
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "card-disclosure", "expanded": false }'
+run_helper flow "$case_dir/flow.json"
+begin "assertId expanded: a helper that skips the setting gives a tree with no actions, and the step fails by name"
+status_is 1; has adb/http-log '"includeA11yActionsInPageSource":true'
+has out.txt "'card-disclosure': the expanded state is read only through the screen helper, and this read had no actions in it"
+verdict; helper_done
+
+dev_case exp-unread-dump
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(snode card-disclosure 300 false)")"
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "card-disclosure", "expanded": false }'
+run_flow "$case_dir/flow.json"
+begin "assertId expanded: a plain dump has no actions, false fails by name, nothing green"
+status_is 1; fake_used; has out.txt "the expanded state is read only through the screen helper"
+verdict
+
+helper_case exp-helper-off
+gone "$CACHE/installed-emulator-5554"
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(snode card-disclosure 300 false)")"
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "card-disclosure", "expanded": true }'
+run_helper flow "$case_dir/flow.json" -- YUKTI_HELPER=0
+begin "assertId expanded: with YUKTI_HELPER=0 the step does not start the helper, it fails by name"
+status_is 1; value_is adb/dumps 1; file_absent adb/http-log; lacks adb/log "am instrument"; lacks adb/log "forward"
+has out.txt "the expanded state is read only through the screen helper"
+verdict; helper_done
+
+helper_case exp-helper-given-up
+: > "$case_dir/adb/start-fails"
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(snode card-disclosure 300 false)")"
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "card-disclosure" }' '{ "do": "assertId", "value": "card-disclosure", "expanded": true }'
+run_helper flow "$case_dir/flow.json"
+begin "assertId expanded: after the run gave the helper up, the step does not start it again"
+status_is 1; count_is adb/log "am instrument" 1; value_is adb/dumps 2
+has out.txt "the expanded state is read only through the screen helper"
+verdict; helper_done
+
+helper_case exp-nonxml-once
+: > "$case_dir/adb/running"; echo nonxml-once > "$case_dir/adb/source-mode"
+xscreen 1 "$(enode card-disclosure 300 ACTION_CLICK,ACTION_COLLAPSE)" "$XOTHER"
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "card-disclosure", "expanded": true }'
+run_helper flow "$case_dir/flow.json"
+begin "assertId expanded: one answer that is not a tree is read again with the actions, not given up on"
+status_is 0; file_absent adb/dumps; count_is adb/http-log '"includeA11yActionsInPageSource":true' 2
+has out.txt "screen reads: 1 by the helper, 0 by uiautomator dump, 0 fallback(s)"
+verdict; helper_done
+
+helper_case exp-stale-session
+: > "$case_dir/adb/running"; printf 'stale' > "$case_dir/$CACHE/session-emulator-5554"
+xscreen 1 "$(enode card-disclosure 300 ACTION_CLICK,ACTION_COLLAPSE)" "$XOTHER"
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "card-disclosure", "expanded": true }'
+run_helper flow "$case_dir/flow.json" -- YUKTI_HELPER_KEEP=1
+begin "assertId expanded: a lost session is opened again and the actions are asked on the new one"
+status_is 0; file_absent adb/dumps; value_is adb/sessions 1
+has adb/http-log "POST /session/stale/appium/settings"; has adb/http-log 'POST /session/s1/appium/settings {"settings":{"includeA11yActionsInPageSource":true}}'
+verdict; helper_done
+
+helper_case exp-not-put-back
+: > "$case_dir/adb/running"; echo fail-actions-false > "$case_dir/adb/settings-mode"
+xscreen 1 "$(enode card-disclosure 300 ACTION_CLICK,ACTION_COLLAPSE)" "$XOTHER"
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "card-disclosure", "expanded": true }' '{ "do": "assertId", "value": "other" }'
+run_helper flow "$case_dir/flow.json"
+begin "assertId expanded: a session that does not take the setting back is forgotten, and the next read is on a new one"
+status_is 0; value_is adb/sessions 2; has adb/http-log "GET /session/s2/source"
+verdict; helper_done
+
+helper_case exp-wait
+: > "$case_dir/adb/running"
+xscreen 1 "$(enode card-disclosure 300 ACTION_CLICK,ACTION_EXPAND)" "$XOTHER"
+xscreen 2 "$(enode card-disclosure 300 ACTION_CLICK,ACTION_COLLAPSE)" "$XOTHER"
+flow_file "$case_dir/flow.json" '{ "do": "waitForId", "value": "card-disclosure", "expanded": true, "timeout": 3 }'
+run_helper flow "$case_dir/flow.json"
+begin "waitForId expanded: waits until the node offers collapse, each poll a read with the actions"
+status_is 0; has out.txt "waitFor id: 'card-disclosure' on screen at 540 350 after"; has out.txt ", expanded"
+value_is adb/actions-sources 2; has out.txt "screen reads: 2 by the helper, 0 by uiautomator dump"
+verdict; helper_done
+
+helper_case exp-wait-timeout
+: > "$case_dir/adb/running"; xscreen 1 "$(enode card-disclosure 300 ACTION_CLICK,ACTION_EXPAND)" "$XOTHER"
+flow_file "$case_dir/flow.json" '{ "do": "waitForId", "value": "card-disclosure", "expanded": true, "timeout": 1 }'
+run_helper flow "$case_dir/flow.json"
+begin "waitForId expanded: a node that stays collapsed times out with the words of the state"
+status_is 1; has out.txt "'card-disclosure' is not expanded after 1s"
+verdict; helper_done
+
+helper_case exp-others-plain
+: > "$case_dir/adb/running"; xscreen 1 "$(enode card-disclosure 300 ACTION_CLICK,ACTION_COLLAPSE true)" "$XOTHER"
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "card-disclosure", "selected": true }' '{ "do": "tapId", "value": "card-disclosure" }'
+run_helper flow "$case_dir/flow.json"
+begin "expanded: steps that do not ask it read as before, with no setting posted"
+status_is 0; lacks adb/http-log "includeA11yActionsInPageSource"; file_absent adb/actions-sources
+verdict; helper_done
+
+helper_case exp-two-keys
+: > "$case_dir/adb/running"; xscreen 1 "$(enode card-disclosure 300 ACTION_CLICK,ACTION_EXPAND true)" "$XOTHER"
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "card-disclosure", "selected": true, "expanded": false }' '{ "do": "assertId", "value": "card-disclosure", "selected": false, "expanded": true }'
+run_helper flow "$case_dir/flow.json"
+begin "expanded with selected: each read in its own place, both misses named"
+status_is 1; has out.txt "'card-disclosure' on screen at 540 350, selected, not expanded"
+has out.txt "assert FAILED: 'card-disclosure' is selected; 'card-disclosure' is not expanded"
+verdict; helper_done
+
+helper_case exp-index
+: > "$case_dir/adb/running"
+xscreen 1 "$(enode row-toggle 300 ACTION_CLICK,ACTION_COLLAPSE)" "$(enode row-toggle 600 ACTION_CLICK,ACTION_EXPAND true)" "$XOTHER"
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "row-toggle", "index": 1, "selected": true, "expanded": false }' '{ "do": "assertId", "value": "row-toggle", "index": 0, "expanded": false }'
+run_helper flow "$case_dir/flow.json"
+begin "expanded with index: the state of the match picked, and the first is expanded"
+status_is 1; has out.txt "'row-toggle' index 1 on screen at 540 650, selected, not expanded"
+has out.txt "assert FAILED: 'row-toggle' is expanded"
+verdict; helper_done
+
+helper_case exp-read-and-put-back-fail
+: > "$case_dir/adb/running"; echo nonxml-once > "$case_dir/adb/source-mode"; echo fail-actions-false > "$case_dir/adb/settings-mode"
+xscreen 1 "$(enode card-disclosure 300 ACTION_CLICK,ACTION_COLLAPSE)" "$XOTHER"
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "card-disclosure", "expanded": true }'
+run_helper flow "$case_dir/flow.json"
+begin "assertId expanded: a failed read on a session that does not take the setting back leaves a new session for the next try"
+status_is 0; lacks out.txt "No such file"; lacks adb/http-log "/session//"; value_is adb/actions-sources 1
+verdict; helper_done
+
+dev_case exp-wait-unread
+screen "$case_dir/adb/dump-1.xml" "$(sroot "$(snode card-disclosure 300 false)")"
+flow_file "$case_dir/flow.json" '{ "do": "waitForId", "value": "card-disclosure", "expanded": true, "timeout": 1 }'
+run_flow "$case_dir/flow.json"
+begin "waitForId expanded: a read with no actions times out by name, not as a collapsed section"
+status_is 1; has out.txt "the expanded state is read only through the screen helper, and this read had no actions in it after 1s"
+verdict
+
+# iexp <id> <value> [y] - an iOS button with this accessibility value.
+iexp(){ printf '{"type":"Button","role_description":"button","AXUniqueId":"%s","AXLabel":"Toggle","AXValue":"%s","frame":{"x":20,"y":%d,"width":360,"height":44}}' "$1" "$2" "${3:-200}"; }
+
+ios_case ios-exp-true
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$(iexp card-disclosure expanded)"
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "card-disclosure", "expanded": true }'
+run_ios "$case_dir/flow.json"
+begin "assertId expanded on iOS: the word expanded in the value"
+status_is 0; has out.txt ", expanded"
+verdict
+
+ios_case ios-exp-with-checked
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$(iexp card-disclosure 'checkbox, checked, expanded')" "$(iexp other 'checkbox, unchecked, expanded' 400)"
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "card-disclosure", "checked": true, "expanded": true }' '{ "do": "assertId", "value": "other", "checked": false, "expanded": true }'
+run_ios "$case_dir/flow.json"
+begin "assertId expanded on iOS: the word among the other parts of the value, next to checked"
+status_is 0; has out.txt "checked, expanded"; has out.txt "not checked, expanded"
+verdict
+
+ios_case ios-exp-false
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$(iexp card-disclosure '')" "$(iexp other 'checkbox, checked' 400)"
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "card-disclosure", "expanded": false }' '{ "do": "assertId", "value": "other", "expanded": false }'
+run_ios "$case_dir/flow.json"
+begin "assertId expanded on iOS: no word is false, with an empty value or with other parts"
+status_is 0; has out.txt "'card-disclosure' on screen"; has out.txt "'other' on screen"; has out.txt ", not expanded"
+verdict
+
+ios_case ios-exp-miss
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$(iexp card-disclosure expanded)"
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "card-disclosure", "expanded": false }'
+run_ios "$case_dir/flow.json"
+begin "assertId expanded on iOS: an expanded element fails expanded false"
+status_is 1; has out.txt "assert FAILED: 'card-disclosure' is expanded"
+verdict
+
+ios_case ios-exp-wait
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$(iexp card-disclosure '')"
+tree "$case_dir/idb/desc-2.json" "$IAPP" "$(iexp card-disclosure expanded)"
+flow_file "$case_dir/flow.json" '{ "do": "waitForId", "value": "card-disclosure", "expanded": true, "timeout": 3 }'
+run_ios "$case_dir/flow.json"
+begin "waitForId expanded on iOS: waits for the word"
+status_is 0; has out.txt ", expanded"
+verdict
+
+ios_case ios-exp-other-language
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$(iexp card-disclosure ampliado)"
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "card-disclosure", "expanded": true }'
+run_ios "$case_dir/flow.json"
+begin "assertId expanded on iOS: only the English word is read - another language is not expanded"
+status_is 1; has out.txt "'card-disclosure' is not expanded"
+verdict
+
+new_case exp-check
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "card-disclosure", "expanded": true }' '{ "do": "waitForId", "value": "card-disclosure", "expanded": false, "selected": true }'
+expect "check: expanded on assertId and waitForId builds" 0 " - 2 steps" check "$case_dir/flow.json"
+flow_file "$case_dir/wrong.json" '{ "do": "tapId", "value": "card-disclosure", "expanded": true }'
+expect "check: expanded on a step that does not take it is refused" 1 \
+  "step 1 'tapId': step 'tapId' does not take \"expanded\" - only assertId, waitForId do" check "$case_dir/wrong.json"
+flow_file "$case_dir/notbool.json" '{ "do": "assertId", "value": "card-disclosure", "expanded": "yes" }'
+expect "check: expanded that is not true or false is refused" 1 \
+  "step 1 'assertId': \"expanded\" is true or false, got \"yes\"" check "$case_dir/notbool.json"
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
