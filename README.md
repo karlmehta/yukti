@@ -140,6 +140,8 @@ that runs past all the same is noticed and swiped back to where it was read.
 When the helper cannot answer, the run falls back to `uiautomator dump` and
 says so once. Each read prints its source and time,
 and a flow ends with a count: `screen reads: 41 by the helper, 0 by uiautomator dump, 0 fallback(s)`.
+On iOS the count is `screen reads: 41 by idb, 1 idb connect(s), 0 refused`: the
+simulator is connected once, and again only after a read that came back empty.
 
 - **Lifetime.** The helper is started by `yukti flow` and stopped when that
   flow ends. Single commands (`yukti ui`, `yukti tap-id` ...) use a helper that
