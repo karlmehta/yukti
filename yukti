@@ -591,9 +591,14 @@ us_of(){ local s="${1%%.*}" f="000000"; case "$1" in *.*) f="${1#*.}000000"; f="
 read_note(){ local d; d="$(run_dir)"
   printf '  · read %s %d ms\n' "$1" $(( ($(us_of "$(now)") - $(us_of "$2")) / 1000 )) >&2
   [ -z "$d" ] || printf 'x' >> "$d/reads-$1" 2>/dev/null || true; }
-read_summary(){ local d h u f; d="$(run_dir)"; [ -n "$d" ] || return 0
+read_summary(){ local d h u f i c r; d="$(run_dir)"; [ -n "$d" ] || return 0
   h="$(cat "$d/reads-helper" 2>/dev/null || true)"; u="$(cat "$d/reads-dump" 2>/dev/null || true)"
   f="$(cat "$d/helper-fallbacks" 2>/dev/null || true)"
+  i="$(cat "$d/reads-idb" 2>/dev/null || true)"; c="$(cat "$d/idb-connects" 2>/dev/null || true)"
+  r="$(cat "$d/idb-refused" 2>/dev/null || true)"
+  # iOS: the connects are counted too, refused ones apart - a flow that died on
+  # its first read still says what the connect did (#175).
+  [ $(( ${#i} + ${#c} + ${#r} )) -eq 0 ] || say "screen reads: ${#i} by idb, ${#c} idb connect(s), ${#r} refused"
   [ $(( ${#h} + ${#u} )) -gt 0 ] || return 0
   say "screen reads: ${#h} by the helper, ${#u} by uiautomator dump, ${#f} fallback(s)"; }
 # The resident helper answers first (see helper_tree); the dump below is the
@@ -1767,14 +1772,52 @@ up(){ local V="${1:?usage: yukti up <variant>}"; build "$V"; boot; install "$V";
 
 # ── drive primitives (used by flows AND by AI agents) ────────────────────────
 U(){ cat "$(udid_file)" 2>/dev/null || booted; }
-idb_ready(){ paths; idb connect "$(U)" >/dev/null 2>&1 || true; }
+# The simulator's idb companion is connected once, not before every read (#175).
+# `idb connect` took 5.4 s of a 5.6 s read on a CI runner; `describe-all` alone
+# takes 0.2 s. A file beside yukti-udid says a connect was made for this
+# simulator, so the next read - in this flow or the next one under the same
+# TMPDIR - goes without one. A read that comes back empty forgets it and
+# connects again, once per read. Only a plain udid names the file: anything
+# else in yukti-udid connects before every read, as before. The file is made
+# with noclobber, so a link left in its place is not followed.
+idb_mark(){ case "${1:-}" in ''|*[!A-Za-z0-9-]*) return 1;; esac; printf '%s/yukti-idb-%s' "${TMPDIR:-/tmp}" "$1"; }
+idb_forget(){ local f; f="$(idb_mark "${1:-}")" || return 0; rm -f "$f" 2>/dev/null || true; }
+# IDB_DID: whether this call ran a connect, refused or not - a read connects
+# again only when it has not connected yet.
+IDB_DID=""
+idb_ready(){ local u="${1:-}" f t0 ef err="" rc=0; paths; IDB_DID=""; f="$(idb_mark "$u")" || f=""
+  if [ -n "$f" ] && [ -f "$f" ] && [ ! -L "$f" ]; then return 0; fi
+  # idb's words go to a file, not through $(...): a pipe would hold the read
+  # until every process that inherited it - a companion connect left behind -
+  # let go of it.
+  IDB_DID=1; t0="$(now)"; ef="$(mktemp "${TMPDIR:-/tmp}/yukti-connect-err.XXXXXX" 2>/dev/null)" || ef=""
+  idb connect "$u" >/dev/null 2>"${ef:-/dev/null}" || rc=$?
+  [ -z "$ef" ] || { err="$(tail -n 1 "$ef" 2>/dev/null || true)"; rm -f "$ef" 2>/dev/null || true; }
+  idb_connect_note "$t0" "$rc" "${err:-}"
+  if [ "$rc" -eq 0 ] && [ -n "$f" ]; then (set -C; : > "$f") 2>/dev/null || true; fi
+  return 0; }
+# A refused connect says so, with the last line idb wrote: without it a runner
+# where every connect fails looks the same as one where each read connects once.
+idb_connect_note(){ local d ms; d="$(run_dir)"; ms=$(( ($(us_of "$(now)") - $(us_of "$1")) / 1000 ))
+  if [ "$2" -eq 0 ]; then printf '  · idb connect %d ms\n' "$ms" >&2; [ -z "$d" ] || printf 'x' >> "$d/idb-connects" 2>/dev/null || true
+  else printf '  · idb connect %d ms - refused (exit %s): %s\n' "$ms" "$2" "$(printf '%s\n' "$3" | tail -n 1)" >&2
+    [ -z "$d" ] || printf 'x' >> "$d/idb-refused" 2>/dev/null || true; fi; }
 shot(){ is_android && { ashot "$@"; return; }; paths; local o; o="$(shot_path "${1:-}")" || return 1; mkdir -p "$(dirname "$o")"; if xcrun simctl io "$(U)" screenshot "$o" >/dev/null 2>&1; then echo "$o"; else device_fault; return 1; fi; }
-ui(){ is_android && { aui; return; }; [ -n "$HELD_TREE" ] && { printf '%s' "$HELD_TREE"; return 0; }; idb_ready; local u out i; u="$(U)"; for i in 1 2 3 4; do out="$(idb ui describe-all --udid "$u" 2>/dev/null)"; [ -n "$out" ] && { keep_tree "$out"; printf '%s' "$out"; return 0; }; sleep 0.6; done
+# A read is an answer with something in it, whatever idb's status: a failed read
+# prints nothing on stdout. The status is not let end the script either - from
+# the command line (`yukti ui`, Studio) there is no $(...) around this to keep
+# set -e off it, and the tries below would never run.
+ui(){ is_android && { aui; return; }; [ -n "$HELD_TREE" ] && { printf '%s' "$HELD_TREE"; return 0; }
+  local u out i t0 tried; u="$(U)"; idb_ready "$u"; tried="$IDB_DID"
+  for i in 1 2 3 4; do t0="$(now)"; out="$(idb ui describe-all --udid "$u" 2>/dev/null)" || true
+    [ -n "$out" ] && { read_note idb "$t0"; keep_tree "$out"; printf '%s' "$out"; return 0; }
+    [ -n "$tried" ] || { idb_forget "$u"; idb_ready "$u"; tried=1; }
+    sleep 0.6; done
   # An empty tree after four tries is idb failing, not a screen with nothing on
   # it: a booted simulator always reports at least its window. Returning the
   # empty string made every caller read it as "the element is not there". The
   # Android path already fails here; this is the same rule for iOS.
-  device_fault; die "idb returned no accessibility tree after 4 tries - is the simulator booted?"; }
+  idb_forget "$u"; device_fault; die "idb returned no accessibility tree after 4 tries - is the simulator booted?"; }
 # The index (#46) is checked here, once for every caller: the flow builder
 # checks what a flow file says, and nothing else may reach int() with a word.
 find_el(){ case "${6:-}" in '') ;; *[!0-9]*|???????*) die "index must be a whole number from 0 to 999999, got '$6'";; esac

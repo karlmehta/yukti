@@ -6237,5 +6237,146 @@ flow_file "$case_dir/notbool.json" '{ "do": "assertId", "value": "card-disclosur
 expect "check: expanded that is not true or false is refused" 1 \
   "step 1 'assertId': \"expanded\" is true or false, got \"yes\"" check "$case_dir/notbool.json"
 
+# ── #175: idb connect once per simulator, again only when a read fails ──────
+# The mark lives beside yukti-udid in TMPDIR; every case has its own TMPDIR.
+imark(){ printf '%s/tmp/yukti-idb-%s' "$case_dir" "${1:-FAKE-UDID}"; }
+iconnects_are(){ local got; got="$(grep -c '^connect ' "$case_dir/idb/log" 2>/dev/null || true)"
+  [ "${got:-0}" -eq "$1" ] || no "idb connect ran ${got:-0} time(s), wanted $1"; }
+# ui_ios - `yukti ui` from the command line, where no $(...) holds set -e off.
+ui_ios(){ env -u YUKTI_VARIANT -u YUKTI_CONFIG PATH="$ROOT/tests/fake-sdk/idb-bin:$PATH" YUKTI_PLATFORM=ios FAKE_IDB_DIR="$case_dir/idb" \
+    YUKTI_RESULTS_DIR="$case_dir/res" TMPDIR="$case_dir/tmp" "$YUKTI" ui > "$case_dir/tree.out" 2> "$case_dir/err"
+  run_status=$?; sed $'s/\033\\[[0-9;]*m//g' "$case_dir/err" > "$case_dir/err.txt"; }
+I3="$(iexp a '' 200)"; I3B="$(iexp b '' 300)"; I3C="$(iexp c '' 400)"
+I3FLOW='{ "do": "assertId", "value": "a" }'
+
+ios_case idb-once
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$I3" "$I3B" "$I3C"
+flow_file "$case_dir/flow.json" "$I3FLOW" '{ "do": "assertId", "value": "b" }' '{ "do": "assertId", "value": "c" }'
+run_ios "$case_dir/flow.json"
+begin "iOS: three reads in a run, one idb connect, and the mark is left"
+status_is 0; iconnects_are 1; ireads_are 3; [ -f "$(imark)" ] || no "no mark after a connect"
+has out.txt "· idb connect"; has out.txt "· read idb"; has out.txt "screen reads: 3 by idb, 1 idb connect(s), 0 refused"
+lacks out.txt "by the helper"
+verdict
+run_ios "$case_dir/flow.json"
+begin "iOS: the next run on the same simulator does not connect"
+status_is 0; iconnects_are 1; has out.txt "screen reads: 3 by idb, 0 idb connect(s), 0 refused"
+verdict
+
+ios_case idb-stale-flow
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$I3" "$I3B"; : > "$(imark)"; : > "$case_dir/idb/stale"
+flow_file "$case_dir/flow.json" "$I3FLOW" '{ "do": "assertId", "value": "b" }'
+run_ios "$case_dir/flow.json"
+begin "iOS: a lost companion - the failed read connects again, the next read does not"
+status_is 0; iconnects_are 1; ireads_are 3; [ -f "$(imark)" ] || no "the mark is gone after the companion came back"
+verdict
+
+ios_case idb-stale-ui
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$I3"; : > "$(imark)"; : > "$case_dir/idb/stale"
+ui_ios
+begin "iOS: yukti ui from the command line connects again after a failed read"
+status_is 0; iconnects_are 1; ireads_are 2; has tree.out '"AXUniqueId":"a"'
+verdict
+
+ios_case idb-empty-ui
+: > "$(imark)"; : > "$case_dir/idb/empty"
+ui_ios
+begin "iOS: yukti ui with no tree at all - four reads, one connect, the reason, the mark forgotten"
+status_is 1; iconnects_are 1; ireads_are 4; has err.txt "idb returned no accessibility tree after 4 tries"
+[ ! -e "$(imark)" ] || no "the mark outlived a simulator that answered nothing"
+verdict
+
+ios_case idb-empty-unmarked
+: > "$case_dir/idb/empty"
+flow_file "$case_dir/flow.json" "$I3FLOW"
+run_ios "$case_dir/flow.json"
+begin "iOS: no mark and no tree - the read connects once, not once more after the first miss"
+status_is 1; iconnects_are 1; ireads_are 4; has out.txt "idb returned no accessibility tree after 4 tries"
+has out.txt "screen reads: 0 by idb, 1 idb connect(s), 0 refused"
+verdict
+
+ios_case idb-exit-1
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$I3"; : > "$(imark)"; : > "$case_dir/idb/exit-1"
+flow_file "$case_dir/flow.json" "$I3FLOW"
+run_ios "$case_dir/flow.json"
+begin "iOS: a tree with a non-zero status is a read - no connect"
+status_is 0; iconnects_are 0; ireads_are 1
+verdict
+
+ios_case idb-connect-refused
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$I3" "$I3B"; : > "$case_dir/idb/connect-fails"
+flow_file "$case_dir/flow.json" "$I3FLOW" '{ "do": "assertId", "value": "b" }'
+run_ios "$case_dir/flow.json"
+begin "iOS: a refused connect leaves no mark, says so, and the reads go on"
+status_is 0; iconnects_are 2; [ ! -e "$(imark)" ] || no "a mark after a refused connect"
+has out.txt "· idb connect"; has out.txt "refused (exit 1): idb: no companion for this target"
+has out.txt "screen reads: 2 by idb, 0 idb connect(s), 2 refused"
+verdict
+
+ios_case idb-stale-refused
+: > "$(imark)"; : > "$case_dir/idb/stale"; : > "$case_dir/idb/connect-fails"
+flow_file "$case_dir/flow.json" "$I3FLOW"
+run_ios "$case_dir/flow.json"
+begin "iOS: a lost companion that will not connect - the step fails and the mark is gone"
+status_is 1; iconnects_are 1; [ ! -e "$(imark)" ] || no "the mark outlived a refused connect"
+verdict
+
+ios_case idb-other-sim
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$I3"; : > "$(imark)"; printf 'OTHER-UDID' > "$case_dir/tmp/yukti-udid"
+flow_file "$case_dir/flow.json" "$I3FLOW"
+run_ios "$case_dir/flow.json"
+begin "iOS: another simulator is connected on its own first read"
+status_is 0; iconnects_are 1; has idb/log "connect OTHER-UDID"; [ -f "$(imark OTHER-UDID)" ] || no "no mark for the other simulator"
+verdict
+
+ios_case idb-odd-udid
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$I3"; printf '../x' > "$case_dir/tmp/yukti-udid"
+flow_file "$case_dir/flow.json" "$I3FLOW" '{ "do": "assertId", "value": "a" }'
+run_ios "$case_dir/flow.json"
+begin "iOS: a udid that is not a plain name makes no mark anywhere and connects before every read"
+status_is 0; iconnects_are 2; [ ! -e "$case_dir/x" ] || no "a file outside TMPDIR"
+[ -z "$(ls "$case_dir/tmp" | grep '^yukti-idb' || true)" ] || no "a mark for an odd udid"
+verdict
+
+ios_case idb-mark-link
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$I3"; ln -s "$case_dir/victim" "$(imark)"
+flow_file "$case_dir/flow.json" "$I3FLOW"
+run_ios "$case_dir/flow.json"
+begin "iOS: a link in place of the mark is not taken for one and not followed"
+status_is 0; iconnects_are 1; [ ! -e "$case_dir/victim" ] || no "the mark followed a link"
+verdict
+
+ios_case idb-udid-path-create
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$I3"; mkdir -p "$case_dir/tmp/yukti-idb-x"; printf 'x/../../victim' > "$case_dir/tmp/yukti-udid"
+flow_file "$case_dir/flow.json" "$I3FLOW" '{ "do": "assertId", "value": "a" }'
+run_ios "$case_dir/flow.json"
+begin "iOS: a udid with a path in it creates nothing outside TMPDIR"
+status_is 0; iconnects_are 2; [ ! -e "$case_dir/victim" ] || no "a file outside TMPDIR was created"
+verdict
+
+ios_case idb-udid-path-delete
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$I3"; mkdir -p "$case_dir/tmp/yukti-idb-x"; printf 'x/../../victim' > "$case_dir/tmp/yukti-udid"
+printf 'keep' > "$case_dir/victim"; : > "$case_dir/idb/stale"
+flow_file "$case_dir/flow.json" "$I3FLOW"
+run_ios "$case_dir/flow.json"
+begin "iOS: a udid with a path in it deletes nothing outside TMPDIR"
+status_is 0; [ "$(cat "$case_dir/victim" 2>/dev/null)" = keep ] || no "a file outside TMPDIR was removed"
+verdict
+
+ios_case idb-mark-link-live
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$I3"; printf 'keep' > "$case_dir/target"; ln -s "$case_dir/target" "$(imark)"
+flow_file "$case_dir/flow.json" "$I3FLOW"
+run_ios "$case_dir/flow.json"
+begin "iOS: a link to a real file is not taken for the mark"
+status_is 0; iconnects_are 1; [ "$(cat "$case_dir/target" 2>/dev/null)" = keep ] || no "the link's target was touched"
+verdict
+
+ios_case idb-connect-child
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$I3"; : > "$case_dir/idb/connect-child"
+ui_ios
+begin "iOS: a process the connect leaves behind does not hold the read"
+status_is 0; iconnects_are 1; [ ! -e "$case_dir/idb/child-done" ] || no "the read waited for what the connect left behind"
+verdict
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

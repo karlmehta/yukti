@@ -20,6 +20,14 @@ git clone https://github.com/karlmehta/yukti ~/yukti && chmod +x ~/yukti/yukti
 ~/yukti/yukti doctor                        # verifies everything above
 ```
 
+On iOS the engine runs `idb connect` once per simulator, not before every
+screen read: a file `yukti-idb-<udid>` beside `yukti-udid` in `$TMPDIR` says the
+connect was made, so later reads and later flows under the same `$TMPDIR` go
+without one. A read that comes back empty forgets the file and connects again,
+once per read. Each connect prints `· idb connect N ms`, a refused one adds
+`refused (exit N)` and idb's last line, and a flow ends with
+`screen reads: N by idb, M idb connect(s), K refused`.
+
 ## Run against a build
 
 ```bash

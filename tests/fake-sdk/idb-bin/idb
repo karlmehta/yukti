@@ -39,6 +39,14 @@
 #                  answers with SpringBoard's root alone, labelled " ". `ui button
 #                  HOME` puts it there unless `home-ignored` is there; the fake
 #                  xcrun's `simctl launch` takes it away (#53)
+#   stale          present: the companion is lost - `ui describe-all` exits 1
+#                  with nothing on stdout, and `connect` brings it back (removes
+#                  the file) (#175)
+#   empty          present: `ui describe-all` answers nothing with status 0
+#   exit-1         present: `ui describe-all` answers its tree and exits 1
+#   connect-fails  present: `connect` exits 1 with a line on stderr
+#   connect-child  present: `connect` leaves a process behind that holds its
+#                  stderr for 5 s and then writes `child-done`
 import json, os, sys
 
 d = os.environ["FAKE_IDB_DIR"]
@@ -61,7 +69,10 @@ while i < len(args):
     if args[i] == "--udid": i += 2; continue
     ops.append(args[i]); i += 1
 
-if ops[:2] == ["ui", "describe-all"] and has("home"):
+if ops[:2] == ["ui", "describe-all"] and (has("stale") or has("empty")):
+    write("describes", str(int(read("describes", "0") or 0) + 1))
+    if has("stale"): sys.exit(1)
+elif ops[:2] == ["ui", "describe-all"] and has("home"):
     write("describes", str(int(read("describes", "0") or 0) + 1))
     sys.stdout.write(json.dumps([{"type": "Application", "role_description": "application", "AXLabel": " ",
                                   "frame": {"x": 0, "y": 0, "width": 402, "height": 874}}]))
@@ -123,6 +134,12 @@ elif ops[:2] == ["ui", "tap"]:
     if has("done-closes") and has("keyboard"): os.remove(path("keyboard"))
     if has("done-closes") and has("keypad"): os.remove(path("keypad"))
 elif ops[:1] == ["connect"]:
-    pass
+    if has("connect-fails"):
+        sys.stderr.write("idb: no companion for this target\n"); sys.exit(1)
+    if has("stale"): os.remove(path("stale"))
+    if has("connect-child"):
+        import subprocess
+        subprocess.Popen(["sh", "-c", "sleep 5; : > \"$1\"", "sh", path("child-done")])
 else:
     sys.exit(1)
+if ops[:2] == ["ui", "describe-all"] and has("exit-1"): sys.exit(1)
