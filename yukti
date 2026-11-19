@@ -2097,21 +2097,24 @@ tap(){ is_android && { atap "$1" "$2"; return; }; paths; idb ui tap --udid "$(U)
 # match is another control, even inside the target's frame, for an id query and
 # a text query alike - a sticky date strip's day button lay inside a
 # scrolled-under tile's frame, and the tap went to the day (2026-10-29).
-# Anything else covers the target, with one exception (#189): an element with
-# an id that is not a control - a plain view, GenericElement or Other, with no
-# trait but Scrollable - and whose frame holds the target's whole frame. React
-# Native answers a card that carries a testID for every point inside it, its
-# own buttons included; the touch still reaches the button. Measured on an iOS
+# Anything else covers the target, with one exception (#189): a plain view with
+# an id - GenericElement, no label, no value, traits None or Scrollable and
+# nothing else - whose frame holds the target's whole frame. React Native
+# answers a card that carries a testID for every point inside it, its own
+# buttons included, and the touch still reaches the button. Measured on an iOS
 # 26.5 simulator (2026-11-18): a disclosure, a share and a call-to-action button
 # in three such cards all answered their card, and a tap through the card's
-# answer collapsed and expanded it as on Android. What really lay over a target
-# answered as the control it is - a floating tab button over a card's body, a
-# floating action button over a card's disclosure - and stays covered. The
-# tree was no help: idb describe-all --nested lists every element of that
-# screen as a child of the application, with no containers. Known limits: an
-# overlay that is a plain view with an id and holds the target's whole frame
-# (a sheet with no role, a backdrop) passes as a container - every such pass
-# says so in the log; and a target that is not an
+# answer collapsed and expanded it as on Android. A touchable with no role is a
+# GenericElement too, but it is an accessibility element and carries the text
+# inside it as its label: a sticky strip's tab over a target stays covered.
+# What else lay over a target answered as the control it is (a floating tab
+# button over a card's body) and stays covered. The tree was no help: idb
+# describe-all --nested lists every element of that screen as a child of the
+# application, with no containers. Known limits: a plain view with an id and no
+# label laid over the whole target (a backdrop, a touchable with an icon and no
+# label) passes as a container - every such pass says so in the log; a
+# container that carries a label of its own still reads as covering what is in
+# it; and a target that is not an
 # accessibility element (a plain view with an id) holding a child with an id of
 # its own answers the child at its point, and reads as covered by it; accessible
 # touchables hide their children, so it needs such a container. Answers:
@@ -2139,15 +2142,16 @@ def g(*ks):
             except (TypeError,ValueError): return 0.0
     return 0.0
 x,y,w,h=g("X","x"),g("Y","y"),g("Width","width"),g("Height","height")
-bx=[float(v) for v in box[:4]] if len(box)>=4 else None
+try: bx=[float(v) for v in box[:4]] if len(box)>=4 else None
+except ValueError: bx=None
 if not hit and bx and not ident:
     cx,cy=x+w/2,y+h/2
     hit=w>0 and h>0 and bx[0]<=cx<=bx[2] and bx[1]<=cy<=bx[3]
 if hit: print("ok"); sys.exit(0)
 cover=el.get("AXUniqueId") or el.get("identifier") or (str(el.get("type") or "element")+" (no id)")
 tr=el.get("traits")
-plain=n(el.get("type")) in ("genericelement","other","group") and \
-    (tr is None or (isinstance(tr,list) and all(n(t) in ("none","scrollable") for t in tr)))
+plain=n(el.get("type"))=="genericelement" and isinstance(tr,list) and bool(tr) and \
+    all(n(t) in ("none","scrollable") for t in tr) and not texts[1] and not texts[2]
 # The corners of the target come cut to whole points, the frame of the answer
 # does not: a point either way.
 holds=bool(bx) and bool(ident) and w>0 and h>0 and \
