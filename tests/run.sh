@@ -907,6 +907,68 @@ status_is 0; ityped_is ""
 has out.txt "field empty at 190,220"
 verdict
 
+# A React Native multiline input: idb calls it a TextArea, role "Group" (#142).
+# It is a text field for every step that types, clears, finds or masks one - a
+# step that skipped it typed the value three times and failed with 0 arrived.
+# itextarea <id> <y> [value] [label] - 300 wide and 40 high at x 40, as itext.
+itextarea(){ printf '{"type":"TextArea","role_description":"Group","AXUniqueId":"%s","AXLabel":"%s","AXValue":%s,"frame":{"x":40,"y":%s,"width":300,"height":40}}' \
+  "$1" "${4:-}" "${3:-\"@TYPED@\"}" "$2"; }
+
+ios_case ios-type-textarea
+tree "$case_dir/idb/desc-1.json" "$(itext name 100 '"Ada"')" "$(itextarea note 200)"
+flow_file "$case_dir/flow.json" '{ "do": "type", "value": "${TEST_VALUE}" }'
+run_ios "$case_dir/flow.json" TEST_VALUE="$VALUE"
+begin "type on iOS: a multiline box takes the value once, on the first attempt"
+status_is 0; ireads_are 2; bursts_are 22; ityped_is "$VALUE"
+lacks out.txt "attempt"
+verdict
+
+ios_case ios-type-textarea-retry
+tree "$case_dir/idb/desc-1.json" "$(itextarea note 200)"
+printf '1' > "$case_dir/idb/lossy"
+flow_file "$case_dir/flow.json" '{ "do": "type", "value": "${TEST_VALUE}" }'
+run_ios "$case_dir/flow.json" TEST_VALUE="$VALUE"
+begin "type on iOS: a character a multiline box lost is still deleted back out and typed again"
+status_is 0; ityped_is "$VALUE"; bursts_are 44
+has out.txt "22 characters arrived on attempt 2"
+verdict
+
+# The box keeps letters only, so every attempt leaves the value with gaps: the
+# step fails, and the tree it leaves masks the pieces as a text field's are.
+ios_case ios-type-textarea-fails-masked
+tree "$case_dir/idb/desc-1.json" "$(itextarea note 200)" \
+  '{"type":"StaticText","role_description":"text","AXLabel":"'"$MARK"'","AXValue":null,"frame":{"x":40,"y":300,"width":300,"height":20}}'
+printf 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ' > "$case_dir/idb/filter"
+flow_file "$case_dir/flow.json" '{ "do": "type", "value": "${TEST_NOTE}" }'
+run_ios "$case_dir/flow.json" TEST_NOTE='Pa&ss"w0rd!Long'
+begin "type on iOS: a multiline box that drops characters fails, and its tree masks the pieces"
+status_is 1; has out.txt "after 3 attempts"; file_full res/flow-fail.json
+has res/flow-fail.json "$MARK"
+lacks res/flow-fail.json 'Long'; lacks res/flow-fail.json 'Passwrd'
+verdict
+
+ios_case ios-clear-textarea
+printf 'old text' > "$case_dir/idb/typed"
+tree "$case_dir/idb/desc-1.json" "$(itextarea note 200)"
+flow_file "$case_dir/flow.json" '{ "do": "clearTextId", "value": "note" }'
+run_ios "$case_dir/flow.json"
+begin "clearTextId on iOS: a multiline box is cleared as a text field"
+status_is 0; ireads_are 2; ityped_is ""
+has out.txt "field empty at 190,220"
+verdict
+
+# Its caption above it says the same word: the box, as an input, takes the tap.
+# Neither has an id, so the words alone decide.
+ios_case ios-taptext-textarea
+tree "$case_dir/idb/desc-1.json" \
+  '{"type":"StaticText","role_description":"text","AXLabel":"Note","AXValue":null,"frame":{"x":40,"y":100,"width":300,"height":40}}' \
+  "$(itextarea "" 200 null Note)"
+flow_file "$case_dir/flow.json" '{ "do": "tapText", "value": "Note" }'
+run_ios "$case_dir/flow.json"
+begin "tapText on iOS: a multiline box outranks its caption of the same words"
+status_is 0; has idb/log "ui tap --udid FAKE-UDID 190 220"
+verdict
+
 # hideKeyboard on Android (#151). Back goes first while the input method says
 # the keyboard is up: the IME takes it. Escape reaches the window, and a dialog
 # around the field (the fake's "modal") takes it as Back and closes.
