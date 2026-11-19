@@ -43,6 +43,11 @@
 #                  with nothing on stdout, and `connect` brings it back (removes
 #                  the file) (#175)
 #   empty          present: `ui describe-all` answers nothing with status 0
+#   blank          present: `ui describe-all` answers the app's root alone with
+#                  no size and nothing in it, as a stuck simulator does; the fake
+#                  xcrun's `simctl launch --terminate-running-process` takes it
+#                  away unless `blank-sticky` is there; holding a number n: only
+#                  the next n reads answer it
 #   exit-1         present: `ui describe-all` answers its tree and exits 1
 #   connect-fails  present: `connect` exits 1 with a line on stderr
 #   connect-child  present: `connect` leaves a process behind that holds its
@@ -72,6 +77,12 @@ while i < len(args):
 if ops[:2] == ["ui", "describe-all"] and (has("stale") or has("empty")):
     write("describes", str(int(read("describes", "0") or 0) + 1))
     if has("stale"): sys.exit(1)
+elif ops[:2] == ["ui", "describe-all"] and has("blank") and read("blank").strip() != "0":
+    write("describes", str(int(read("describes", "0") or 0) + 1))
+    left = read("blank").strip()
+    if left.isdigit(): write("blank", str(int(left) - 1))
+    sys.stdout.write(json.dumps([{"type": "Application", "role_description": "application", "AXLabel": None,
+                                  "AXFrame": "{{0, 0}, {0, 0}}", "frame": {"x": 0, "y": 0, "width": 0, "height": 0}}]))
 elif ops[:2] == ["ui", "describe-all"] and has("home"):
     write("describes", str(int(read("describes", "0") or 0) + 1))
     sys.stdout.write(json.dumps([{"type": "Application", "role_description": "application", "AXLabel": " ",
