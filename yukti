@@ -2103,10 +2103,14 @@ tap(){ is_android && { atap "$1" "$2"; return; }; paths; idb ui tap --udid "$(U)
 # answers a card that carries a testID for every point inside it, its own
 # buttons included, and the touch still reaches the button. Measured on an iOS
 # 26.5 simulator (2026-11-18): a disclosure, a share and a call-to-action button
-# in three such cards all answered their card, and a tap through the card's
-# answer collapsed and expanded it as on Android. A touchable with no role is a
-# GenericElement too, but it is an accessibility element and carries the text
-# inside it as its label: a sticky strip's tab over a target stays covered.
+# in three cards with an id all answered their card, and a tap through the
+# card's answer collapsed and expanded it as on Android. Two of those cards
+# carry no label and pass; the third carries one and stays covered (a limit
+# below). A touchable with no role is a GenericElement too, but it is an
+# accessibility element and carries the text inside it as its label, as a
+# sticky strip's tabs do in a full dump of that screen, so such a tab over a
+# target is read as covering it. A target under a strip that has stuck while
+# scrolling was not measured.
 # What else lay over a target answered as the control it is (a floating tab
 # button over a card's body) and stays covered. The tree was no help: idb
 # describe-all --nested lists every element of that screen as a child of the

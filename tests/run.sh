@@ -1389,6 +1389,26 @@ begin "tapId on iOS: no traits at all is not read as none - covered"
 status_is 1; taps_are 0; has out.txt "is covered by card - not tapped"
 verdict
 
+ios_case ios-tap-holding-traits-missing
+tree "$case_dir/idb/desc-1.json" "$ISCREEN" "$ICARD" "$ISHARE" "$IDISC"
+ipoint card 12 621.0000076 378 249 GenericElement
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "card-disclosure" }'
+run_ios "$case_dir/flow.json"
+begin "tapId on iOS: an answer with no traits key is not read as a plain view - covered"
+status_is 1; taps_are 0; has out.txt "is covered by card - not tapped"
+verdict
+
+# A view that carries a value of its own (a reading, a slider's position) is
+# not a plain container either.
+ios_case ios-tap-holding-value
+tree "$case_dir/idb/desc-1.json" "$ISCREEN" "$ICARD" "$ISHARE" "$IDISC"
+printf '%s' '{"type":"GenericElement","AXUniqueId":"card","AXLabel":"","AXValue":"72 kg","frame":{"x":12,"y":621.0000076,"width":378,"height":249},"traits":["None"]}' > "$case_dir/idb/point.json"
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "card-disclosure" }'
+run_ios "$case_dir/flow.json"
+begin "tapId on iOS: a plain type with a value of its own is not a container - covered"
+status_is 1; taps_are 0; has out.txt "is covered by card - not tapped"; lacks out.txt "72 kg"
+verdict
+
 ios_case ios-tap-holding-traits-odd
 tree "$case_dir/idb/desc-1.json" "$ISCREEN" "$ICARD" "$ISHARE" "$IDISC"
 ipoint card 12 621.0000076 378 249 GenericElement '"None"'
