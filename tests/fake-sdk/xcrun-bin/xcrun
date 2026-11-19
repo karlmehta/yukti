@@ -11,7 +11,7 @@
 # ($FAKE_IDB_DIR/home), except for as many launches as `launch-misses` counts,
 # and gives the app a new pid in `launchctl` with --terminate-running-process
 # (unless `terminate-ignored` is there), or always when `launch-restarts` is there.
-# A launch that starts a new process also takes the fake idb's `blank` tree away,
+# A launch that starts a new process also takes the fake idb's `blank` tree (and `blank-list`) away,
 # unless `blank-sticky` is there.
 import os, re, sys
 
@@ -53,6 +53,7 @@ elif args[:2] == ["simctl", "launch"]:
         idb = os.environ.get("FAKE_IDB_DIR", d)
         blank = os.path.join(idb, "blank")
         if os.path.exists(blank) and not os.path.exists(os.path.join(idb, "blank-sticky")): os.remove(blank)
+        if os.path.exists(blank + "-list") and not os.path.exists(os.path.join(idb, "blank-sticky")): os.remove(blank + "-list")
     print("%s: 4242" % ops[1])
 elif args[:2] == ["simctl", "spawn"] and args[3:] == ["launchctl", "list"]:
     try:

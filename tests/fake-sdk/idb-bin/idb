@@ -48,6 +48,8 @@
 #                  xcrun's `simctl launch --terminate-running-process` takes it
 #                  away unless `blank-sticky` is there; holding a number n: only
 #                  the next n reads answer it
+#   blank-list     present: `ui describe-all` answers an empty list, `[]`; the
+#                  fake xcrun's relaunch takes it away as it does `blank`
 #   exit-1         present: `ui describe-all` answers its tree and exits 1
 #   connect-fails  present: `connect` exits 1 with a line on stderr
 #   connect-child  present: `connect` leaves a process behind that holds its
@@ -77,6 +79,9 @@ while i < len(args):
 if ops[:2] == ["ui", "describe-all"] and (has("stale") or has("empty")):
     write("describes", str(int(read("describes", "0") or 0) + 1))
     if has("stale"): sys.exit(1)
+elif ops[:2] == ["ui", "describe-all"] and has("blank-list"):
+    write("describes", str(int(read("describes", "0") or 0) + 1))
+    sys.stdout.write("[]")
 elif ops[:2] == ["ui", "describe-all"] and has("blank") and read("blank").strip() != "0":
     write("describes", str(int(read("describes", "0") or 0) + 1))
     left = read("blank").strip()
