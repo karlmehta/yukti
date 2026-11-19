@@ -2097,13 +2097,35 @@ tap(){ is_android && { atap "$1" "$2"; return; }; paths; idb ui tap --udid "$(U)
 # match is another control, even inside the target's frame, for an id query and
 # a text query alike - a sticky date strip's day button lay inside a
 # scrolled-under tile's frame, and the tap went to the day (2026-10-29).
-# Anything else covers the target. Known limit: a target that is not an
+# Anything else covers the target, with one exception (#189): a plain view with
+# an id - GenericElement, no label, no value, traits None or Scrollable and
+# nothing else - whose frame holds the target's whole frame. React Native
+# answers a card that carries a testID for every point inside it, its own
+# buttons included, and the touch still reaches the button. Measured on an iOS
+# 26.5 simulator (2026-11-18): a disclosure, a share and a call-to-action button
+# in three cards with an id all answered their card, and a tap through the
+# card's answer collapsed and expanded it as on Android. Two of those cards
+# carry no label and pass; the third carries one and stays covered (a limit
+# below). A touchable with no role is a GenericElement too, but it is an
+# accessibility element and carries the text inside it as its label, as a
+# sticky strip's tabs do in a full dump of that screen, so such a tab over a
+# target is read as covering it. A target under a strip that has stuck while
+# scrolling was not measured.
+# What else lay over a target answered as the control it is (a floating tab
+# button over a card's body) and stays covered. The tree was no help: idb
+# describe-all --nested lists every element of that screen as a child of the
+# application, with no containers. Known limits: a plain view with an id and no
+# label laid over the whole target (a backdrop, a touchable with an icon and no
+# label) passes as a container - every such pass says so in the log; a
+# container that carries a label of its own still reads as covering what is in
+# it; and a target that is not an
 # accessibility element (a plain view with an id) holding a child with an id of
 # its own answers the child at its point, and reads as covered by it; accessible
 # touchables hide their children, so it needs such a container. Answers:
-# "ok", "covered <id or type>", "unknown" (idb gave no element). Only the
-# covering element's id or type is printed, never its label: a label can carry
-# what the screen shows.
+# "ok", "covered <id or type>", "unknown" (idb gave no element); inside ihit
+# also "held <id>", the exception above, which ihit logs and turns into "ok".
+# Only the covering element's id or type is printed, never its label: a label
+# can carry what the screen shows.
 IHIT_PY='
 import json,os,sys
 n=lambda s: " ".join(str(s or "").split()).lower()
@@ -2115,20 +2137,31 @@ if not isinstance(el,dict) or not el: print("unknown"); sys.exit(0)
 ident=n(el.get("AXUniqueId") or el.get("identifier"))
 texts=(ident,n(el.get("AXLabel")),n(el.get("AXValue")),n(el.get("title")))
 hit=(bool(q) and q==ident) if mode=="id" else (bool(q) and any(q in t for t in texts))
-if not hit and len(box)>=4 and not ident:
-    b=el.get("frame") or {}
-    def g(*ks):
-        for k in ks:
-            if b.get(k) is not None:
-                try: return float(b[k])
-                except (TypeError,ValueError): return 0.0
-        return 0.0
-    x,y,w,h=g("X","x"),g("Y","y"),g("Width","width"),g("Height","height")
-    bx=[float(v) for v in box[:4]]
+b=el.get("frame") or {}
+if not isinstance(b,dict): b={}
+def g(*ks):
+    for k in ks:
+        if b.get(k) is not None:
+            try: return float(b[k])
+            except (TypeError,ValueError): return 0.0
+    return 0.0
+x,y,w,h=g("X","x"),g("Y","y"),g("Width","width"),g("Height","height")
+try: bx=[float(v) for v in box[:4]] if len(box)>=4 else None
+except ValueError: bx=None
+if not hit and bx and not ident:
     cx,cy=x+w/2,y+h/2
     hit=w>0 and h>0 and bx[0]<=cx<=bx[2] and bx[1]<=cy<=bx[3]
-if hit: print("ok")
-else: print("covered", el.get("AXUniqueId") or el.get("identifier") or (str(el.get("type") or "element")+" (no id)"))
+if hit: print("ok"); sys.exit(0)
+cover=el.get("AXUniqueId") or el.get("identifier") or (str(el.get("type") or "element")+" (no id)")
+tr=el.get("traits")
+plain=n(el.get("type"))=="genericelement" and isinstance(tr,list) and bool(tr) and \
+    all(n(t) in ("none","scrollable") for t in tr) and not texts[1] and not texts[2]
+# The corners of the target come cut to whole points, the frame of the answer
+# does not: a point either way.
+holds=bool(bx) and bool(ident) and w>0 and h>0 and \
+    x<=bx[0]+1 and y<=bx[1]+1 and x+w>=bx[2]-1 and y+h>=bx[3]-1
+if plain and holds: print("held",cover)
+else: print("covered",cover)
 '
 ihit(){ local q="$1" mode="$2" x="$3" y="$4" in="${5:-}" idx="${6:-}" pt v box
   is_android && { echo ok; return 0; }
@@ -2137,6 +2170,10 @@ ihit(){ local q="$1" mode="$2" x="$3" y="$4" in="${5:-}" idx="${6:-}" pt v box
   case "$v" in covered*)
     box="$(find_el "$q" "$mode" exact box "$in" "$idx" 2>/dev/null)" || box=""
     [ -n "$box" ] && { v="$(YUKTI_PT="$pt" "$PY" -c "$IHIT_PY" "$q" "$mode" "$box")" || v=unknown; };;
+  esac
+  case "$v" in held\ *)
+    printf "  · '%s' at %s,%s: the point answers %s, a plain view that holds it - not covered\n" "$q" "$x" "$y" "${v#held }" >&2
+    v=ok;;
   esac
   printf '%s\n' "${v:-unknown}"; }
 # A tap that must land on its target: covered = the step fails and says by what,
