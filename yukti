@@ -234,6 +234,9 @@ ashot(){ apaths; local o; o="$(shot_path "${1:-}")" || return 1; mkdir -p "$(dir
 # a `when` (#172): a run of skipped steps touches nothing, so the conditions in
 # it answer from one read, and the next step that runs empties it.
 HELD_TREE=""
+# Set only around the relaunch for a blank tree (#191), never taken from the
+# caller's environment: a value inherited there would switch the relaunch off.
+YUKTI_UNSTICK_BUSY=""
 # A flow's record; empty outside a running flow (#191 reads it to know it is in one).
 FLOW_REC=""
 # The tree a step read last, kept for the result of a failed flow (#94). Nearly
@@ -601,7 +604,8 @@ read_summary(){ local d h u f i c r b; d="$(run_dir)"; [ -n "$d" ] || return 0
   # iOS: the connects are counted too, refused ones apart - a flow that died on
   # its first read still says what the connect did (#175).
   [ $(( ${#i} + ${#c} + ${#r} )) -eq 0 ] || say "screen reads: ${#i} by idb, ${#c} idb connect(s), ${#r} refused"
-  # A relaunch for a blank tree (#191) is part of the result, not only of the log.
+  # A relaunch for a blank tree (#191) is said at the end of the flow too, not
+  # only where it happened: the count of relaunches tried, from the run directory.
   b="$(cat "$d/blank-relaunches" 2>/dev/null || true)"
   [ ${#b} -eq 0 ] || say "relaunched for a blank tree: ${#b}"
   [ $(( ${#h} + ${#u} )) -gt 0 ] || return 0
@@ -1884,7 +1888,7 @@ ios_unstick(){ local u="$1" out="$2" m="${FLOW_REC:-}" d t0 again i
   warn "the app gives a blank tree (no element with a size) before this flow acts on the screen: relaunching it once" >&2
   # Its own failure is said on stderr and is not the step's: the step goes on with
   # the blank tree and fails, or not, on what it asked.
-  ( YUKTI_STEP_ERR=""; YUKTI_UNSTICK_BUSY=1; export YUKTI_UNSTICK_BUSY; app_relaunch ) >&2 || {
+  ( YUKTI_STEP_ERR=""; YUKTI_UNSTICK_BUSY=1; app_relaunch ) >&2 || {
     ios_blank_say "the app gives a blank tree (no element with a size); the relaunch did not help - its own line above says why"
     printf '%s' "$out"; return 0; }
   for i in 1 2 3 4 5 6 7 8; do sleep 1; t0="$(now)"; again="$(idb ui describe-all --udid "$u" 2>/dev/null)" || true

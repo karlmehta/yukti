@@ -6647,11 +6647,15 @@ ibg_case blank-shared-run-dir
 tree "$case_dir/idb/desc-1.json" "$IEXAPP" "$I3"; mkdir -p "$case_dir/rundir"
 flow_file "$case_dir/one.json" '{ "do": "tapId", "value": "a" }'
 flow_file "$case_dir/flow.json" "$I3FLOW"
-run_ibg "$case_dir/one.json" YUKTI_RUN_DIR="$case_dir/rundir"
+run_ios "$case_dir/one.json" PATH="$ROOT/tests/fake-sdk/xcrun-bin:$ROOT/tests/fake-sdk/idb-bin:$PATH" \
+  FAKE_XCRUN_DIR="$case_dir/xcrun" YUKTI_VARIANT=app YUKTI_CONFIG="$case_dir/cfg.json" YUKTI_RUN_DIR="$case_dir/rundir"
 : > "$case_dir/idb/blank"
-run_ibg "$case_dir/flow.json" YUKTI_RUN_DIR="$case_dir/rundir"
+run_ios "$case_dir/flow.json" PATH="$ROOT/tests/fake-sdk/xcrun-bin:$ROOT/tests/fake-sdk/idb-bin:$PATH" \
+  FAKE_XCRUN_DIR="$case_dir/xcrun" YUKTI_VARIANT=app YUKTI_CONFIG="$case_dir/cfg.json" YUKTI_RUN_DIR="$case_dir/rundir"
 begin "iOS blank tree in a run directory shared with a flow that acted: the next flow is relaunched all the same"
 status_is 0; ilaunches_are 1
+# The run directory was the one given: the reads of both flows are counted in it.
+[ -s "$case_dir/rundir/reads-idb" ] || no "the run directory given was not used - the case proves nothing"
 verdict
 
 # An empty list is the same status 3 to the lookups, and the same blank tree here.
