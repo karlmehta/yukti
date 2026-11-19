@@ -1248,10 +1248,10 @@ verdict
 # ── a tap asks what is really under its point (idb describe-point) ───────────
 # ibutton <id> - a button 200 wide and 100 high at 100,300: its centre is 200,350.
 ibutton(){ printf '{"type":"Button","role_description":"button","AXUniqueId":"%s","AXLabel":"Go","frame":{"x":100,"y":300,"width":200,"height":100}}' "$1"; }
-# ipoint <id or empty> <x> <y> <w> <h> [type] [traits] - what describe-point
-# answers; type Other and no traits unless given.
-ipoint(){ printf '{"type":"%s","AXUniqueId":%s,"AXLabel":"","frame":{"x":%s,"y":%s,"width":%s,"height":%s}%s}' \
-  "${6:-Other}" "$([ -n "$1" ] && printf '"%s"' "$1" || printf 'null')" "$2" "$3" "$4" "$5" "${7:+,\"traits\":$7}" > "$case_dir/idb/point.json"; }
+# ipoint <id or empty> <x> <y> <w> <h> [type] [traits] [label] - what
+# describe-point answers; type Other, no traits and an empty label unless given.
+ipoint(){ printf '{"type":"%s","AXUniqueId":%s,"AXLabel":"%s","frame":{"x":%s,"y":%s,"width":%s,"height":%s}%s}' \
+  "${6:-Other}" "$([ -n "$1" ] && printf '"%s"' "$1" || printf 'null')" "${8:-}" "$2" "$3" "$4" "$5" "${7:+,\"traits\":$7}" > "$case_dir/idb/point.json"; }
 taps_are(){ local got; got="$(grep -c '^ui tap ' "$case_dir/idb/log" 2>/dev/null)"
   [ "$got" = "$1" ] || no "$got taps, wanted $1"; }
 
@@ -1357,6 +1357,35 @@ ipoint card 12 621.0000076 378 249 GenericElement '["None","Link"]'
 flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "card-disclosure" }'
 run_ios "$case_dir/flow.json"
 begin "tapId on iOS: a plain type with a trait other than Scrollable is not a plain view - covered"
+status_is 1; taps_are 0; has out.txt "is covered by card - not tapped"
+verdict
+
+# A touchable with no role, as the simulator lists a sticky strip's tab: a
+# GenericElement, Scrollable, labelled with the text inside it.
+ios_case ios-tap-holding-labelled
+tree "$case_dir/idb/desc-1.json" "$ISCREEN" "$ICARD" "$ISHARE" "$IDISC"
+ipoint strip-tab 340 620 73.67 76.67 GenericElement '["Scrollable"]' Weight
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "card-disclosure" }'
+run_ios "$case_dir/flow.json"
+begin "tapId on iOS: a plain type with a label of its own is a touchable, not a container - covered"
+status_is 1; taps_are 0; has out.txt "'card-disclosure' at 363,648 is covered by strip-tab - not tapped"; lacks out.txt "Weight"
+verdict
+
+ios_case ios-tap-holding-other-type
+tree "$case_dir/idb/desc-1.json" "$ISCREEN" "$ICARD" "$ISHARE" "$IDISC"
+ipoint card 12 621.0000076 378 249 Other '["None"]'
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "card-disclosure" }'
+run_ios "$case_dir/flow.json"
+begin "tapId on iOS: a type other than GenericElement is not read as a plain view - covered"
+status_is 1; taps_are 0; has out.txt "is covered by card - not tapped"
+verdict
+
+ios_case ios-tap-holding-no-traits
+tree "$case_dir/idb/desc-1.json" "$ISCREEN" "$ICARD" "$ISHARE" "$IDISC"
+ipoint card 12 621.0000076 378 249 GenericElement '[]'
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "card-disclosure" }'
+run_ios "$case_dir/flow.json"
+begin "tapId on iOS: no traits at all is not read as none - covered"
 status_is 1; taps_are 0; has out.txt "is covered by card - not tapped"
 verdict
 
@@ -4738,12 +4767,9 @@ begin "swipeId on iOS: idb swipe inside the frame, with an explicit duration"
 status_is 0; has idb/log "ui swipe --udid FAKE-UDID --duration 1.44 308 222 92 222"; lacks out.txt "covered"
 verdict
 
-# What lies over a target answers as the control it is (a floating tab button
-# over a card's body on a simulator); a plain view that holds the whole row is
-# its container (#189), see ios-swipe-container.
 ios_case ios-swipe-covered
 tree "$case_dir/idb/desc-1.json" "$IAPP" "$(istate row-1 Button 200 "" '["Button"]')"
-ipoint tab-bar 0 200 402 60 Button '["Button"]'
+ipoint tab-bar 0 200 402 60
 flow_file "$case_dir/flow.json" '{ "do": "swipeId", "value": "row-1", "direction": "left" }'
 run_ios "$case_dir/flow.json"
 begin "swipeId on iOS: an element over the start point fails the step by name, nothing swiped"
