@@ -28,6 +28,23 @@ once per read. Each connect prints `· idb connect N ms`, a refused one adds
 `refused (exit N)` and idb's last line, and a flow ends with
 `screen reads: N by idb, M idb connect(s), K refused`.
 
+A simulator can get stuck answering a blank tree - the app's root alone, with no
+size and nothing in it - on every read of one app process, while the app runs
+and its screen is drawn (#191). Reading again does not help; a new process of
+the app does. So, inside a running flow and only before the flow acts on the
+screen, the engine reads once more after a second and, if the tree is still
+blank, relaunches the app once (`relaunch`, data kept) and reads again. It says
+`relaunching it once`, and the flow ends with `relaunched for a blank tree: N`.
+Once the flow has acted (a step other than a wait, a check, a screenshot, a
+fixture or a permission has started), nothing is relaunched: the flow would go
+on from the app's first screen. That step fails as a screen that cannot be
+judged, with the reason said once, and the next flow is relaunched by its own
+first read. Outside a flow (`yukti assert-id` and the other commands) nothing is
+relaunched. A flow that starts with a check of what the previous flow left on
+the screen would, after a relaunch, check the app's first screen instead: start
+every flow from a known state (see "Starting a flow from a known state"). This
+is a workaround; why idb gets stuck is open.
+
 ## Run against a build
 
 ```bash

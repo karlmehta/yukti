@@ -234,6 +234,11 @@ ashot(){ apaths; local o; o="$(shot_path "${1:-}")" || return 1; mkdir -p "$(dir
 # a `when` (#172): a run of skipped steps touches nothing, so the conditions in
 # it answer from one read, and the next step that runs empties it.
 HELD_TREE=""
+# Set only around the relaunch for a blank tree (#191), never taken from the
+# caller's environment: a value inherited there would switch the relaunch off.
+YUKTI_UNSTICK_BUSY=""
+# A flow's record; empty outside a running flow (#191 reads it to know it is in one).
+FLOW_REC=""
 # The tree a step read last, kept for the result of a failed flow (#94). Nearly
 # every read happens inside $(...), so a variable would die with the subshell;
 # a file outlives it, the way the step's message does. The step number goes
@@ -591,7 +596,7 @@ us_of(){ local s="${1%%.*}" f="000000"; case "$1" in *.*) f="${1#*.}000000"; f="
 read_note(){ local d; d="$(run_dir)"
   printf '  · read %s %d ms\n' "$1" $(( ($(us_of "$(now)") - $(us_of "$2")) / 1000 )) >&2
   [ -z "$d" ] || printf 'x' >> "$d/reads-$1" 2>/dev/null || true; }
-read_summary(){ local d h u f i c r; d="$(run_dir)"; [ -n "$d" ] || return 0
+read_summary(){ local d h u f i c r b; d="$(run_dir)"; [ -n "$d" ] || return 0
   h="$(cat "$d/reads-helper" 2>/dev/null || true)"; u="$(cat "$d/reads-dump" 2>/dev/null || true)"
   f="$(cat "$d/helper-fallbacks" 2>/dev/null || true)"
   i="$(cat "$d/reads-idb" 2>/dev/null || true)"; c="$(cat "$d/idb-connects" 2>/dev/null || true)"
@@ -599,6 +604,10 @@ read_summary(){ local d h u f i c r; d="$(run_dir)"; [ -n "$d" ] || return 0
   # iOS: the connects are counted too, refused ones apart - a flow that died on
   # its first read still says what the connect did (#175).
   [ $(( ${#i} + ${#c} + ${#r} )) -eq 0 ] || say "screen reads: ${#i} by idb, ${#c} idb connect(s), ${#r} refused"
+  # A relaunch for a blank tree (#191) is said at the end of the flow too, not
+  # only where it happened: the count of relaunches tried, from the run directory.
+  b="$(cat "$d/blank-relaunches" 2>/dev/null || true)"
+  [ ${#b} -eq 0 ] || say "relaunched for a blank tree: ${#b}"
   [ $(( ${#h} + ${#u} )) -gt 0 ] || return 0
   say "screen reads: ${#h} by the helper, ${#u} by uiautomator dump, ${#f} fallback(s)"; }
 # The resident helper answers first (see helper_tree); the dump below is the
@@ -1803,6 +1812,90 @@ idb_connect_note(){ local d ms; d="$(run_dir)"; ms=$(( ($(us_of "$(now)") - $(us
   else printf '  · idb connect %d ms - refused (exit %s): %s\n' "$ms" "$2" "$(printf '%s\n' "$3" | tail -n 1)" >&2
     [ -z "$d" ] || printf 'x' >> "$d/idb-refused" 2>/dev/null || true; fi; }
 shot(){ is_android && { ashot "$@"; return; }; paths; local o; o="$(shot_path "${1:-}")" || return 1; mkdir -p "$(dirname "$o")"; if xcrun simctl io "$(U)" screenshot "$o" >/dev/null 2>&1; then echo "$o"; else device_fault; return 1; fi; }
+# A blank tree (#191): the app's root alone, with no size and nothing in it,
+# while the app runs and its screen is drawn. A simulator can get stuck in it:
+# from one moment on every read of that app process answers it - a waitFor read
+# it sixteen times in 15 s - and so does every read of every flow after it on
+# the same process, until the app is started again. Such a tree is not "nothing
+# on the screen" (the lookups call it status 3, a screen that cannot be judged),
+# so reading again does not help; a new process of the app does.
+#
+# The relaunch is a workaround, not the cause: why idb gets stuck is open. It is
+# done only inside a running flow and only before the flow acts - a relaunch puts
+# the app back on its first screen, and a flow that had already gone somewhere
+# would go on checking that first screen as if it were the one it went to, and
+# could pass on it. Outside a flow (`yukti assert-id` and the other commands, an
+# agent, Studio) nothing records what was done before, so nothing is relaunched.
+# A flow that gets stuck once it acts fails as before, with the reason said once;
+# the next flow is relaunched by its own first read. The mark goes down when an
+# acting step starts, so a flow whose first step acts is not relaunched either.
+# Left open by design: a flow that begins by checking what the previous flow left
+# on the screen (an assertNotText, a waitForNotId) would check the first screen
+# after a relaunch - flows start from a known state. Once a flow: the same tree
+# after a relaunch is the app, or the simulator, and not this.
+#
+# The marks belong to the flow, beside its record ($FLOW_REC), not to the run
+# directory: a run directory a caller shares between flows would carry one
+# flow's "acted" into the next.
+ios_blank(){ [ "${#1}" -lt 16384 ] || return 1
+  printf '%s' "$1" | "$PY" -c '
+import json,sys
+try: els=json.loads(sys.stdin.read())
+except ValueError: sys.exit(1)
+if not isinstance(els,list): sys.exit(1)
+# The size the lookups take (find_el): either spelling of the frame keys. No
+# element of any size - an empty list too - is their status 3.
+def n(b,*ks):
+    for k in ks:
+        v=b.get(k)
+        if v is None: continue
+        try: return float(v)
+        except (TypeError,ValueError): return 0.0
+    return 0.0
+for e in els:
+    b=(e.get("frame") or {}) if isinstance(e,dict) else {}
+    if not isinstance(b,dict): continue
+    if n(b,"Width","width")>0 and n(b,"Height","height")>0: sys.exit(1)
+sys.exit(0)'; }
+# Said once a flow: a waitFor polls, and sixteen copies of the line hide the rest.
+ios_blank_say(){ local m="${FLOW_REC:-}"
+  [ -n "$m" ] && [ -e "$m.blank-said" ] && return 0
+  [ -z "$m" ] || : > "$m.blank-said" 2>/dev/null || true; warn "$1" >&2; }
+# ios_unstick <udid> <tree> - prints the tree a caller is to use: this one, or
+# one read after a relaunch. Everything it says goes to stderr: its output is
+# the tree. The relaunch reads the screen itself (is the app in front?), and
+# those reads must not come back here: YUKTI_UNSTICK_BUSY lets them through as
+# they are, and a line said from inside would mark the flow as told.
+ios_unstick(){ local u="$1" out="$2" m="${FLOW_REC:-}" d t0 again i
+  [ -z "${YUKTI_UNSTICK_BUSY:-}" ] || { printf '%s' "$out"; return 0; }
+  ios_blank "$out" || { printf '%s' "$out"; return 0; }
+  [ -n "$m" ] || { printf '%s' "$out"; return 0; }
+  if [ -e "$m.acted" ]; then
+    ios_blank_say "the app gives a blank tree (no element with a size) at or after this flow's first action: not relaunched here - the flow would go on from the app's first screen; the next flow relaunches it"
+    printf '%s' "$out"; return 0; fi
+  if [ -e "$m.blank-relaunched" ]; then
+    ios_blank_say "the app gives a blank tree (no element with a size) after a relaunch as well"
+    printf '%s' "$out"; return 0; fi
+  # One more read first: a tree read while the app is still drawing is blank too,
+  # and that one needs no relaunch.
+  sleep 1; t0="$(now)"; again="$(idb ui describe-all --udid "$u" 2>/dev/null)" || true
+  if [ -n "$again" ]; then read_note idb "$t0"; out="$again"; ios_blank "$out" || { printf '%s' "$out"; return 0; }; fi
+  if [ -z "${YUKTI_VARIANT:-}" ]; then
+    ios_blank_say "the app gives a blank tree (no element with a size); not relaunched: this run does not know which app it is about (\$YUKTI_VARIANT)"
+    printf '%s' "$out"; return 0; fi
+  : > "$m.blank-relaunched" 2>/dev/null || true
+  d="$(run_dir)"; [ -z "$d" ] || printf 'x' >> "$d/blank-relaunches" 2>/dev/null || true
+  warn "the app gives a blank tree (no element with a size) before this flow acts on the screen: relaunching it once" >&2
+  # Its own failure is said on stderr and is not the step's: the step goes on with
+  # the blank tree and fails, or not, on what it asked.
+  ( YUKTI_STEP_ERR=""; YUKTI_UNSTICK_BUSY=1; app_relaunch ) >&2 || {
+    ios_blank_say "the app gives a blank tree (no element with a size); the relaunch did not help - its own line above says why"
+    printf '%s' "$out"; return 0; }
+  for i in 1 2 3 4 5 6 7 8; do sleep 1; t0="$(now)"; again="$(idb ui describe-all --udid "$u" 2>/dev/null)" || true
+    [ -n "$again" ] || continue; read_note idb "$t0"; out="$again"
+    ios_blank "$out" || { printf '%s' "$out"; return 0; }; done
+  ios_blank_say "the app gives a blank tree (no element with a size) after a relaunch as well"
+  printf '%s' "$out"; }
 # A read is an answer with something in it, whatever idb's status: a failed read
 # prints nothing on stdout. The status is not let end the script either - from
 # the command line (`yukti ui`, Studio) there is no $(...) around this to keep
@@ -1810,7 +1903,7 @@ shot(){ is_android && { ashot "$@"; return; }; paths; local o; o="$(shot_path "$
 ui(){ is_android && { aui; return; }; [ -n "$HELD_TREE" ] && { printf '%s' "$HELD_TREE"; return 0; }
   local u out i t0 tried; u="$(U)"; idb_ready "$u"; tried="$IDB_DID"
   for i in 1 2 3 4; do t0="$(now)"; out="$(idb ui describe-all --udid "$u" 2>/dev/null)" || true
-    [ -n "$out" ] && { read_note idb "$t0"; keep_tree "$out"; printf '%s' "$out"; return 0; }
+    [ -n "$out" ] && { read_note idb "$t0"; out="$(ios_unstick "$u" "$out")"; keep_tree "$out"; printf '%s' "$out"; return 0; }
     [ -n "$tried" ] || { idb_forget "$u"; idb_ready "$u"; tried=1; }
     sleep 0.6; done
   # An empty tree after four tries is idb failing, not a screen with nothing on
@@ -4983,7 +5076,7 @@ PY
   else
     warn "could not write the results file to '$RESULTS_DIR'"
   fi
-  rm -f "$FLOW_REC" "$FLOW_CUR" "$FLOW_ERR" "$FLOW_ERR.kind" "$FLOW_ERR.teardown" "$FLOW_TREE" "$FLOW_TREE.step"; FLOW_REC=""
+  rm -f "$FLOW_REC" "$FLOW_REC.acted" "$FLOW_REC.blank-relaunched" "$FLOW_REC.blank-said" "$FLOW_CUR" "$FLOW_ERR" "$FLOW_ERR.kind" "$FLOW_ERR.teardown" "$FLOW_TREE" "$FLOW_TREE.step"; FLOW_REC=""
   return 0
 }
 
@@ -6185,6 +6278,13 @@ PY
       # itself name what it touched, the title names what it was for.
       [ -z "$ttl" ] || say "step $FLOW_IDX '$do_' \"$ttl\""
       FLOW_OPT_MISS=""
+      # The flow acts from here on (#191): a blank tree is no longer relaunched
+      # away (ios_unstick). Waits, checks and screenshots read the screen; a
+      # fixture and a permission do not touch it.
+      # The mark goes down before the step runs: a step that acts reads first and
+      # acts after, and a relaunch between the two would act on the first screen.
+      case "$do_" in wait|waitFor|waitForId|waitForNotText|waitForNotId|screenshot|assert*|fixture|setPermission) ;;
+        *) [ -z "$FLOW_REC" ] || : > "$FLOW_REC.acted" 2>/dev/null || true;; esac
       set +e   # a step must not abort the loop by itself: the status is read
                # right after the dispatcher, so the failure is attributed to
                # THIS step and the flow stops with a message.

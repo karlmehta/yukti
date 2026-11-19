@@ -6550,5 +6550,129 @@ begin "iOS: a process the connect leaves behind does not hold the read"
 status_is 0; iconnects_are 1; [ ! -e "$case_dir/idb/child-done" ] || no "the read waited for what the connect left behind"
 verdict
 
+# ── #191: a blank tree on iOS - relaunched once, before the flow's first action ──
+# The app's root alone with no size: what a stuck simulator answers on every read
+# of one app process. The fake xcrun's relaunch takes the fake idb's `blank` away.
+IBLANK='{"type":"Application","role_description":"application","AXLabel":null,"frame":{"x":0,"y":0,"width":0,"height":0}}'
+IEXAPP='{"type":"Application","role_description":"application","AXLabel":"Example App","frame":{"x":0,"y":0,"width":402,"height":874}}'
+ilaunches_are(){ local got; got="$(grep -c '^simctl launch ' "$case_dir/xcrun/log" 2>/dev/null || true)"
+  [ "${got:-0}" -eq "$1" ] || no "simctl launch ran ${got:-0} time(s), wanted $1"; }
+ilines_are(){ local got; got="$(grep -cF -- "$2" "$case_dir/out.txt" 2>/dev/null || true)"
+  [ "${got:-0}" -eq "$1" ] || no "out.txt has '$2' ${got:-0} time(s), wanted $1"; }
+
+ibg_case blank-start
+tree "$case_dir/idb/desc-1.json" "$IEXAPP" "$I3"; : > "$case_dir/idb/blank"
+flow_file "$case_dir/flow.json" "$I3FLOW"
+run_ibg "$case_dir/flow.json"
+begin "iOS blank tree at the start of a flow: read once more, relaunch once, then the step reads the app"
+status_is 0; ilaunches_are 1; has xcrun/log "simctl launch --terminate-running-process FAKE-UDID com.example"
+has out.txt "the app gives a blank tree (no element with a size) before this flow acts on the screen: relaunching it once"
+has out.txt "relaunch: com.example started again as a new process (4242 -> 4243), its data kept"
+has out.txt "relaunched for a blank tree: 1"
+verdict
+
+ibg_case blank-once
+tree "$case_dir/idb/desc-1.json" "$IEXAPP" "$I3"; printf '1' > "$case_dir/idb/blank"
+flow_file "$case_dir/flow.json" "$I3FLOW"
+run_ibg "$case_dir/flow.json"
+begin "iOS blank tree on one read only: the read after it has a size - no relaunch"
+status_is 0; ilaunches_are 0; lacks out.txt "blank tree"
+verdict
+
+ibg_case blank-sticky
+tree "$case_dir/idb/desc-1.json" "$IEXAPP" "$I3"; : > "$case_dir/idb/blank"; : > "$case_dir/idb/blank-sticky"
+flow_file "$case_dir/flow.json" "$I3FLOW"
+run_ibg "$case_dir/flow.json"
+# The relaunch is one: its own second launch (an app it does not see in front -
+# a blank tree is not the app) is part of it, and no relaunch follows.
+begin "iOS blank tree after the relaunch as well: one relaunch, no second, the step fails as a screen that cannot be judged"
+status_is 1; ilaunches_are 2; ilines_are 1 "relaunching it once"
+has out.txt "relaunch: com.example is not in front after two launches"
+has out.txt "the app gives a blank tree (no element with a size); the relaunch did not help - its own line above says why"
+has out.txt "does not report its own bounds"
+verdict
+
+ibg_case blank-after-action
+tree "$case_dir/idb/desc-1.json" "$IEXAPP" "$I3" "$I3B"; tree "$case_dir/idb/desc-2.json" "$IBLANK"
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "a" }' '{ "do": "waitForId", "value": "b", "timeout": 3 }'
+run_ibg "$case_dir/flow.json"
+begin "iOS blank tree after the flow's first action: no relaunch, the step fails, the reason said once"
+status_is 1; ilaunches_are 0
+ilines_are 1 "at or after this flow's first action: not relaunched here - the flow would go on from the app's first screen; the next flow relaunches it"
+has out.txt "does not report its own bounds"
+verdict
+
+ibg_case blank-checks-first
+tree "$case_dir/idb/desc-1.json" "$IEXAPP" "$I3"; : > "$case_dir/idb/blank"
+flow_file "$case_dir/flow.json" '{ "do": "screenshot", "value": "start" }' '{ "do": "assertId", "value": "a", "when": { "notVisible": "Welcome" } }'
+run_ibg "$case_dir/flow.json"
+begin "iOS blank tree under a condition after a screenshot: still before the first action - relaunched"
+status_is 0; ilaunches_are 1
+verdict
+
+ios_case blank-no-variant
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$I3"; tree "$case_dir/idb/desc-2.json" "$IBLANK"; : > "$case_dir/idb/blank"
+flow_file "$case_dir/flow.json" "$I3FLOW"
+run_ios "$case_dir/flow.json"
+begin "iOS blank tree in a run that names no app: not relaunched, says why, fails as before"
+status_is 1; has out.txt "not relaunched: this run does not know which app it is about (\$YUKTI_VARIANT)"
+has out.txt "does not report its own bounds"
+verdict
+
+# A flow whose first step acts: the mark is down when that step reads, so no
+# relaunch - the chosen behaviour, pinned with its words.
+ibg_case blank-first-step-acts
+tree "$case_dir/idb/desc-1.json" "$IEXAPP" "$I3"; : > "$case_dir/idb/blank"
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "a" }'
+run_ibg "$case_dir/flow.json"
+begin "iOS blank tree when the flow's first step acts: not relaunched, the reason says at or after the first action"
+status_is 1; ilaunches_are 0; has out.txt "at or after this flow's first action: not relaunched here"
+verdict
+
+# Outside a flow nothing says what was done before the read: an `assert-id` after a
+# `tap-id` from the command line must not relaunch and pass on the first screen.
+ibg_case blank-cli-after-tap
+tree "$case_dir/idb/desc-1.json" "$IEXAPP" "$I3"; : > "$case_dir/idb/blank"
+env PATH="$ROOT/tests/fake-sdk/xcrun-bin:$ROOT/tests/fake-sdk/idb-bin:$PATH" YUKTI_PLATFORM=ios FAKE_IDB_DIR="$case_dir/idb" \
+  FAKE_XCRUN_DIR="$case_dir/xcrun" YUKTI_VARIANT=app YUKTI_CONFIG="$case_dir/cfg.json" YUKTI_RESULTS_DIR="$case_dir/res" \
+  TMPDIR="$case_dir/tmp" "$YUKTI" assert-id a > "$case_dir/out" 2>&1
+run_status=$?; sed $'s/\033\\[[0-9;]*m//g' "$case_dir/out" > "$case_dir/out.txt"
+begin "iOS blank tree outside a flow (assert-id from the command line): not relaunched, the check fails as before"
+status_is 1; ilaunches_are 0; lacks out.txt "relaunching"
+verdict
+
+# A run directory shared by two flows: the first one acts, the second starts on a
+# blank tree and is still relaunched - the marks are the flow's, not the run's.
+ibg_case blank-shared-run-dir
+tree "$case_dir/idb/desc-1.json" "$IEXAPP" "$I3"; mkdir -p "$case_dir/rundir"
+flow_file "$case_dir/one.json" '{ "do": "tapId", "value": "a" }'
+flow_file "$case_dir/flow.json" "$I3FLOW"
+run_ios "$case_dir/one.json" PATH="$ROOT/tests/fake-sdk/xcrun-bin:$ROOT/tests/fake-sdk/idb-bin:$PATH" \
+  FAKE_XCRUN_DIR="$case_dir/xcrun" YUKTI_VARIANT=app YUKTI_CONFIG="$case_dir/cfg.json" YUKTI_RUN_DIR="$case_dir/rundir"
+: > "$case_dir/idb/blank"
+run_ios "$case_dir/flow.json" PATH="$ROOT/tests/fake-sdk/xcrun-bin:$ROOT/tests/fake-sdk/idb-bin:$PATH" \
+  FAKE_XCRUN_DIR="$case_dir/xcrun" YUKTI_VARIANT=app YUKTI_CONFIG="$case_dir/cfg.json" YUKTI_RUN_DIR="$case_dir/rundir"
+begin "iOS blank tree in a run directory shared with a flow that acted: the next flow is relaunched all the same"
+status_is 0; ilaunches_are 1
+# The run directory was the one given: the reads of both flows are counted in it.
+[ -s "$case_dir/rundir/reads-idb" ] || no "the run directory given was not used - the case proves nothing"
+verdict
+
+# An empty list is the same status 3 to the lookups, and the same blank tree here.
+ibg_case blank-empty-list
+tree "$case_dir/idb/desc-1.json" "$IEXAPP" "$I3"; : > "$case_dir/idb/blank-list"
+flow_file "$case_dir/flow.json" "$I3FLOW"
+run_ibg "$case_dir/flow.json"
+begin "iOS empty list on every read before the flow acts: relaunched like the app's root without a size"
+status_is 0; ilaunches_are 1
+verdict
+
+ios_case blank-ui-cli
+: > "$case_dir/idb/blank"; : > "$(imark)"
+ui_ios
+begin "iOS blank tree from yukti ui on the command line: printed as read, nothing relaunched"
+status_is 0; has tree.out '"width": 0'
+verdict
+
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

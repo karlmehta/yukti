@@ -11,6 +11,8 @@
 # ($FAKE_IDB_DIR/home), except for as many launches as `launch-misses` counts,
 # and gives the app a new pid in `launchctl` with --terminate-running-process
 # (unless `terminate-ignored` is there), or always when `launch-restarts` is there.
+# A launch that starts a new process also takes the fake idb's `blank` tree (and `blank-list`) away,
+# unless `blank-sticky` is there.
 import os, re, sys
 
 d = os.environ["FAKE_XCRUN_DIR"]
@@ -48,6 +50,10 @@ elif args[:2] == ["simctl", "launch"]:
         text = re.sub(r"^(\S+)(\t\S+\tUIKitApplication:%s\[)" % re.escape(ops[1]),
                       lambda m: str(int(m.group(1)) + 1 if m.group(1).isdigit() else 7000) + m.group(2), text, flags=re.M)
         with open(lc, "w") as fh: fh.write(text)
+        idb = os.environ.get("FAKE_IDB_DIR", d)
+        blank = os.path.join(idb, "blank")
+        if os.path.exists(blank) and not os.path.exists(os.path.join(idb, "blank-sticky")): os.remove(blank)
+        if os.path.exists(blank + "-list") and not os.path.exists(os.path.join(idb, "blank-sticky")): os.remove(blank + "-list")
     print("%s: 4242" % ops[1])
 elif args[:2] == ["simctl", "spawn"] and args[3:] == ["launchctl", "list"]:
     try:
