@@ -1248,9 +1248,10 @@ verdict
 # ── a tap asks what is really under its point (idb describe-point) ───────────
 # ibutton <id> - a button 200 wide and 100 high at 100,300: its centre is 200,350.
 ibutton(){ printf '{"type":"Button","role_description":"button","AXUniqueId":"%s","AXLabel":"Go","frame":{"x":100,"y":300,"width":200,"height":100}}' "$1"; }
-# ipoint <id or empty> <x> <y> <w> <h> - what describe-point answers.
-ipoint(){ printf '{"type":"Other","AXUniqueId":%s,"AXLabel":"","frame":{"x":%s,"y":%s,"width":%s,"height":%s}}' \
-  "$([ -n "$1" ] && printf '"%s"' "$1" || printf 'null')" "$2" "$3" "$4" "$5" > "$case_dir/idb/point.json"; }
+# ipoint <id or empty> <x> <y> <w> <h> [type] [traits] - what describe-point
+# answers; type Other and no traits unless given.
+ipoint(){ printf '{"type":"%s","AXUniqueId":%s,"AXLabel":"","frame":{"x":%s,"y":%s,"width":%s,"height":%s}%s}' \
+  "${6:-Other}" "$([ -n "$1" ] && printf '"%s"' "$1" || printf 'null')" "$2" "$3" "$4" "$5" "${7:+,\"traits\":$7}" > "$case_dir/idb/point.json"; }
 taps_are(){ local got; got="$(grep -c '^ui tap ' "$case_dir/idb/log" 2>/dev/null)"
   [ "$got" = "$1" ] || no "$got taps, wanted $1"; }
 
@@ -1296,6 +1297,119 @@ flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "go" }'
 run_ios "$case_dir/flow.json"
 begin "tapId on iOS: no answer from describe-point taps as before, with a warning"
 status_is 0; taps_are 1; has out.txt "could not read what is under 'go' at 200,350"
+verdict
+
+# ── a plain view with an id that holds the target is its container (#189) ────
+# As an iOS 26.5 simulator answers it: a card that carries a testID is a
+# GenericElement with no traits but None, and describe-point answers it for
+# every point inside, its own buttons included. The frames come in fractions of
+# a point; find_el hands the target's corners over cut to whole points.
+# iel <id> <type> <label> <x> <y> <w> <h> - an element of a describe-all answer.
+iel(){ printf '{"type":"%s","AXUniqueId":"%s","AXLabel":"%s","traits":["None"],"frame":{"x":%s,"y":%s,"width":%s,"height":%s}}' \
+  "$2" "$1" "$3" "$4" "$5" "$6" "$7"; }
+ISCREEN="$(iel "" Application App 0 0 402 874)"
+ICARD="$(iel card GenericElement "" 12 621.0000076 378 249)"
+ISHARE="$(iel card-share Button Share 316 634.0000076 28 28)"
+IDISC="$(iel card-disclosure Button "Show more" 348.33 633.5 30 30)"
+
+ios_case ios-tap-container
+tree "$case_dir/idb/desc-1.json" "$ISCREEN" "$ICARD" "$ISHARE" "$IDISC"
+ipoint card 12 621.0000076 378 249 GenericElement '["None"]'
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "card-disclosure" }'
+run_ios "$case_dir/flow.json"
+begin "tapId on iOS: the point answers a plain view with an id that holds the target - its container, and the tap goes"
+status_is 0; taps_are 1; has idb/log "ui tap --udid FAKE-UDID 363 648"
+has out.txt "'card-disclosure' at 363,648: the point answers card, a plain view that holds it - not covered"
+lacks out.txt "is covered"; lacks out.txt "Show more"; ireads_are 2
+verdict
+
+ios_case ios-taptext-container
+tree "$case_dir/idb/desc-1.json" "$ISCREEN" "$ICARD" "$ISHARE" "$IDISC"
+ipoint card 12 621.0000076 378 249 GenericElement '["None"]'
+flow_file "$case_dir/flow.json" '{ "do": "tapText", "value": "Show more" }'
+run_ios "$case_dir/flow.json"
+begin "tapText on iOS: a plain view with an id that holds the target is its container, as for tapId"
+status_is 0; taps_are 1; has idb/log "ui tap --udid FAKE-UDID 363 648"; has out.txt "a plain view that holds it"
+verdict
+
+# A card in a scrolling list answers with the trait Scrollable.
+ios_case ios-tap-container-scrollable
+tree "$case_dir/idb/desc-1.json" "$ISCREEN" "$ICARD" "$ISHARE" "$IDISC"
+ipoint card 12 621.0000076 378 249 GenericElement '["Scrollable"]'
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "card-share" }'
+run_ios "$case_dir/flow.json"
+begin "tapId on iOS: a container with the trait Scrollable is still a plain view"
+status_is 0; taps_are 1; has idb/log "ui tap --udid FAKE-UDID 330 648"
+verdict
+
+ios_case ios-tap-holding-control
+tree "$case_dir/idb/desc-1.json" "$ISCREEN" "$ICARD" "$ISHARE" "$IDISC"
+ipoint card 12 621.0000076 378 249 Button '["Button"]'
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "card-disclosure" }'
+run_ios "$case_dir/flow.json"
+begin "tapId on iOS: a button that holds the target's frame is a control of its own - covered"
+status_is 1; taps_are 0; has out.txt "'card-disclosure' at 363,648 is covered by card - not tapped"
+verdict
+
+ios_case ios-tap-holding-trait
+tree "$case_dir/idb/desc-1.json" "$ISCREEN" "$ICARD" "$ISHARE" "$IDISC"
+ipoint card 12 621.0000076 378 249 GenericElement '["None","Link"]'
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "card-disclosure" }'
+run_ios "$case_dir/flow.json"
+begin "tapId on iOS: a plain type with a trait other than Scrollable is not a plain view - covered"
+status_is 1; taps_are 0; has out.txt "is covered by card - not tapped"
+verdict
+
+ios_case ios-tap-holding-traits-odd
+tree "$case_dir/idb/desc-1.json" "$ISCREEN" "$ICARD" "$ISHARE" "$IDISC"
+ipoint card 12 621.0000076 378 249 GenericElement '"None"'
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "card-disclosure" }'
+run_ios "$case_dir/flow.json"
+begin "tapId on iOS: traits that are not a list are not read as none - covered"
+status_is 1; taps_are 0; has out.txt "is covered by card - not tapped"; lacks out.txt "could not read"
+verdict
+
+ios_case ios-tap-part-held
+tree "$case_dir/idb/desc-1.json" "$ISCREEN" "$ICARD" "$ISHARE" "$IDISC"
+ipoint card 12 640 378 230 GenericElement '["None"]'
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "card-disclosure" }'
+run_ios "$case_dir/flow.json"
+begin "tapId on iOS: a plain view that holds only part of the target's frame covers it"
+status_is 1; taps_are 0; has out.txt "is covered by card - not tapped"
+verdict
+
+# Rows carry one static id each. The second row's button is the target; the
+# point answers the first row, which does not hold it.
+ios_case ios-tap-container-row
+tree "$case_dir/idb/desc-1.json" "$ISCREEN" "$(iel row GenericElement "" 0 100 402 60)" "$(iel row-go Button Go 340 110 40 40)" \
+  "$(iel row GenericElement "" 0 200 402 60)" "$(iel row-go Button Go 340 210 40 40)"
+ipoint row 0 200 402 60 GenericElement '["None"]'
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "row-go", "index": 1 }'
+run_ios "$case_dir/flow.json"
+begin "tapId index on iOS: the row that holds the indexed target is its container"
+status_is 0; taps_are 1; has idb/log "ui tap --udid FAKE-UDID 360 230"
+verdict
+
+ios_case ios-tap-container-other-row
+tree "$case_dir/idb/desc-1.json" "$ISCREEN" "$(iel row GenericElement "" 0 100 402 60)" "$(iel row-go Button Go 340 110 40 40)" \
+  "$(iel row GenericElement "" 0 200 402 60)" "$(iel row-go Button Go 340 210 40 40)"
+ipoint row 0 100 402 60 GenericElement '["None"]'
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "row-go", "index": 1 }'
+run_ios "$case_dir/flow.json"
+begin "tapId index on iOS: a row with the same id that does not hold the indexed target covers it"
+status_is 1; taps_are 0; has out.txt "is covered by row - not tapped"
+verdict
+
+# The known limit, pinned so that it is not changed by accident: an overlay that
+# is a plain view with an id over the whole target reads as its container. The
+# log line is what is left to find it by.
+ios_case ios-tap-holding-plain-overlay
+tree "$case_dir/idb/desc-1.json" "$ISCREEN" "$ICARD" "$ISHARE" "$IDISC" "$(iel sheet GenericElement "" 0 0 402 874)"
+ipoint sheet 0 0 402 874 GenericElement '["None"]'
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "card-disclosure" }'
+run_ios "$case_dir/flow.json"
+begin "tapId on iOS (known limit): a plain view with an id over the whole target passes as its container, and says so"
+status_is 0; taps_are 1; has out.txt "the point answers sheet, a plain view that holds it - not covered"
 verdict
 
 # ── a miss by id says what it saw (#64) ──────────────────────────────────────
@@ -4624,9 +4738,12 @@ begin "swipeId on iOS: idb swipe inside the frame, with an explicit duration"
 status_is 0; has idb/log "ui swipe --udid FAKE-UDID --duration 1.44 308 222 92 222"; lacks out.txt "covered"
 verdict
 
+# What lies over a target answers as the control it is (a floating tab button
+# over a card's body on a simulator); a plain view that holds the whole row is
+# its container (#189), see ios-swipe-container.
 ios_case ios-swipe-covered
 tree "$case_dir/idb/desc-1.json" "$IAPP" "$(istate row-1 Button 200 "" '["Button"]')"
-ipoint tab-bar 0 200 402 60
+ipoint tab-bar 0 200 402 60 Button '["Button"]'
 flow_file "$case_dir/flow.json" '{ "do": "swipeId", "value": "row-1", "direction": "left" }'
 run_ios "$case_dir/flow.json"
 begin "swipeId on iOS: an element over the start point fails the step by name, nothing swiped"
@@ -4649,6 +4766,15 @@ flow_file "$case_dir/flow.json" '{ "do": "swipeId", "value": "row-1", "direction
 run_ios "$case_dir/flow.json"
 begin "swipeId on iOS: no answer from describe-point swipes as before, with a warning"
 status_is 0; has out.txt "could not read what is under 'row-1' at 308,222 - swiping as before"; has idb/log "ui swipe"
+verdict
+
+ios_case ios-swipe-container
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$(istate row-1 Button 200 "" '["Button"]')"
+ipoint list 0 150 402 300 GenericElement '["Scrollable"]'
+flow_file "$case_dir/flow.json" '{ "do": "swipeId", "value": "row-1", "direction": "left" }'
+run_ios "$case_dir/flow.json"
+begin "swipeId on iOS: a list that holds the row answers for its start point - its container, and the swipe goes (#189)"
+status_is 0; has idb/log "ui swipe --udid FAKE-UDID --duration 1.44 308 222 92 222"; has out.txt "a plain view that holds it"
 verdict
 
 # ── tapId "at": a point inside the element (#129) ────────────────────────────
