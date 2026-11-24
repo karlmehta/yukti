@@ -683,7 +683,7 @@ has out.txt "focus is in a different field than the one at 500,1550"
 verdict
 
 # iOS: the fake idb first in PATH, the simulator id where the engine keeps it.
-ios_case(){ new_case "$1"; mkdir -p "$case_dir/idb" "$case_dir/res" "$case_dir/tmp"
+ios_case(){ new_case "$1"; mkdir -p "$case_dir/idb" "$case_dir/res" "$case_dir/tmp" "$case_dir/stacks"
   printf 'FAKE-UDID' > "$case_dir/tmp/yukti-udid"; }
 # tree <file> <element>... - an idb describe-all answer.
 tree(){ local f="$1" e sep=""; shift
@@ -691,9 +691,12 @@ tree(){ local f="$1" e sep=""; shift
 # itext <id> <y> [value] - a text field 300 wide and 40 high at x 40.
 itext(){ printf '{"type":"TextField","role_description":"text field","AXUniqueId":"%s","AXLabel":"","AXValue":%s,"frame":{"x":40,"y":%s,"width":300,"height":40}}' \
   "$1" "${3:-\"@TYPED@\"}" "$2"; }
+# The fake sample and lldb are first in PATH for every iOS flow, and the companion
+# log is the case's: a blank tree names a pid, and no case may sample, attach to
+# or read the log of whatever runs on this machine.
 run_ios(){ local f="$1"; shift
-  env -u YUKTI_VARIANT -u YUKTI_CONFIG PATH="$ROOT/tests/fake-sdk/idb-bin:$PATH" YUKTI_PLATFORM=ios FAKE_IDB_DIR="$case_dir/idb" \
-    YUKTI_RESULTS_DIR="$case_dir/res" TMPDIR="$case_dir/tmp" "$@" \
+  env -u YUKTI_VARIANT -u YUKTI_CONFIG PATH="$ROOT/tests/fake-sdk/stacks-bin:$ROOT/tests/fake-sdk/idb-bin:$PATH" YUKTI_PLATFORM=ios FAKE_IDB_DIR="$case_dir/idb" \
+    FAKE_STACKS_DIR="$case_dir/stacks" YUKTI_IDB_LOGS="$case_dir/idblogs" YUKTI_RESULTS_DIR="$case_dir/res" TMPDIR="$case_dir/tmp" "$@" \
     "$YUKTI" flow "$f" > "$case_dir/out" 2>&1
   run_status=$?
   sed $'s/\033\\[[0-9;]*m//g' "$case_dir/out" > "$case_dir/out.txt"; }
@@ -5762,8 +5765,9 @@ with open(sys.argv[1], "wb") as fh: plistlib.dump({"CFBundleDisplayName": "Examp
   printf '%s' "$case_dir/xcrun/Example.app" > "$case_dir/xcrun/container"
   printf 'PID\tStatus\tLabel\n4242\t0\tUIKitApplication:com.example[1a2b][rb-legacy]\n' > "$case_dir/xcrun/launchctl"
   tree "$case_dir/idb/desc-1.json" '{"type":"Application","role_description":"application","AXLabel":"Example App","frame":{"x":0,"y":0,"width":402,"height":874}}'; }
-run_ibg(){ run_ios "$1" PATH="$ROOT/tests/fake-sdk/xcrun-bin:$ROOT/tests/fake-sdk/idb-bin:$PATH" \
-  FAKE_XCRUN_DIR="$case_dir/xcrun" YUKTI_VARIANT=app YUKTI_CONFIG="$case_dir/cfg.json"; }
+run_ibg(){ local f="$1"; shift
+  run_ios "$f" PATH="$ROOT/tests/fake-sdk/stacks-bin:$ROOT/tests/fake-sdk/xcrun-bin:$ROOT/tests/fake-sdk/idb-bin:$PATH" \
+  FAKE_XCRUN_DIR="$case_dir/xcrun" YUKTI_VARIANT=app YUKTI_CONFIG="$case_dir/cfg.json" "$@"; }
 PY3="$(command -v python3)"
 
 ibg_case ios-bg-and-back
@@ -6615,12 +6619,17 @@ verdict
 # ── #191: a blank tree on iOS - relaunched once, before the flow's first action ──
 # The app's root alone with no size: what a stuck simulator answers on every read
 # of one app process. The fake xcrun's relaunch takes the fake idb's `blank` away.
-IBLANK='{"type":"Application","role_description":"application","AXLabel":null,"frame":{"x":0,"y":0,"width":0,"height":0}}'
+IBLANK='{"type":"Application","role_description":"application","AXLabel":null,"frame":{"x":0,"y":0,"width":0,"height":0},"pid":4242}'
 IEXAPP='{"type":"Application","role_description":"application","AXLabel":"Example App","frame":{"x":0,"y":0,"width":402,"height":874}}'
 ilaunches_are(){ local got; got="$(grep -c '^simctl launch ' "$case_dir/xcrun/log" 2>/dev/null || true)"
   [ "${got:-0}" -eq "$1" ] || no "simctl launch ran ${got:-0} time(s), wanted $1"; }
 ilines_are(){ local got; got="$(grep -cF -- "$2" "$case_dir/out.txt" 2>/dev/null || true)"
   [ "${got:-0}" -eq "$1" ] || no "out.txt has '$2' ${got:-0} time(s), wanted $1"; }
+# stacks_are <n> [line] - the fake sample and lldb ran n times in all, and one of
+# their calls was this one (tests/fake-sdk/stacks-bin/sample says what it logs).
+stacks_are(){ local got; got="$(grep -c . "$case_dir/stacks/log" 2>/dev/null || true)"
+  [ "${got:-0}" -eq "$1" ] || no "the fake sample/lldb ran ${got:-0} time(s), wanted $1"
+  [ -z "${2:-}" ] || has stacks/log "$2"; }
 
 ibg_case blank-start
 tree "$case_dir/idb/desc-1.json" "$IEXAPP" "$I3"; : > "$case_dir/idb/blank"
@@ -6637,8 +6646,8 @@ ibg_case blank-once
 tree "$case_dir/idb/desc-1.json" "$IEXAPP" "$I3"; printf '1' > "$case_dir/idb/blank"
 flow_file "$case_dir/flow.json" "$I3FLOW"
 run_ibg "$case_dir/flow.json"
-begin "iOS blank tree on one read only: the read after it has a size - no relaunch"
-status_is 0; ilaunches_are 0; lacks out.txt "blank tree"
+begin "iOS blank tree on one read only: the read after it has a size - no relaunch, no threads"
+status_is 0; ilaunches_are 0; lacks out.txt "blank tree"; stacks_are 0
 verdict
 
 ibg_case blank-sticky
@@ -6651,7 +6660,7 @@ begin "iOS blank tree after the relaunch as well: one relaunch, no second, the s
 status_is 1; ilaunches_are 2; ilines_are 1 "relaunching it once"
 has out.txt "relaunch: com.example is not in front after two launches"
 has out.txt "the app gives a blank tree (no element with a size); the relaunch did not help - its own line above says why"
-has out.txt "does not report its own bounds"
+has out.txt "the app did not answer the accessibility request in time"
 verdict
 
 ibg_case blank-after-action
@@ -6661,7 +6670,7 @@ run_ibg "$case_dir/flow.json"
 begin "iOS blank tree after the flow's first action: no relaunch, the step fails, the reason said once"
 status_is 1; ilaunches_are 0
 ilines_are 1 "at or after this flow's first action: not relaunched here - the flow would go on from the app's first screen; the next flow relaunches it"
-has out.txt "does not report its own bounds"
+has out.txt "the app did not answer the accessibility request in time"
 verdict
 
 ibg_case blank-checks-first
@@ -6678,7 +6687,7 @@ flow_file "$case_dir/flow.json" "$I3FLOW"
 run_ios "$case_dir/flow.json"
 begin "iOS blank tree in a run that names no app: not relaunched, says why, fails as before"
 status_is 1; has out.txt "not relaunched: this run does not know which app it is about (\$YUKTI_VARIANT)"
-has out.txt "does not report its own bounds"
+has out.txt "the app did not answer the accessibility request in time"
 verdict
 
 # A flow whose first step acts: the mark is down when that step reads, so no
@@ -6709,10 +6718,10 @@ ibg_case blank-shared-run-dir
 tree "$case_dir/idb/desc-1.json" "$IEXAPP" "$I3"; mkdir -p "$case_dir/rundir"
 flow_file "$case_dir/one.json" '{ "do": "tapId", "value": "a" }'
 flow_file "$case_dir/flow.json" "$I3FLOW"
-run_ios "$case_dir/one.json" PATH="$ROOT/tests/fake-sdk/xcrun-bin:$ROOT/tests/fake-sdk/idb-bin:$PATH" \
+run_ios "$case_dir/one.json" PATH="$ROOT/tests/fake-sdk/stacks-bin:$ROOT/tests/fake-sdk/xcrun-bin:$ROOT/tests/fake-sdk/idb-bin:$PATH" \
   FAKE_XCRUN_DIR="$case_dir/xcrun" YUKTI_VARIANT=app YUKTI_CONFIG="$case_dir/cfg.json" YUKTI_RUN_DIR="$case_dir/rundir"
 : > "$case_dir/idb/blank"
-run_ios "$case_dir/flow.json" PATH="$ROOT/tests/fake-sdk/xcrun-bin:$ROOT/tests/fake-sdk/idb-bin:$PATH" \
+run_ios "$case_dir/flow.json" PATH="$ROOT/tests/fake-sdk/stacks-bin:$ROOT/tests/fake-sdk/xcrun-bin:$ROOT/tests/fake-sdk/idb-bin:$PATH" \
   FAKE_XCRUN_DIR="$case_dir/xcrun" YUKTI_VARIANT=app YUKTI_CONFIG="$case_dir/cfg.json" YUKTI_RUN_DIR="$case_dir/rundir"
 begin "iOS blank tree in a run directory shared with a flow that acted: the next flow is relaunched all the same"
 status_is 0; ilaunches_are 1
@@ -6727,6 +6736,128 @@ flow_file "$case_dir/flow.json" "$I3FLOW"
 run_ibg "$case_dir/flow.json"
 begin "iOS empty list on every read before the flow acts: relaunched like the app's root without a size"
 status_is 0; ilaunches_are 1
+verdict
+
+# ── the app's threads on a blank tree, before anything relaunches it ─────────
+# The blank root names the app's process, as idb's does; the threads are taken
+# once a flow: with the failure when the flow had acted, before the relaunch when
+# it had not. The companion's stall lines are copied beside them, nothing else
+# of its log.
+STALLS="$(printf '%s\n' 'idb_companion started' 'I1123 ax_stall_probe pid=4242 main_thread_cpu_ms=2990 main_thread_state=running' \
+  'hid text: Synthetic typed words' 'I1123 ax_stall_probe pid=4242 main_thread_cpu_ms=5990 main_thread_state=running')"
+ibg_case threads-after-action
+tree "$case_dir/idb/desc-1.json" "$IEXAPP" "$I3" "$I3B"; tree "$case_dir/idb/desc-2.json" "$IBLANK"
+mkdir -p "$case_dir/idblogs"; printf '%s\n' "$STALLS" > "$case_dir/idblogs/FAKE-UDID"
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "a" }' '{ "do": "waitForId", "value": "b", "timeout": 3 }'
+run_ibg "$case_dir/flow.json"
+begin "iOS blank tree after the flow acted: the threads taken once, with the failure, beside its screenshot; no relaunch"
+status_is 1; ilaunches_are 0
+stacks_are 1 "sample 4242 3 -file $case_dir/res/flow-threads-4242.txt"
+file_full res/flow-threads-4242.txt; file_full res/flow-fail.png; file_full res/flow-fail.json
+has res/flow.xml "screen: flow-fail.png (taken after the app's threads, which took "
+has out.txt "the app did not answer the accessibility request in time"
+ilines_are 1 "threads: flow-threads-4242.txt (pid 4242, by sample, when the step failed)"
+lacks out.txt ".threads: No such file or directory"
+has res/flow.xml "threads: flow-threads-4242.txt (pid 4242, by sample, when the step failed)"
+has res/flow.xml "idb stall lines: flow-idb-stalls-4242.txt (last 2 of 2)"
+has res/flow-idb-stalls-4242.txt "main_thread_cpu_ms=5990"; lacks res/flow-idb-stalls-4242.txt "Synthetic typed"
+verdict
+
+ibg_case threads-unavailable
+tree "$case_dir/idb/desc-1.json" "$IEXAPP" "$I3" "$I3B"; tree "$case_dir/idb/desc-2.json" "$IBLANK"
+: > "$case_dir/stacks/sample-hangs"; : > "$case_dir/stacks/lldb-fails"
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "a" }' '{ "do": "waitForId", "value": "b", "timeout": 3 }'
+run_ibg "$case_dir/flow.json" YUKTI_THREADS_S=1
+begin "iOS blank tree and nothing takes the threads: each way tried within its cap, one line says why, the failure is as before"
+status_is 1; ilaunches_are 0; red_is failure StepFailed 1 0
+has out.txt "the app did not answer the accessibility request in time"
+ilines_are 1 "threads not taken when the step failed: sample: no answer in 1 s; sample in the simulator: exit 1; lldb: exit 1 - error: attach failed: lost connection"
+has xcrun/log "simctl spawn FAKE-UDID sample 4242 3 -file $case_dir/res/flow-threads-4242.txt"; stacks_are 2 "lldb -p 4242 --batch"
+file_absent res/flow-threads-4242.txt
+has res/flow.xml "idb stall lines not read"
+verdict
+
+ibg_case threads-before-relaunch
+tree "$case_dir/idb/desc-1.json" "$IEXAPP" "$I3"; : > "$case_dir/idb/blank"
+flow_file "$case_dir/flow.json" "$I3FLOW"
+run_ibg "$case_dir/flow.json"
+begin "iOS blank tree before the flow acts: the threads of that process taken first, then the one relaunch as before"
+status_is 0; ilaunches_are 1
+stacks_are 1 "sample 4242 3 -file $case_dir/res/flow-threads-4242.txt launches=0"
+file_full res/flow-threads-4242.txt
+has out.txt "threads: flow-threads-4242.txt (pid 4242, by sample, before this flow acted, ahead of any relaunch)"
+has out.txt "relaunch: com.example started again as a new process (4242 -> 4243), its data kept"
+has res/flow.xml "threads: flow-threads-4242.txt (pid 4242, by sample, before this flow acted, ahead of any relaunch)"
+has res/flow.xml "$case_dir/res/flow-threads-4242.txt"
+verdict
+
+ibg_case threads-tool-says-no-stacks
+tree "$case_dir/idb/desc-1.json" "$IEXAPP" "$I3" "$I3B"; tree "$case_dir/idb/desc-2.json" "$IBLANK"
+: > "$case_dir/stacks/sample-blank"
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "a" }' '{ "do": "waitForId", "value": "b", "timeout": 3 }'
+run_ibg "$case_dir/flow.json"
+begin "iOS blank tree, sample exits 0 with a line and no stacks: not taken as threads, lldb takes them"
+status_is 1; stacks_are 2 "lldb -p 4242 --batch"
+ilines_are 1 "threads: flow-threads-4242.txt (pid 4242, by lldb, when the step failed)"
+lacks out.txt "by sample"; has res/flow-threads-4242.txt "frame #0"; lacks res/flow-threads-4242.txt "written to file"
+verdict
+
+ibg_case threads-sample-refused-lldb-blank
+tree "$case_dir/idb/desc-1.json" "$IEXAPP" "$I3" "$I3B"; tree "$case_dir/idb/desc-2.json" "$IBLANK"
+: > "$case_dir/stacks/sample-fails"; : > "$case_dir/stacks/lldb-blank"
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "a" }' '{ "do": "waitForId", "value": "b", "timeout": 3 }'
+run_ibg "$case_dir/flow.json"
+begin "iOS blank tree, sample refused and lldb exits 0 with no stacks: not taken, each way says why"
+status_is 1; red_is failure StepFailed 1 0; stacks_are 2 "lldb -p 4242 --batch"
+ilines_are 1 "threads not taken when the step failed: sample: exit 1 - sample cannot examine process 4242 for unknown reasons; sample in the simulator: exit 1; lldb: exit 0, no stacks in what it gave"
+file_absent res/flow-threads-4242.txt
+verdict
+
+ibg_case threads-relaunch-blank-too
+tree "$case_dir/idb/desc-1.json" "$IEXAPP" "$I3"; : > "$case_dir/idb/blank"; : > "$case_dir/idb/blank-sticky"
+printf 'Example App' > "$case_dir/idb/blank-label"
+flow_file "$case_dir/flow.json" "$I3FLOW"
+run_ibg "$case_dir/flow.json"
+begin "iOS blank tree in the relaunched process too: its threads taken as well, under its own pid, and each process once"
+status_is 1; ilaunches_are 1
+stacks_are 2 "sample 4242 3 -file $case_dir/res/flow-threads-4242.txt launches=0"
+has stacks/log "sample 4243 3 -file $case_dir/res/flow-threads-4243.txt launches=1"
+file_full res/flow-threads-4242.txt; file_full res/flow-threads-4243.txt
+has res/flow.xml "threads: flow-threads-4242.txt (pid 4242, by sample, before this flow acted, ahead of any relaunch)"
+has res/flow.xml "threads: flow-threads-4243.txt (pid 4243, by sample, after the relaunch, blank as well)"
+has res/flow.xml "screen: flow-fail.png"; lacks res/flow.xml "taken after the app's threads"
+verdict
+
+ibg_case threads-relaunched-then-stuck
+tree "$case_dir/idb/desc-1.json" "$IEXAPP" "$I3" "$I3B"; printf '2' > "$case_dir/idb/blank"; : > "$case_dir/idb/blank-on-tap"
+flow_file "$case_dir/flow.json" '{ "do": "waitForId", "value": "a", "timeout": 3 }' '{ "do": "tapId", "value": "a" }' \
+  '{ "do": "waitForId", "value": "b", "timeout": 2 }'
+run_ibg "$case_dir/flow.json"
+begin "iOS blank tree before the flow acts, relaunched, then stuck again after it acted: both processes' threads"
+status_is 1; ilaunches_are 1
+stacks_are 2 "sample 4242 3 -file $case_dir/res/flow-threads-4242.txt launches=0"
+has stacks/log "sample 4243 3 -file $case_dir/res/flow-threads-4243.txt launches=1"
+has res/flow.xml "threads: flow-threads-4243.txt (pid 4243, by sample, when the step failed)"
+has res/flow.xml "threads: flow-threads-4242.txt (pid 4242, by sample, before this flow acted, ahead of any relaunch)"
+verdict
+
+ibg_case threads-sized-tree
+tree "$case_dir/idb/desc-1.json" "$IEXAPP" "$I3"
+flow_file "$case_dir/flow.json" '{ "do": "waitForId", "value": "nope", "timeout": 1 }'
+run_ibg "$case_dir/flow.json"
+begin "iOS failure on a tree with a size: no threads taken, nothing said about them"
+status_is 1; stacks_are 0; lacks out.txt "threads:"; lacks out.txt "threads not taken"; lacks res/flow.xml "threads:"
+[ -z "$(ls "$case_dir/res" | grep threads)" ] || no "a threads file is in res/"
+verdict
+
+dev_case threads-android
+mkdir -p "$case_dir/stacks"
+screen "$case_dir/adb/dump-1.xml" "$(node TextView title Today)"
+flow_file "$case_dir/flow.json" '{ "do": "waitForId", "value": "missing", "timeout": 1 }'
+run_flow "$case_dir/flow.json" PATH="$ROOT/tests/fake-sdk/stacks-bin:$PATH" FAKE_STACKS_DIR="$case_dir/stacks"
+begin "Android failure: no threads taken, the result as before"
+status_is 1; fake_used; stacks_are 0; lacks out.txt "threads:"; lacks out.txt "threads not taken"; lacks res/flow.xml "threads:"
+has res/flow.xml "tree: flow-fail.xml"
 verdict
 
 ios_case blank-ui-cli

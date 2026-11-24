@@ -47,7 +47,15 @@
 #                  no size and nothing in it, as a stuck simulator does; the fake
 #                  xcrun's `simctl launch --terminate-running-process` takes it
 #                  away unless `blank-sticky` is there; holding a number n: only
-#                  the next n reads answer it
+#                  the next n reads answer it. The root names the app's pid, as
+#                  idb names the app's own: the app's line in the fake xcrun's
+#                  `launchctl` file ($FAKE_XCRUN_DIR), which a relaunch moves on,
+#                  else 4242
+#   blank-label    the label of the blank root (none when absent): a root that
+#                  names the app reads as the app in front, so a relaunch works
+#                  and its process can be blank as well
+#   blank-on-tap   present: a tap puts `blank` back - the app stuck after the
+#                  flow acted, in whatever process it is by then
 #   blank-list     present: `ui describe-all` answers an empty list, `[]`; the
 #                  fake xcrun's relaunch takes it away as it does `blank`
 #   exit-1         present: `ui describe-all` answers its tree and exits 1
@@ -86,8 +94,15 @@ elif ops[:2] == ["ui", "describe-all"] and has("blank") and read("blank").strip(
     write("describes", str(int(read("describes", "0") or 0) + 1))
     left = read("blank").strip()
     if left.isdigit(): write("blank", str(int(left) - 1))
-    sys.stdout.write(json.dumps([{"type": "Application", "role_description": "application", "AXLabel": None,
-                                  "AXFrame": "{{0, 0}, {0, 0}}", "frame": {"x": 0, "y": 0, "width": 0, "height": 0}}]))
+    pid = 4242
+    if os.environ.get("FAKE_XCRUN_DIR"):
+        try:
+            with open(os.path.join(os.environ["FAKE_XCRUN_DIR"], "launchctl")) as fh:
+                pid = next(int(l.split()[0]) for l in fh if "UIKitApplication:" in l and l.split()[0].isdigit())
+        except (OSError, StopIteration): pass
+    sys.stdout.write(json.dumps([{"type": "Application", "role_description": "application", "AXLabel": read("blank-label") or None,
+                                  "AXFrame": "{{0, 0}, {0, 0}}", "frame": {"x": 0, "y": 0, "width": 0, "height": 0},
+                                  "pid": pid}]))
 elif ops[:2] == ["ui", "describe-all"] and has("home"):
     write("describes", str(int(read("describes", "0") or 0) + 1))
     sys.stdout.write(json.dumps([{"type": "Application", "role_description": "application", "AXLabel": " ",
@@ -147,6 +162,7 @@ elif ops[:1] == ["describe"] and has("screen"):
     w, h = read("screen").split()
     sys.stdout.write(json.dumps({"screen_dimensions": {"width_points": int(w), "height_points": int(h)}}))
 elif ops[:2] == ["ui", "tap"]:
+    if has("blank-on-tap"): write("blank", "")
     if has("done-closes") and has("keyboard"): os.remove(path("keyboard"))
     if has("done-closes") and has("keypad"): os.remove(path("keypad"))
 elif ops[:1] == ["connect"]:
