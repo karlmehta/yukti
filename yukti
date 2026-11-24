@@ -1861,6 +1861,145 @@ sys.exit(0)'; }
 ios_blank_say(){ local m="${FLOW_REC:-}"
   [ -n "$m" ] && [ -e "$m.blank-said" ] && return 0
   [ -z "$m" ] || : > "$m.blank-said" 2>/dev/null || true; warn "$1" >&2; }
+# The stacks of the app's threads on a blank tree, before anything ends the app's
+# process. Measured in one full iOS run on CI: idb answers fast and with status
+# 0, the root is the app's own process - its pid is in it - and the screenshot of
+# the same moment is drawn; from one read on the app never fills the tree again:
+# 41 of 353 app processes, each on the first or second read after a change of
+# screen, none back within 45 s. idb fills a request the app did not answer in
+# time with an empty answer, and that is this root with no size and nothing in
+# it. In the same run a screen stayed in its loading state for 45 s after its
+# data had come in. What holds the app is in no artifact - the relaunch (#191) or
+# the next flow ends the process, and the answer goes with it. So the threads are
+# sampled here, into <flow>-threads-<pid>.txt beside the failure's screenshot and
+# tree, once per app process a flow sees blank (a relaunch gives a new one):
+# `sample` for 3 s; when it is missing, refused or gave no stacks, `sample` run
+# inside the simulator, then lldb (attach, backtrace every thread, detach). A way
+# counts only when its file holds stacks - "Call graph:" from sample, "thread #"
+# and "frame #" from lldb: a tool can exit 0 having written elsewhere, or a line
+# about why it could not. Which of them a CI runner allows is not measured yet.
+# Each is capped at $THREADS_S seconds, and at the cap its whole process group is
+# killed (lldb's debugserver with it); lldb killed there may leave the app
+# stopped - the flow is failing by then, or about to relaunch it. lldb prints
+# the values of arguments where the app has debug information, sample names
+# only; the file stays among the run's artifacts, beside the tree and the
+# screenshot. idb-companion's own words about the request it gave up on - its
+# `ax_stall_probe` lines, numbers only (the main thread's CPU and state, the
+# host's load) - go beside them, into <flow>-idb-stalls-<pid>.txt: fb-idb starts
+# the companion for a simulator the first time a command names it and appends
+# its stderr to /tmp/idb/logs/<udid>. Only those lines are copied: the rest of
+# that log is not ours to vouch for, and a result file must not carry what a
+# flow typed. A capture that fails says why in one line and changes nothing else.
+THREADS_S="${YUKTI_THREADS_S:-20}"
+case "$THREADS_S" in ''|*[!0-9]*|0|????*) THREADS_S=20;; esac
+# ios_threads <udid> <tree> <when> [say] - adds what it took to $FLOW_REC.threads,
+# a line per note ("note<TAB>words") and per file ("file<TAB>path") for the
+# result; with "say", the notes also go to stderr. Prints nothing on stdout. A
+# process already taken in this flow ($FLOW_REC.threads-pids) is not taken again.
+ios_threads(){ local u="$1" tree="$2" when="$3" m="${FLOW_REC:-}" s got rc l t=$'\t'
+  [ -n "$m" ] || return 0
+  s="${FLOW_FILE##*/}"; s="${s%.*}"; [ -n "$s" ] || s=flow
+  got="$(printf '%s' "$tree" | "$PY" -c '
+import json, os, re, signal, subprocess, sys
+udid, base, cap, when, logs, seen = sys.argv[1], sys.argv[2], int(sys.argv[3]), sys.argv[4], sys.argv[5], sys.argv[6]
+def say(kind, text): sys.stdout.write("%s\t%s\n" % (kind, text))
+try: els = json.loads(sys.stdin.read())
+except ValueError: els = None
+pid = ""
+if isinstance(els, list):
+    for e in els:
+        if isinstance(e, dict) and e.get("type") == "Application" and str(e.get("pid", "")).isdigit():
+            pid = str(e["pid"]); break
+if pid and int(pid) < 2: pid = ""
+# Once per process a flow: the same process seen blank again is the same stuck
+# one; a new pid (a relaunch, or a flow that relaunched and got stuck itself) is
+# taken again. A tree that names no process is said once.
+key = pid or "none"
+try:
+    with open(seen, encoding="utf-8") as fh: done = fh.read().split()
+except OSError: done = []
+if key in done: sys.exit(0)
+try:
+    with open(seen, "a", encoding="utf-8") as fh: fh.write(key + "\n")
+except OSError: pass
+tail = "-" + pid if pid else ""
+out, stalls = base + "-threads" + tail + ".txt", base + "-idb-stalls" + tail + ".txt"
+def gone(*ps):
+    for p in ps:
+        try: os.remove(p)
+        except OSError: pass
+gone(out, stalls)   # a file an earlier run left must not pass for this one
+def stacks(p, tool):
+    try:
+        with open(p, encoding="utf-8", errors="replace") as fh: text = fh.read(4 << 20)
+    except OSError: return False
+    if tool == "lldb": return re.search(r"thread #\d", text) is not None and "frame #" in text
+    return "Call graph:" in text
+why = []
+if not pid:
+    say("note", "threads not taken %s: the tree names no process of the app" % when)
+else:
+    try: os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
+    except OSError as e: why.append("%s: %s" % (os.path.dirname(out), e.strerror or e))
+    tries = [("sample", "sample", ["sample", pid, "3", "-file", out]),
+             ("sample in the simulator", "sample", ["xcrun", "simctl", "spawn", udid, "sample", pid, "3", "-file", out]),
+             ("lldb", "lldb", ["lldb", "-p", pid, "--batch", "-o", "thread backtrace all", "-o", "process detach"])]
+    took, said, errs = "", out + ".said", out + ".err"
+    for name, tool, cmd in tries if not why else []:
+        gone(out, said, errs)   # what a way before left is not this one
+        try:
+            with open(said, "wb") as fo, open(errs, "wb") as fe:
+                # Its own session: at the cap the whole group goes, not only
+                # the tool - the debugserver of lldb with it. What simctl
+                # spawn starts inside the simulator belongs to the simulator.
+                p = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=fo, stderr=fe, start_new_session=True)
+                try: rc = p.wait(timeout=cap)
+                except subprocess.TimeoutExpired:
+                    try: os.killpg(p.pid, signal.SIGKILL)
+                    except OSError: pass
+                    p.wait(); why.append("%s: no answer in %d s" % (name, cap)); continue
+        except OSError as e: why.append("%s: %s" % (name, e.strerror or e)); continue
+        # sample writes its report to -file and a line or two on stdout; lldb
+        # prints its own. Whichever of the two holds stacks is the file.
+        for got in (out, said):
+            if os.path.isfile(got) and stacks(got, tool):
+                if got != out: os.replace(got, out)
+                took = name; break
+        if took: break
+        try:
+            with open(errs, encoding="utf-8", errors="replace") as fh: last = fh.read().strip().splitlines()
+        except OSError: last = []
+        if rc == 0: why.append("%s: exit 0, no stacks in what it gave" % name)
+        else: why.append("%s: exit %d%s" % (name, rc, (" - " + " ".join(last[-1].split())[:200]) if last else ""))
+    gone(said, errs)
+    if took:
+        say("note", "threads: %s (pid %s, by %s, %s)" % (os.path.basename(out), pid, took, when)); say("file", out)
+    else:
+        gone(out)
+        say("note", "threads not taken %s: %s" % (when, "; ".join(why)))
+log = os.path.join(logs, udid)
+try:
+    with open(log, encoding="utf-8", errors="replace") as fh:
+        lines = [l for l in fh if "ax_stall_probe " in l]
+except OSError as e:
+    say("note", "idb stall lines not read: %s: %s" % (log, e.strerror or e))
+else:
+    if not lines: say("note", "idb stall lines: none in %s" % log)
+    else:
+        try:
+            with open(stalls, "w", encoding="utf-8") as fh: fh.writelines(lines[-200:])
+        except OSError as e: say("note", "idb stall lines not kept: %s" % (e.strerror or e))
+        else:
+            say("note", "idb stall lines: %s (last %d of %d)" % (os.path.basename(stalls), min(200, len(lines)), len(lines)))
+            say("file", stalls)
+' "$u" "$RESULTS_DIR/$s" "$THREADS_S" "$when" "${YUKTI_IDB_LOGS:-/tmp/idb/logs}" "$m.threads-pids" 2>/dev/null)" && rc=0 || rc=$?
+  [ "$rc" = 0 ] || got="$(printf 'note\tthreads not taken %s: the capture itself failed' "$when")"
+  [ -n "$got" ] || return 0
+  printf '%s\n' "$got" >> "$m.threads" 2>/dev/null || true
+  [ "${4:-}" = say ] || return 0
+  printf '%s\n' "$got" | while IFS= read -r l; do
+    case "$l" in "note${t}threads:"*|"note${t}idb stall lines:"*) say "${l#note$t}" >&2;; note*) warn "${l#note$t}" >&2;; esac; done
+  return 0; }
 # ios_unstick <udid> <tree> - prints the tree a caller is to use: this one, or
 # one read after a relaunch. Everything it says goes to stderr: its output is
 # the tree. The relaunch reads the screen itself (is the app in front?), and
@@ -1870,6 +2009,12 @@ ios_unstick(){ local u="$1" out="$2" m="${FLOW_REC:-}" d t0 again i
   [ -z "${YUKTI_UNSTICK_BUSY:-}" ] || { printf '%s' "$out"; return 0; }
   ios_blank "$out" || { printf '%s' "$out"; return 0; }
   [ -n "$m" ] || { printf '%s' "$out"; return 0; }
+  # No threads are taken on this branch: its first blank read is also the app
+  # still drawing right after a launch - about 120 flows that passed in the
+  # measured run said this line after `launch` - and stacks there would cost
+  # seconds a flow and show an app that is not stuck. A flow stuck past this
+  # point fails on its wait, and its threads are taken with the failure
+  # (flow_results), still before the next flow relaunches the app.
   if [ -e "$m.acted" ]; then
     ios_blank_say "the app gives a blank tree (no element with a size) at or after this flow's first action: not relaunched here - the flow would go on from the app's first screen; the next flow relaunches it"
     printf '%s' "$out"; return 0; fi
@@ -1880,6 +2025,10 @@ ios_unstick(){ local u="$1" out="$2" m="${FLOW_REC:-}" d t0 again i
   # and that one needs no relaunch.
   sleep 1; t0="$(now)"; again="$(idb ui describe-all --udid "$u" 2>/dev/null)" || true
   if [ -n "$again" ]; then read_note idb "$t0"; out="$again"; ios_blank "$out" || { printf '%s' "$out"; return 0; }; fi
+  # Blank twice a second apart: the threads of this process now, before the
+  # relaunch below ends it. A relaunch that does not help is taken again below:
+  # the new process has its own pid.
+  ios_threads "$u" "$out" "before this flow acted, ahead of any relaunch" say
   if [ -z "${YUKTI_VARIANT:-}" ]; then
     ios_blank_say "the app gives a blank tree (no element with a size); not relaunched: this run does not know which app it is about (\$YUKTI_VARIANT)"
     printf '%s' "$out"; return 0; fi
@@ -1894,6 +2043,8 @@ ios_unstick(){ local u="$1" out="$2" m="${FLOW_REC:-}" d t0 again i
   for i in 1 2 3 4 5 6 7 8; do sleep 1; t0="$(now)"; again="$(idb ui describe-all --udid "$u" 2>/dev/null)" || true
     [ -n "$again" ] || continue; read_note idb "$t0"; out="$again"
     ios_blank "$out" || { printf '%s' "$out"; return 0; }; done
+  # Blank in the new process too: its threads as well - the next flow ends it.
+  ios_threads "$u" "$out" "after the relaunch, blank as well" say
   ios_blank_say "the app gives a blank tree (no element with a size) after a relaunch as well"
   printf '%s' "$out"; }
 # A read is an answer with something in it, whatever idb's status: a failed read
@@ -3275,7 +3426,16 @@ lookup_die(){ local st="${1:-1}" msg="${2:-}"
 # the one place every caller passes through to word it (#96).
 lookup_err(){ case "${1:-1}" in
     2) device_fault; printf '%s' "the device answered, but not with a tree that can be read";;
-    3) printf '%s' "the screen was read but does not report its own bounds, so nothing on it can be called visible";;
+    # On iOS status 3 is the blank tree (ios_blank): idb answered, and the app
+    # did not answer the accessibility request in time - it gave its root with
+    # no size and nothing in it, or nothing at all. Said as that, not as a screen
+    # without bounds: the words used to send the reader to the tree and to idb.
+    # Not said: that the interface stopped - an app still drawing after a launch
+    # gives the same tree; whether the app or the simulator holds it is not known
+    # here either. The threads taken with the failure are the evidence.
+    3) if [ "${YUKTI_PLATFORM:-}" = ios ]; then
+         printf '%s' "the app did not answer the accessibility request in time: the tree has no element with a size, so nothing on the screen can be judged"
+       else printf '%s' "the screen was read but does not report its own bounds, so nothing on it can be called visible"; fi;;
     # The element an "in" names is not on the screen (#102); the id comes second.
     # It says why as tapId does (#167): not in the tree, or there with no area
     # or off the screen - and that the id is the container's, not the target's.
@@ -4591,7 +4751,7 @@ FLOW_IDX=0
 now(){ if [ -n "${EPOCHREALTIME:-}" ]; then printf '%s' "${EPOCHREALTIME/,/.}"; else date +%s; fi; }
 
 flow_results(){
-  local st="${1:-0}" out udid=""
+  local st="${1:-0}" out udid="" tree t0 had
   [ -n "${FLOW_REC:-}" ] || return 0
   trap - EXIT
   # A failed flow takes a screenshot below, and the tools for it are on the PATH
@@ -4600,6 +4760,20 @@ flow_results(){
   # stopped the trap would lose the result it was meant to complete.
   if [ "$st" != 0 ]; then
     if is_android; then apaths; else paths; udid="$(U 2>/dev/null)" || udid=""; fi
+  fi
+  # A flow that failed on a blank tree on iOS: the app's threads now, before the
+  # next flow's first read relaunches it (ios_threads; once per process - one
+  # taken before this flow's relaunch is not taken again). Said in the result's
+  # notes. They come before the screenshot below, and the result says how long
+  # they took: for an app that was still drawing, the screen may have moved on.
+  if [ "$st" != 0 ] && [ -n "$udid" ] && [ -s "$FLOW_TREE" ]; then
+    tree="$(cat "$FLOW_TREE" 2>/dev/null)" || tree=""
+    if ios_blank "$tree"; then t0="$(now)"; had="$({ wc -c < "$FLOW_REC.threads"; } 2>/dev/null)" || had=0
+      ios_threads "$udid" "$tree" "when the step failed" || true
+      # Said only when this call took something: a process taken before is not
+      # taken again, and the screenshot was not held up.
+      [ "$({ wc -c < "$FLOW_REC.threads"; } 2>/dev/null || echo 0)" = "${had:-0}" ] ||
+        printf 'after\t%s\t%s\n' "$t0" "$(now)" >> "$FLOW_REC.threads" 2>/dev/null || true; fi
   fi
   out="$("$PY" - "$FLOW_FILE" "$FLOW_REC" "$FLOW_CUR" "$FLOW_ERR" "$FLOW_T0" "$(now)" "$st" "$RESULTS_DIR" "$YUKTI_PLATFORM" "$FLOW_TREE" "$udid" "$CONFIG" "${YUKTI_VARIANT:-}" <<'PY'
 import os, sys, time
@@ -4928,6 +5102,21 @@ def app_check(shot_why):
 # run before its step is recorded, and that is a failure on "00 flow" - the one
 # where the screen is wanted most. A flow file the builder refused started no
 # step and touched no device, and leaves nothing.
+# The app's threads on a blank tree (ios_threads): taken with this failure, or
+# before or after this flow's relaunch, and what idb-companion said about it. A
+# failed flow says them with its failure; a flow that passed keeps the files and
+# the lines all the same - a relaunch that helped leaves the stuck process's
+# threads with a flow that went green.
+tnotes, tfiles, tafter = [], [], None
+for line in read(rec + ".threads").split("\n"):
+    kind, _, text = line.partition("\t")
+    if kind == "note" and text: tnotes.append(text)
+    elif kind == "file" and text and os.path.isfile(text): tfiles.append(text)
+    elif kind == "after":
+        a, _, b = text.partition("\t")
+        try: tafter = max(0.0, float(b) - float(a))
+        except ValueError: pass
+side = []
 kind_of_app = ""
 if failing is not None or (int(num(st)) != 0 and read(cur).strip()):
     os.makedirs(outdir, exist_ok=True)
@@ -4939,7 +5128,9 @@ if failing is not None or (int(num(st)) != 0 and read(cur).strip()):
         except OSError: pass
         notes.append("screen not captured: " + why)
     else:
-        captured.append(png); notes.append("screen: " + os.path.basename(png))
+        captured.append(png)
+        notes.append("screen: " + os.path.basename(png)
+                     + ("" if tafter is None else " (taken after the app's threads, which took %.0f s)" % tafter))
     tree = read(treef) if treef else ""
     if not tree.strip():
         notes.append("tree: none - no step of this flow read the screen")
@@ -4960,10 +5151,13 @@ if failing is not None or (int(num(st)) != 0 and read(cur).strip()):
             if by == 0: line += " (read before step 1)"
             elif failing is None or by != failing["i"]: line += " (read by step %d)" % by
             notes.append(line)
+    notes.extend(tnotes); captured.extend(tfiles)
     top, kind_of_app = app_check(shot_why)
     if top: msg = top + "\n" + msg
     msg = msg + "\n" + "\n".join(notes)
     if top: notes.insert(0, top)
+else:
+    captured.extend(tfiles); side = tnotes
 
 # A typed string is a credential as often as not - the flow files take
 # ${TEST_PASSWORD} from the environment. The result file records how much was
@@ -5057,8 +5251,9 @@ out = [
 out.extend(cases)
 if arts:
     out.append('    <system-out>' + escape("\n".join(arts)) + '</system-out>')
-if torn:
-    out.append('    <system-err>' + escape("\n".join("teardown: " + l for l in torn.split("\n"))) + '</system-err>')
+err = side + (["teardown: " + l for l in torn.split("\n")] if torn else [])
+if err:
+    out.append('    <system-err>' + escape("\n".join(err)) + '</system-err>')
 out.append('  </testsuite>')
 out.append('</testsuites>')
 
@@ -5076,7 +5271,7 @@ PY
   else
     warn "could not write the results file to '$RESULTS_DIR'"
   fi
-  rm -f "$FLOW_REC" "$FLOW_REC.acted" "$FLOW_REC.blank-relaunched" "$FLOW_REC.blank-said" "$FLOW_CUR" "$FLOW_ERR" "$FLOW_ERR.kind" "$FLOW_ERR.teardown" "$FLOW_TREE" "$FLOW_TREE.step"; FLOW_REC=""
+  rm -f "$FLOW_REC" "$FLOW_REC.acted" "$FLOW_REC.blank-relaunched" "$FLOW_REC.blank-said" "$FLOW_REC.threads" "$FLOW_REC.threads-pids" "$FLOW_CUR" "$FLOW_ERR" "$FLOW_ERR.kind" "$FLOW_ERR.teardown" "$FLOW_TREE" "$FLOW_TREE.step"; FLOW_REC=""
   return 0
 }
 

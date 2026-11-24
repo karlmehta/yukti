@@ -45,6 +45,36 @@ the screen would, after a relaunch, check the app's first screen instead: start
 every flow from a known state (see "Starting a flow from a known state"). This
 is a workaround; why idb gets stuck is open.
 
+What a blank tree is, as far as it was measured: idb answers fast and with
+status 0, the root is the app's own process, and the app did not answer the
+accessibility request - idb fills a request left unanswered with an empty one.
+A step that fails on it says so: `the app did not answer the accessibility
+request in time`. In the one full CI run measured, the app's interface had
+stopped as well (a screen stayed in its loading state 45 s after its data came
+in); an app still drawing right after a launch gives the same tree, so the
+message does not say it.
+
+To find what holds the app, the engine samples the app's threads before
+anything ends its process: before the relaunch above, again after it if the new
+process is blank as well, and, when the flow had acted, with the failure (the
+next flow relaunches). Once per app process a flow sees blank, so one stuck
+process is taken at most twice - with the failure of the flow it stuck in and
+before the next flow's relaunch: two points in time, and the cost of each. They
+go to `<flow>-threads-<pid>.txt` beside the failure's screenshot and tree, taken
+by `sample`, or, when it is missing, refused or gave no stacks, by `sample`
+inside the simulator, then by lldb; a way counts only when its file holds
+stacks. Each is capped at `$YUKTI_THREADS_S` seconds (20; symbolizing on a slow
+runner may need more), and its process group is killed at the cap. On a failure
+the screenshot comes after the threads, and the result says how long they took.
+lldb prints the values of arguments where the app has debug information;
+`sample` prints names only. Next to them, `<flow>-idb-stalls-<pid>.txt` holds
+the last 200 `ax_stall_probe` lines of idb-companion's log (fb-idb appends the
+companion's stderr to `/tmp/idb/logs/<udid>`; `$YUKTI_IDB_LOGS` names another
+directory) - those lines only, numbers about the app's main thread and the
+host. What could not be taken is one line in the result, and the flow fails or
+passes as it would have; a flow that passed keeps the files and the lines in
+its result too.
+
 ## Run against a build
 
 ```bash
@@ -1236,8 +1266,8 @@ at the top level or on a variant (the variant's wins), the way `urlBase` is.
 - `"teardown"` runs whatever the outcome - after a pass, a failure or a blocked
   flow - and every call of it runs even when one before it failed. A call that
   needs a value no fixture bound is not made. A teardown that failed is said on
-  the console and kept in the results as `<system-err>`; it does not change the
-  outcome.
+  the console and kept in the results as `<system-err>` (beside the notes on the
+  app's threads of a flow that passed, if any); it does not change the outcome.
 - The step `fixture` calls one fixture in the middle of a flow, under the same
   rules: `{"do":"fixture","value":"change-weight","with":{"kg":70}}`. It binds
   nothing - the steps after it are built before it runs.

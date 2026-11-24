@@ -1,0 +1,48 @@
+#!/usr/bin/env python3
+# A stand-in for macOS `sample`, and under the name lldb for lldb: tests/run.sh
+# puts this directory first in PATH for every iOS case, so no case samples or
+# attaches to a real process that happens to have the fake app's pid. It answers
+# from files in $FAKE_STACKS_DIR:
+#
+#   log            every call, one per line: the tool, its arguments, and how
+#                  many `simctl launch` the fake xcrun had logged by then
+#                  ("launches=N") - a case tells from it whether the threads
+#                  were taken before a relaunch
+#   sample-fails   present: sample exits 1 with a line on stderr, as a refused
+#                  one does, and writes nothing
+#   sample-hangs   present: sample sleeps 5 s before it does anything
+#   sample-blank   present: sample exits 0 with a line on stdout that its report
+#                  went to a file of its own, and writes nothing after -file
+#   lldb-fails     present: lldb exits 1 with a line on stderr
+#   lldb-blank     present: lldb exits 0 and prints an error, no stacks
+#
+# sample writes its report to the file after -file; lldb prints its own.
+import os, sys, time
+
+d = os.environ.get("FAKE_STACKS_DIR") or sys.exit("FAKE_STACKS_DIR is not set")
+tool, args = os.path.basename(sys.argv[0]), sys.argv[1:]
+launches = 0
+xd = os.environ.get("FAKE_XCRUN_DIR")
+if xd:
+    try:
+        with open(os.path.join(xd, "log")) as fh: launches = sum(1 for l in fh if l.startswith("simctl launch "))
+    except OSError: pass
+with open(os.path.join(d, "log"), "a") as fh:
+    fh.write("%s %s launches=%d\n" % (tool, " ".join(args), launches))
+if tool == "lldb":
+    if os.path.exists(os.path.join(d, "lldb-fails")):
+        sys.stderr.write("error: attach failed: lost connection\n"); sys.exit(1)
+    if os.path.exists(os.path.join(d, "lldb-blank")):
+        sys.stdout.write("(lldb) process attach --pid %s\nerror: attach failed\n" % (args[1] if len(args) > 1 else "")); sys.exit(0)
+    sys.stdout.write("* thread #1, queue = 'com.apple.main-thread'\n  frame #0: mach_msg2_trap\n"); sys.exit(0)
+if os.path.exists(os.path.join(d, "sample-hangs")): time.sleep(5)
+if os.path.exists(os.path.join(d, "sample-fails")):
+    sys.stderr.write("sample cannot examine process %s for unknown reasons\n" % (args[0] if args else "")); sys.exit(1)
+if os.path.exists(os.path.join(d, "sample-blank")):
+    sys.stdout.write("Sample analysis of process %s written to file /tmp/app_2026-11-23_123456_AbCd.sample.txt\n"
+                     % (args[0] if args else "")); sys.exit(0)
+out = args[args.index("-file") + 1] if "-file" in args else None
+report = "Analysis of sampling pid %s every 1 millisecond\nCall graph:\n    2000 Thread_1   DispatchQueue_1: com.apple.main-thread\n" % (args[0] if args else "")
+if out:
+    with open(out, "w") as fh: fh.write(report)
+else: sys.stdout.write(report)
