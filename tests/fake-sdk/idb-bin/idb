@@ -43,6 +43,8 @@
 #                  with nothing on stdout, and `connect` brings it back (removes
 #                  the file) (#175)
 #   empty          present: `ui describe-all` answers nothing with status 0
+#   empty-from     holding a number n: from the n-th read on, `ui describe-all`
+#                  answers nothing with status 0, as `empty` does
 #   blank          present: `ui describe-all` answers the app's root alone with
 #                  no size and nothing in it, as a stuck simulator does; the fake
 #                  xcrun's `simctl launch --terminate-running-process` takes it
@@ -99,7 +101,7 @@ if ops[:2] == ["ui", "describe-all"]:
         with open(path("read-times"), "a") as fh: fh.write("%.3f %.3f\n" % (_start, time.time()))
     atexit.register(_times)
 
-if ops[:2] == ["ui", "describe-all"] and (has("stale") or has("empty")):
+if ops[:2] == ["ui", "describe-all"] and (has("stale") or has("empty") or (has("empty-from") and int(read("describes", "0") or 0) + 1 >= int(read("empty-from").strip()))):
     write("describes", str(int(read("describes", "0") or 0) + 1))
     if has("stale"): sys.exit(1)
 elif ops[:2] == ["ui", "describe-all"] and has("blank-list"):

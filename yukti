@@ -2059,6 +2059,10 @@ ui(){ is_android && { aui; return; }; [ -n "$HELD_TREE" ] && { printf '%s' "$HEL
   local u out i t0 tried; u="$(U)"; idb_ready "$u"; tried="$IDB_DID"
   for i in 1 2 3 4; do t0="$(now)"; out="$(idb ui describe-all --udid "$u" 2>/dev/null)" || true
     [ -n "$out" ] && { read_note idb "$t0"; out="$(ios_unstick "$u" "$out")"; keep_tree "$out"; printf '%s' "$out"; return 0; }
+    # No answer: the marks of the read before it say nothing of this one
+    # (poll_pause). Not inside a relaunch: there the blank mark must outlive the
+    # reads, so a relaunch that did not help still brings the back-off (#204).
+    [ -n "${YUKTI_UNSTICK_BUSY:-}" ] || { read_blank 0; [ -z "${FLOW_REC:-}" ] || : > "$FLOW_REC.read-ms" 2>/dev/null || true; }
     [ -n "$tried" ] || { idb_forget "$u"; idb_ready "$u"; tried=1; }
     sleep 0.6; done
   # An empty tree after four tries is idb failing, not a screen with nothing on

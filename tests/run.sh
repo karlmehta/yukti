@@ -7062,6 +7062,15 @@ status_is 0; has out.txt "next read in 2.6"
 g="$(gap_n 1)"; [ -n "$g" ] && [ "$g" -ge 2550 ] || no "the read after the long one began ${g:-?} ms after it, wanted 2600"
 verdict
 
+ios_case ios-poll-blank-then-no-answer
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$(ibutton go)"
+printf '1' > "$case_dir/idb/blank-on-tap"; printf '3' > "$case_dir/idb/empty-from"
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "go" }' '{ "do": "waitForId", "value": "done", "timeout": 6 }'
+run_ios "$case_dir/flow.json"
+begin "iOS wait: one blank read, then idb answers nothing - the pause line says blank once, not after the reads with no answer"
+status_is 1; has out.txt "cannot read the screen"; ilines_are 1 "came back blank"
+verdict
+
 ibg_case ios-poll-after-relaunch
 tree "$case_dir/idb/desc-1.json" "$IEXAPP" "$(ibutton go)"; : > "$case_dir/idb/blank"
 tree "$case_dir/idb/desc-9.json" "$IEXAPP" "$(ibutton go)" "$(ibutton done)"
