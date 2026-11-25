@@ -4689,6 +4689,46 @@ begin "waitForNotId on iOS: an unreadable tree is not a disappearance"
 status_is 1; has out.txt "waitForNot id FAILED after 1s waiting for 'sheet' to go:"; lacks out.txt "gone from the screen"
 verdict
 
+IBLANK0='{"type":"Application","role_description":"application","AXLabel":null,"frame":{"x":0,"y":0,"width":0,"height":0}}'
+# ── #201 step 1: a negative check that passes on a root-only tree says so ──
+# The app's root with a size and nothing in it: the lookups read it as a
+# screen, so "not there" passes. The verdict stays; the step and the end of the
+# flow say it.
+ios_case ios-root-only-negative
+tree "$case_dir/idb/desc-1.json" "$IAPP"
+flow_file "$case_dir/flow.json" '{ "do": "assertNotId", "value": "sheet" }' '{ "do": "waitForNotId", "value": "sheet", "timeout": 2 }'
+run_ios "$case_dir/flow.json"
+begin "iOS root-only tree: assertNotId and waitForNotId pass as before, each says nothing was read, the flow counts 2"
+status_is 0; has out.txt "assertNot id: 'sheet' not on the current screen - passed on a root-only tree: nothing was read (#201)"
+has out.txt "'sheet' gone from the screen after 0s - passed on a root-only tree: nothing was read (#201)"
+has out.txt "negative checks passed on a root-only tree: 2 (#201)"
+verdict
+
+ios_case ios-root-only-when
+tree "$case_dir/idb/desc-1.json" "$IAPP"
+flow_file "$case_dir/flow.json" '{ "do": "assertId", "value": "sheet", "when": { "visibleId": "sheet" } }' '{ "do": "wait", "value": "0", "when": { "notVisibleId": "sheet" } }'
+run_ios "$case_dir/flow.json"
+begin "iOS root-only tree: a when notVisibleId that holds says so; visibleId says nothing"
+status_is 0; has out.txt "when (notVisibleId 'sheet') held - passed on a root-only tree: nothing was read (#201)"
+has out.txt "negative checks passed on a root-only tree: 1 (#201)"; lacks out.txt "when (visibleId"
+verdict
+
+ios_case ios-root-read-negative
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$(ibutton other)"
+flow_file "$case_dir/flow.json" '{ "do": "assertNotId", "value": "sheet" }' '{ "do": "assertNotText", "value": "Nope" }'
+run_ios "$case_dir/flow.json"
+begin "iOS tree with something in it: negative checks pass with no root-only words"
+status_is 0; has out.txt "assertNot id: 'sheet' not on the current screen"; lacks out.txt "root-only"
+verdict
+
+ios_case ios-blank-zero-size-root
+tree "$case_dir/idb/desc-1.json" "$IBLANK0"
+flow_file "$case_dir/flow.json" '{ "do": "assertNotId", "value": "sheet" }'
+run_ios "$case_dir/flow.json"
+begin "iOS blank tree (no element with a size) is not a root-only tree: the check fails as before, no root-only words"
+status_is 1; lacks out.txt "root-only"
+verdict
+
 new_case gone-check
 flow_file "$case_dir/flow.json" '{ "do": "waitForNotText", "value": "Saving", "match": "contains", "timeout": 3 }' '{ "do": "waitForNotId", "value": "sheet" }'
 expect "check: waitForNotText and waitForNotId are steps the builder knows" 0 "" check "$case_dir/flow.json"

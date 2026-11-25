@@ -596,7 +596,7 @@ us_of(){ local s="${1%%.*}" f="000000"; case "$1" in *.*) f="${1#*.}000000"; f="
 read_note(){ local d; d="$(run_dir)"
   printf '  · read %s %d ms\n' "$1" $(( ($(us_of "$(now)") - $(us_of "$2")) / 1000 )) >&2
   [ -z "$d" ] || printf 'x' >> "$d/reads-$1" 2>/dev/null || true; }
-read_summary(){ local d h u f i c r b; d="$(run_dir)"; [ -n "$d" ] || return 0
+read_summary(){ local d h u f i c r b o; d="$(run_dir)"; [ -n "$d" ] || return 0
   h="$(cat "$d/reads-helper" 2>/dev/null || true)"; u="$(cat "$d/reads-dump" 2>/dev/null || true)"
   f="$(cat "$d/helper-fallbacks" 2>/dev/null || true)"
   i="$(cat "$d/reads-idb" 2>/dev/null || true)"; c="$(cat "$d/idb-connects" 2>/dev/null || true)"
@@ -608,6 +608,9 @@ read_summary(){ local d h u f i c r b; d="$(run_dir)"; [ -n "$d" ] || return 0
   # only where it happened: the count of relaunches tried, from the run directory.
   b="$(cat "$d/blank-relaunches" 2>/dev/null || true)"
   [ ${#b} -eq 0 ] || say "relaunched for a blank tree: ${#b}"
+  # The negative checks that passed on a root-only tree (#201), the same way.
+  o="$(cat "$d/root-only-passes" 2>/dev/null || true)"
+  [ ${#o} -eq 0 ] || say "negative checks passed on a root-only tree: ${#o} (#201)"
   [ $(( ${#h} + ${#u} )) -gt 0 ] || return 0
   say "screen reads: ${#h} by the helper, ${#u} by uiautomator dump, ${#f} fallback(s)"; }
 # The resident helper answers first (see helper_tree); the dump below is the
@@ -3464,6 +3467,39 @@ assert_box_args(){ local q="${1:-}" kind="${2:-}" spec="" pair
   shift 2
   for pair in "$@"; do spec="${spec:+$spec$COND_SEP}${pair%%=*}$COND_KV${pair#*=}"; done
   assert_box "$q" "$kind" "$spec"; }
+# A negative check that passes on a root-only tree (#201, step 1). On iOS, right
+# after a screen change, the tree can come back as the app's root alone: one
+# element with a size, the Application, and nothing in it, while the screen is
+# drawn. Unlike a blank tree (#191, no element with a size) the lookups read it
+# as a screen, so "not there" passes on it although nothing was read. The
+# verdict stays as it is for now: the step says so, and the end of the flow
+# counts such passes, so a full run gives the number before the verdict is
+# decided. The tree is the one the check's own lookup read, kept by every read
+# ($YUKTI_LAST_TREE, set inside a flow only: outside one nothing is said).
+root_only(){ is_android && return 1
+  [ -n "${YUKTI_LAST_TREE:-}" ] && [ -s "$YUKTI_LAST_TREE" ] || return 1
+  [ "$(wc -c < "$YUKTI_LAST_TREE")" -lt 16384 ] || return 1
+  "$PY" -c '
+import json,sys
+try: els=json.load(open(sys.argv[1], encoding="utf-8"))
+except (OSError,ValueError): sys.exit(1)
+if not isinstance(els,list): sys.exit(1)
+# The size the lookups take: either spelling of the frame keys (as ios_blank).
+def n(b,*ks):
+    for k in ks:
+        v=b.get(k)
+        if v is None: continue
+        try: return float(v)
+        except (TypeError,ValueError): return 0.0
+    return 0.0
+sized=[e for e in els if isinstance(e,dict) and isinstance(e.get("frame"),dict)
+       and n(e["frame"],"Width","width")>0 and n(e["frame"],"Height","height")>0]
+sys.exit(0 if len(sized)==1 and sized[0].get("type")=="Application" else 1)' "$YUKTI_LAST_TREE" 2>/dev/null; }
+# Prints the words a passing step adds, and counts the pass for the flow's end.
+root_only_note(){ local d
+  root_only || return 0
+  d="$(run_dir)"; [ -z "$d" ] || printf 'x' >> "$d/root-only-passes" 2>/dev/null || true
+  printf '%s' " - passed on a root-only tree: nothing was read (#201)"; }
 # With an "in" id, absence is judged inside that element, and an element that
 # is not there fails the step: nothing can be absent from what is not on screen.
 assert_not_text(){ local q="${1:-}" m="${2:-exact}" in="${3:-}" xy st=0
@@ -3474,13 +3510,13 @@ assert_not_text(){ local q="${1:-}" m="${2:-exact}" in="${3:-}" xy st=0
   [ -z "$in" ] || { [ -z "$xy" ] || die "assertNot FAILED ($m match): '$q' IS in the element with id '$in', at $xy"
     ok "assertNot ($m) in '$in': '$q' not in that element"; return; }
   [ -z "$xy" ] || die "assertNot FAILED ($m match): '$q' IS on the screen, at $xy"
-  ok "assertNot ($m): '$q' not on the current screen"; }
+  ok "assertNot ($m): '$q' not on the current screen$(root_only_note)"; }
 assert_not_id(){ local q="${1:-}" xy st=0
   [ -n "$q" ] || die "assertNotId needs a non-empty id"
   xy="$(find_el "$q" id)" || st=$?
   [ "$st" -eq 0 ] || die "assertNot FAILED: $(lookup_err "$st")"
   [ -z "$xy" ] || die "assertNot FAILED: an element with id '$q' IS on the screen, at $xy"
-  ok "assertNot id: '$q' not on the current screen"; }
+  ok "assertNot id: '$q' not on the current screen$(root_only_note)"; }
 # The wait the other way (#104): a save sheet that closes, a spinner that goes,
 # an old value that leaves. assertNotText and assertNotId look once, so a flow
 # held a fixed pause in front of them - wasted on a fast device, too short on a
@@ -3509,7 +3545,7 @@ wait_gone(){ local q="${1:-}" t="${2:-10}" m="${3:-exact}" mode="${4:-assert}" x
   while :; do
     st=0; xy="$(find_el "$q" "$mode" "$m")" || st=$?
     if [ "$st" -eq 0 ]; then readable=1
-      [ -n "$xy" ] || { el=$((SECONDS - t0)); ok "$label: '$q' gone from the screen after ${el}s"; return 0; }
+      [ -n "$xy" ] || { el=$((SECONDS - t0)); ok "$label: '$q' gone from the screen after ${el}s$(root_only_note)"; return 0; }
       last="$xy"
     else readable=0; fi
     [ $((SECONDS - t0)) -le "$t" ] || break
@@ -5579,7 +5615,7 @@ COND_KV=$'\x1d'; COND_SEP=$'\x1e'
 # did, with the condition in the words.
 cond_tree(){ [ -z "$HELD_TREE" ] || return 0
   HELD_TREE="$(ui)" || { HELD_TREE=""; die "when ($1 '$2'): $(lookup_err 1)"; }; }
-cond_holds(){ local spec="$1" pair kind val xy st
+cond_holds(){ local spec="$1" pair kind val xy st ro
   while [ -n "$spec" ]; do
     case "$spec" in *"$COND_SEP"*) pair="${spec%%"$COND_SEP"*}"; spec="${spec#*"$COND_SEP"}";; *) pair="$spec"; spec="";; esac
     kind="${pair%%"$COND_KV"*}"; val="${pair#*"$COND_KV"}"
@@ -5599,7 +5635,8 @@ cond_holds(){ local spec="$1" pair kind val xy st
         [ "$st" -eq 0 ] || die "when ($kind '$val'): $(lookup_err "$st")"
         case "$kind" in
           visible|visibleId)       [ -n "$xy" ] || return 1;;
-          notVisible|notVisibleId) [ -z "$xy" ] || return 1;;
+          notVisible|notVisibleId) [ -z "$xy" ] || return 1
+            ro="$(root_only_note)"; [ -z "$ro" ] || warn "when ($kind '$val') held$ro" >&2;;
         esac;;
       # In the tree at zero area, where it is on the screen or not, and no
       # namesake of a real size to tap instead. `notVisibleId` holds here too,
