@@ -6989,6 +6989,20 @@ for i,(a,b) in enumerate(rows[:-1]):
     if b-a>=1.0: print(int((rows[i+1][0]-b)*1000)); break
 PY
 }
+# gap_n <n> - ms from the end of the n-th read to the start of the next one.
+gap_n(){ "$PY3" - "$case_dir/idb/read-times" "$1" <<'PY'
+import sys
+rows=[tuple(map(float,l.split())) for l in open(sys.argv[1]) if l.strip()]; n=int(sys.argv[2])
+print(int((rows[n][0]-rows[n-1][1])*1000) if len(rows)>n else "")
+PY
+}
+# max_gap - the longest pause between two reads, in ms.
+max_gap(){ "$PY3" - "$case_dir/idb/read-times" <<'PY'
+import sys
+rows=[tuple(map(float,l.split())) for l in open(sys.argv[1]) if l.strip()]
+print(max([int((rows[i+1][0]-rows[i][1])*1000) for i in range(len(rows)-1)] or [0]))
+PY
+}
 # wait_reads - the reads of the screen from the wait's first line on.
 wait_reads(){ awk '/^.*waitFor.*: up to /{w=1} w && /· read idb /{n++} END{print n+0}' "$case_dir/out.txt"; }
 
@@ -7012,6 +7026,49 @@ run_ios "$case_dir/flow.json"
 begin "iOS wait: fast reads keep the pause of 0.5 s and say nothing of it"
 status_is 0; has out.txt "waitFor id: 'done' on screen"; lacks out.txt "next read in"
 [ "$(wait_reads)" -eq 3 ] || no "the wait read the screen $(wait_reads) times, wanted 3"
+g="$(max_gap)"; [ "$g" -lt 1500 ] || no "the longest pause between reads was $g ms, wanted about 500"
+verdict
+
+ios_case ios-poll-slow-not-blank
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$(ibutton go)"
+tree "$case_dir/idb/desc-3.json" "$IAPP" "$(ibutton go)" "$(ibutton done)"
+printf '1.1' > "$case_dir/idb/slow-1"
+flow_file "$case_dir/flow.json" '{ "do": "waitForId", "value": "done", "timeout": 10 }'
+run_ios "$case_dir/flow.json"
+begin "iOS wait: a slow read with a tree in it is enough for the pause of 2 s; the line does not say blank"
+status_is 0; ilines_are 1 "next read in 2.000 s: the last one took"; lacks out.txt "came back blank"
+g="$(gap_n 1)"; [ -n "$g" ] && [ "$g" -ge 1950 ] || no "the read after the slow one began ${g:-?} ms after it, wanted 2000"
+verdict
+
+ios_case ios-poll-fast-blank
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$(ibutton go)"
+tree "$case_dir/idb/desc-3.json" "$IAPP" "$(ibutton go)" "$(ibutton done)"
+printf '1' > "$case_dir/idb/blank-on-tap"
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "go" }' '{ "do": "waitForId", "value": "done", "timeout": 10 }'
+run_ios "$case_dir/flow.json"
+begin "iOS wait: a fast blank read is enough for the pause of 2 s; the line says blank"
+status_is 0; ilines_are 1 "next read in 2.000 s: the last one took"; has out.txt "and came back blank"
+g="$(gap_n 2)"; [ -n "$g" ] && [ "$g" -ge 1950 ] || no "the read after the blank one began ${g:-?} ms after it, wanted 2000"
+verdict
+
+ios_case ios-poll-long-read
+tree "$case_dir/idb/desc-1.json" "$IAPP" "$(ibutton go)"
+tree "$case_dir/idb/desc-3.json" "$IAPP" "$(ibutton go)" "$(ibutton done)"
+printf '2.6' > "$case_dir/idb/slow-1"
+flow_file "$case_dir/flow.json" '{ "do": "waitForId", "value": "done", "timeout": 10 }'
+run_ios "$case_dir/flow.json"
+begin "iOS wait: after a read of 2.6 s the pause is as long as the read"
+status_is 0; has out.txt "next read in 2.6"
+g="$(gap_n 1)"; [ -n "$g" ] && [ "$g" -ge 2550 ] || no "the read after the long one began ${g:-?} ms after it, wanted 2600"
+verdict
+
+ibg_case ios-poll-after-relaunch
+tree "$case_dir/idb/desc-1.json" "$IEXAPP" "$(ibutton go)"; : > "$case_dir/idb/blank"
+tree "$case_dir/idb/desc-9.json" "$IEXAPP" "$(ibutton go)" "$(ibutton done)"
+flow_file "$case_dir/flow.json" '{ "do": "waitForId", "value": "done", "timeout": 12 }'
+run_ibg "$case_dir/flow.json"
+begin "iOS wait: blank before the flow acts, the relaunch helps - the wait goes on at 0.5 s with no pause line"
+status_is 0; ilines_are 1 "relaunching it once"; lacks out.txt "next read in"
 verdict
 
 ios_case ios-poll-blank-all-wait
@@ -7022,16 +7079,16 @@ run_ios "$case_dir/flow.json"
 begin "iOS wait: blank all the wait - it fails on its timeout as before, with fewer reads"
 status_is 1; has out.txt "waitFor id FAILED after 15s"; has out.txt "the app did not answer the accessibility request in time"
 n="$(wait_reads)"; [ "$n" -ge 4 ] && [ "$n" -le 6 ] || no "the wait read the screen $n times, wanted 4 to 6 (about 10 at 0.5 s)"
-lacks out.txt "relaunching it once"
+lacks out.txt "relaunching it once"; stacks_are 1
 verdict
 
 ios_case ios-poll-time-left
 tree "$case_dir/idb/desc-1.json" "$IAPP" "$(ibutton go)"
-: > "$case_dir/idb/blank-on-tap"; printf '1.1' > "$case_dir/idb/slow"
-flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "go" }' '{ "do": "waitForId", "value": "done", "timeout": 2 }'
+: > "$case_dir/idb/blank-on-tap"; printf '2.6' > "$case_dir/idb/slow"
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "go" }' '{ "do": "waitForId", "value": "done", "timeout": 4 }'
 run_ios "$case_dir/flow.json"
 begin "iOS wait: the pause after a slow read is cut to the time the wait has left"
-status_is 1; has out.txt "waitFor id FAILED after 2s"; lacks out.txt "next read in 2."
+status_is 1; has out.txt "waitFor id FAILED after 4s"; ilines_are 1 "next read in"; lacks out.txt "next read in 2.6"
 verdict
 
 ios_case ios-poll-gone

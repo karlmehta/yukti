@@ -3548,7 +3548,8 @@ assert_not_id(){ local q="${1:-}" xy st=0
 # "less than" test ends the wait anywhere from t-1 to t seconds in - with a
 # timeout of 1, after a single read. The test is "not more than" instead: the
 # wait lasts at least the timeout it promises, and up to a second longer plus
-# one read - poll_pause cuts its pause to the time left.
+# one read - poll_pause cuts its pause to the time left. waitForNot, whose test
+# is "not more than", can add one more pause of 0.5 s and one more read.
 # The pause between two reads of a wait. On iOS a read of a heavy screen can run
 # into idb's ceiling of about 3 s and come back as the app's root with no size,
 # while the app's main thread goes on answering it: in the measured run every
@@ -3558,7 +3559,7 @@ assert_not_id(){ local q="${1:-}" xy st=0
 # time the wait has left (never under 0.5 s); a line says so. Fast reads keep
 # 0.5 s, and Android, and a wait outside a flow, are as before.
 read_blank(){ [ -n "${FLOW_REC:-}" ] || return 0
-  if [ "$1" = 1 ]; then : > "$FLOW_REC.read-blank"; else rm -f "$FLOW_REC.read-blank"; fi 2>/dev/null || true; }
+  if [ "$1" = 1 ]; then : > "$FLOW_REC.read-blank"; elif [ -e "$FLOW_REC.read-blank" ]; then rm -f "$FLOW_REC.read-blank"; fi 2>/dev/null || true; }
 poll_pause(){ local t0="$1" t="$2" ms p left why
   if is_android || [ -z "${FLOW_REC:-}" ]; then sleep 0.5; return 0; fi
   ms="$(cat "$FLOW_REC.read-ms" 2>/dev/null || true)"; case "$ms" in ''|*[!0-9]*) ms=0;; esac
