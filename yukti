@@ -3464,6 +3464,52 @@ assert_box_args(){ local q="${1:-}" kind="${2:-}" spec="" pair
   shift 2
   for pair in "$@"; do spec="${spec:+$spec$COND_SEP}${pair%%=*}$COND_KV${pair#*=}"; done
   assert_box "$q" "$kind" "$spec"; }
+# A negative check that passes on a root-only tree (#201, step 1). On iOS, right
+# after a screen change, the tree can come back as the app's root alone: the
+# Application, labelled and with a size, and no other element with a size,
+# while the screen is drawn. Unlike a blank tree (#191, no element with a size)
+# the lookups read it as a screen, so "not there" passes on it although nothing
+# was read. Elements of no size beside the root do not change that: the
+# lookups do not count them either. The home screen's root is labelled " "
+# (app_front) and is not this: a negative step after the app went away is not
+# counted here. The verdict stays as it is for now: the step's line says so,
+# and the flow's result counts such passes (the log's last lines and the
+# property root-only-passes), so a run gives the number before the verdict is
+# decided. The tree is the one the check's own lookup read, kept by every read
+# ($YUKTI_LAST_TREE, set inside a flow only: outside one nothing is said).
+root_only(){ is_android && return 1
+  [ -n "${YUKTI_LAST_TREE:-}" ] && [ -s "$YUKTI_LAST_TREE" ] || return 1
+  [ "$(wc -c < "$YUKTI_LAST_TREE")" -lt 16384 ] || return 1
+  "$PY" -c '
+import json,sys
+try: els=json.load(open(sys.argv[1], encoding="utf-8"))
+except (OSError,ValueError): sys.exit(1)
+if not isinstance(els,list): sys.exit(1)
+# The size the lookups take: either spelling of the frame keys (as ios_blank).
+def n(b,*ks):
+    for k in ks:
+        v=b.get(k)
+        if v is None: continue
+        try: return float(v)
+        except (TypeError,ValueError): return 0.0
+    return 0.0
+# Root-only: the Application with a size and a non-empty label, and no other
+# element with a size; elements of zero size beside it do not count.
+root=False
+for e in els:
+    if not isinstance(e,dict): continue
+    b=e.get("frame") or {}
+    sized=isinstance(b,dict) and n(b,"Width","width")>0 and n(b,"Height","height")>0
+    if e.get("type")=="Application":
+        if sized and " ".join(str(e.get("AXLabel") or "").split()): root=True
+    elif sized: sys.exit(1)
+sys.exit(0 if root else 1)' "$YUKTI_LAST_TREE" 2>/dev/null; }
+# Prints the words a passing step adds, and counts the pass for the flow's
+# result beside the flow's record: one count per flow, whatever run directory
+# a caller shares between flows.
+root_only_note(){ root_only || return 0
+  [ -z "${FLOW_REC:-}" ] || printf 'x' >> "$FLOW_REC.root-only" 2>/dev/null || true
+  printf '%s' " - passed on a root-only tree: nothing was read (#201)"; }
 # With an "in" id, absence is judged inside that element, and an element that
 # is not there fails the step: nothing can be absent from what is not on screen.
 assert_not_text(){ local q="${1:-}" m="${2:-exact}" in="${3:-}" xy st=0
@@ -3474,13 +3520,13 @@ assert_not_text(){ local q="${1:-}" m="${2:-exact}" in="${3:-}" xy st=0
   [ -z "$in" ] || { [ -z "$xy" ] || die "assertNot FAILED ($m match): '$q' IS in the element with id '$in', at $xy"
     ok "assertNot ($m) in '$in': '$q' not in that element"; return; }
   [ -z "$xy" ] || die "assertNot FAILED ($m match): '$q' IS on the screen, at $xy"
-  ok "assertNot ($m): '$q' not on the current screen"; }
+  ok "assertNot ($m): '$q' not on the current screen$(root_only_note)"; }
 assert_not_id(){ local q="${1:-}" xy st=0
   [ -n "$q" ] || die "assertNotId needs a non-empty id"
   xy="$(find_el "$q" id)" || st=$?
   [ "$st" -eq 0 ] || die "assertNot FAILED: $(lookup_err "$st")"
   [ -z "$xy" ] || die "assertNot FAILED: an element with id '$q' IS on the screen, at $xy"
-  ok "assertNot id: '$q' not on the current screen"; }
+  ok "assertNot id: '$q' not on the current screen$(root_only_note)"; }
 # The wait the other way (#104): a save sheet that closes, a spinner that goes,
 # an old value that leaves. assertNotText and assertNotId look once, so a flow
 # held a fixed pause in front of them - wasted on a fast device, too short on a
@@ -3509,7 +3555,7 @@ wait_gone(){ local q="${1:-}" t="${2:-10}" m="${3:-exact}" mode="${4:-assert}" x
   while :; do
     st=0; xy="$(find_el "$q" "$mode" "$m")" || st=$?
     if [ "$st" -eq 0 ]; then readable=1
-      [ -n "$xy" ] || { el=$((SECONDS - t0)); ok "$label: '$q' gone from the screen after ${el}s"; return 0; }
+      [ -n "$xy" ] || { el=$((SECONDS - t0)); ok "$label: '$q' gone from the screen after ${el}s$(root_only_note)"; return 0; }
       last="$xy"
     else readable=0; fi
     [ $((SECONDS - t0)) -le "$t" ] || break
@@ -4751,7 +4797,7 @@ FLOW_IDX=0
 now(){ if [ -n "${EPOCHREALTIME:-}" ]; then printf '%s' "${EPOCHREALTIME/,/.}"; else date +%s; fi; }
 
 flow_results(){
-  local st="${1:-0}" out udid="" tree t0 had
+  local st="${1:-0}" out udid="" tree t0 had ro_n
   [ -n "${FLOW_REC:-}" ] || return 0
   trap - EXIT
   # A failed flow takes a screenshot below, and the tools for it are on the PATH
@@ -4775,7 +4821,8 @@ flow_results(){
       [ "$({ wc -c < "$FLOW_REC.threads"; } 2>/dev/null || echo 0)" = "${had:-0}" ] ||
         printf 'after\t%s\t%s\n' "$t0" "$(now)" >> "$FLOW_REC.threads" 2>/dev/null || true; fi
   fi
-  out="$("$PY" - "$FLOW_FILE" "$FLOW_REC" "$FLOW_CUR" "$FLOW_ERR" "$FLOW_T0" "$(now)" "$st" "$RESULTS_DIR" "$YUKTI_PLATFORM" "$FLOW_TREE" "$udid" "$CONFIG" "${YUKTI_VARIANT:-}" <<'PY'
+  ro_n="$(cat "$FLOW_REC.root-only" 2>/dev/null || true)"; ro_n=${#ro_n}
+  out="$(YUKTI_ROOT_ONLY_N="$ro_n" "$PY" - "$FLOW_FILE" "$FLOW_REC" "$FLOW_CUR" "$FLOW_ERR" "$FLOW_T0" "$(now)" "$st" "$RESULTS_DIR" "$YUKTI_PLATFORM" "$FLOW_TREE" "$udid" "$CONFIG" "${YUKTI_VARIANT:-}" <<'PY'
 import os, sys, time
 from xml.sax.saxutils import escape, quoteattr
 
@@ -5245,7 +5292,10 @@ out = [
     '      <property name="platform" value=%s/>' % quoteattr(plat),
     '      <property name="flow" value=%s/>' % quoteattr(flow),
     '      <property name="outcome" value=%s/>' % quoteattr(outcome),
-] + (['      <property name="reason" value=%s/>' % quoteattr(cut)] if outcome == "skipped" else []) + [
+] + (['      <property name="reason" value=%s/>' % quoteattr(cut)] if outcome == "skipped" else []) + (
+    # Negative checks that passed on a root-only tree (#201, step 1).
+    ['      <property name="root-only-passes" value="%d"/>' % int(os.environ.get("YUKTI_ROOT_ONLY_N") or 0)]
+    if (os.environ.get("YUKTI_ROOT_ONLY_N") or "0") != "0" else []) + [
     '    </properties>',
 ]
 out.extend(cases)
@@ -5271,7 +5321,8 @@ PY
   else
     warn "could not write the results file to '$RESULTS_DIR'"
   fi
-  rm -f "$FLOW_REC" "$FLOW_REC.acted" "$FLOW_REC.blank-relaunched" "$FLOW_REC.blank-said" "$FLOW_REC.threads" "$FLOW_REC.threads-pids" "$FLOW_CUR" "$FLOW_ERR" "$FLOW_ERR.kind" "$FLOW_ERR.teardown" "$FLOW_TREE" "$FLOW_TREE.step"; FLOW_REC=""
+  [ "$ro_n" = 0 ] || say "negative checks passed on a root-only tree: $ro_n (#201)"
+  rm -f "$FLOW_REC" "$FLOW_REC.root-only" "$FLOW_REC.acted" "$FLOW_REC.blank-relaunched" "$FLOW_REC.blank-said" "$FLOW_REC.threads" "$FLOW_REC.threads-pids" "$FLOW_CUR" "$FLOW_ERR" "$FLOW_ERR.kind" "$FLOW_ERR.teardown" "$FLOW_TREE" "$FLOW_TREE.step"; FLOW_REC=""
   return 0
 }
 
@@ -5579,7 +5630,7 @@ COND_KV=$'\x1d'; COND_SEP=$'\x1e'
 # did, with the condition in the words.
 cond_tree(){ [ -z "$HELD_TREE" ] || return 0
   HELD_TREE="$(ui)" || { HELD_TREE=""; die "when ($1 '$2'): $(lookup_err 1)"; }; }
-cond_holds(){ local spec="$1" pair kind val xy st
+cond_holds(){ local spec="$1" pair kind val xy st ro rk=""
   while [ -n "$spec" ]; do
     case "$spec" in *"$COND_SEP"*) pair="${spec%%"$COND_SEP"*}"; spec="${spec#*"$COND_SEP"}";; *) pair="$spec"; spec="";; esac
     kind="${pair%%"$COND_KV"*}"; val="${pair#*"$COND_KV"}"
@@ -5599,7 +5650,10 @@ cond_holds(){ local spec="$1" pair kind val xy st
         [ "$st" -eq 0 ] || die "when ($kind '$val'): $(lookup_err "$st")"
         case "$kind" in
           visible|visibleId)       [ -n "$xy" ] || return 1;;
-          notVisible|notVisibleId) [ -z "$xy" ] || return 1;;
+          notVisible|notVisibleId) [ -z "$xy" ] || return 1
+            # Said once the whole condition holds (#201), not per part:
+            # a later part that does not hold skips the step.
+            ! root_only || rk="${rk:+$rk, }$kind '$val'";;
         esac;;
       # In the tree at zero area, where it is on the screen or not, and no
       # namesake of a real size to tap instead. `notVisibleId` holds here too,
@@ -5614,6 +5668,7 @@ cond_holds(){ local spec="$1" pair kind val xy st
       *) die "when: '$kind' is not a condition this version knows";;
     esac
   done
+  [ -z "$rk" ] || { ro="$(root_only_note)"; [ -z "$ro" ] || warn "when ($rk) held$ro" >&2; }
   return 0; }
 # The condition in the author's words, for the line that says what was skipped.
 cond_words(){ local spec="$1" pair kind val out=""
