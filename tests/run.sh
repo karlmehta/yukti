@@ -161,10 +161,22 @@ file_full(){ [ -s "$case_dir/$1" ] || no "$1 is missing or empty"; }
 file_absent(){ [ ! -e "$case_dir/$1" ] || no "$1 exists and should not"; }
 has(){ grep -qF -- "$2" "$case_dir/$1" 2>/dev/null || no "$1 lacks: $2"; }
 lacks(){ ! grep -qiF -- "$2" "$case_dir/$1" 2>/dev/null || no "$1 holds: $2"; }
+# ilines_are <n> <text> - out.txt has this text on exactly n lines.
+ilines_are(){ local got; got="$(grep -cF -- "$2" "$case_dir/out.txt" 2>/dev/null || true)"
+  [ "${got:-0}" -eq "$1" ] || no "out.txt has '$2' ${got:-0} time(s), wanted $1"; }
 # The fake was asked something - otherwise a case that passed against a real
 # adb found first in PATH would look exactly the same.
 fake_used(){ [ -s "$case_dir/adb/log" ] || no "the fake adb was never called"; }
-verdict(){ if [ -z "$why" ]; then pass=$((pass + 1)); printf 'ok   %s\n' "$case_name"
+# A helper called above the line that declares it checks nothing: bash prints
+# "command not found" and the case goes on to pass (ilines_are in the #201
+# cases did so). bash 4 and later call this for a command missing in this
+# shell; it runs in a subshell, so it leaves a file and the verdict fails the
+# case on it. The bash a Mac ships (3.2) never calls it; CI runs a newer one.
+command_not_found_handle(){ printf 'tests/run.sh: %s: command not found\n' "$1" >&2
+  printf '%s\n' "$1" >> "$WORK/not-found"; return 127; }
+verdict(){ [ ! -s "$WORK/not-found" ] || { no "command not found: $(tr '\n' ' ' < "$WORK/not-found")- a helper used above the line that declares it?"
+    rm -f "$WORK/not-found"; }
+  if [ -z "$why" ]; then pass=$((pass + 1)); printf 'ok   %s\n' "$case_name"
   else fail=$((fail + 1)); printf 'FAIL %s%s\n     output:\n%s\n' "$case_name" "$why" "$(sed 's/^/       /' "$case_dir/out.txt" 2>/dev/null)"; fi; }
 
 # ── a flow variable named like an internal one (#101) ────────────────────────
@@ -6698,8 +6710,6 @@ IBLANK='{"type":"Application","role_description":"application","AXLabel":null,"f
 IEXAPP='{"type":"Application","role_description":"application","AXLabel":"Example App","frame":{"x":0,"y":0,"width":402,"height":874}}'
 ilaunches_are(){ local got; got="$(grep -c '^simctl launch ' "$case_dir/xcrun/log" 2>/dev/null || true)"
   [ "${got:-0}" -eq "$1" ] || no "simctl launch ran ${got:-0} time(s), wanted $1"; }
-ilines_are(){ local got; got="$(grep -cF -- "$2" "$case_dir/out.txt" 2>/dev/null || true)"
-  [ "${got:-0}" -eq "$1" ] || no "out.txt has '$2' ${got:-0} time(s), wanted $1"; }
 # stacks_are <n> [line] - the fake sample and lldb ran n times in all, and one of
 # their calls was this one (tests/fake-sdk/stacks-bin/sample says what it logs).
 stacks_are(){ local got; got="$(grep -c . "$case_dir/stacks/log" 2>/dev/null || true)"
