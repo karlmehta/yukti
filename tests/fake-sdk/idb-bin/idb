@@ -55,13 +55,19 @@
 #                  names the app reads as the app in front, so a relaunch works
 #                  and its process can be blank as well
 #   blank-on-tap   present: a tap puts `blank` back - the app stuck after the
-#                  flow acted, in whatever process it is by then
+#                  flow acted, in whatever process it is by then; holding a
+#                  number n: `blank` gets it, so only the next n reads are blank
 #   blank-list     present: `ui describe-all` answers an empty list, `[]`; the
 #                  fake xcrun's relaunch takes it away as it does `blank`
 #   exit-1         present: `ui describe-all` answers its tree and exits 1
 #   connect-fails  present: `connect` exits 1 with a line on stderr
 #   connect-child  present: `connect` leaves a process behind that holds its
 #                  stderr for 5 s and then writes `child-done`
+#   slow           seconds every `ui describe-all` takes before it answers, as a
+#                  busy app does; slow-<n>: only the n-th read takes them
+#   read-times     written: one line per `ui describe-all`, "<start> <end>" in
+#                  seconds since the epoch - a case measures the pause between
+#                  two reads with it
 import json, os, sys
 
 d = os.environ["FAKE_IDB_DIR"]
@@ -83,6 +89,15 @@ ops = []; i = 0
 while i < len(args):
     if args[i] == "--udid": i += 2; continue
     ops.append(args[i]); i += 1
+
+if ops[:2] == ["ui", "describe-all"]:
+    import atexit, time
+    _start = time.time()
+    _wait = read("slow-%d" % (int(read("describes", "0") or 0) + 1)).strip() or read("slow").strip()
+    if _wait: time.sleep(float(_wait))
+    def _times():
+        with open(path("read-times"), "a") as fh: fh.write("%.3f %.3f\n" % (_start, time.time()))
+    atexit.register(_times)
 
 if ops[:2] == ["ui", "describe-all"] and (has("stale") or has("empty")):
     write("describes", str(int(read("describes", "0") or 0) + 1))
@@ -162,7 +177,7 @@ elif ops[:1] == ["describe"] and has("screen"):
     w, h = read("screen").split()
     sys.stdout.write(json.dumps({"screen_dimensions": {"width_points": int(w), "height_points": int(h)}}))
 elif ops[:2] == ["ui", "tap"]:
-    if has("blank-on-tap"): write("blank", "")
+    if has("blank-on-tap"): write("blank", read("blank-on-tap").strip())
     if has("done-closes") and has("keyboard"): os.remove(path("keyboard"))
     if has("done-closes") and has("keypad"): os.remove(path("keypad"))
 elif ops[:1] == ["connect"]:
