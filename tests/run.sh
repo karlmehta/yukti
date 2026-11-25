@@ -19,6 +19,21 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/yukti-tests.XXXXXX")" || exit 1
 [ -n "$WORK" ] || { echo "no temporary directory for the cases" >&2; exit 1; }
 trap '[ -n "${KEEP:-}" ] || rm -rf "$WORK"' EXIT
 
+# A helper called above the line that declares it checks nothing: bash prints
+# "command not found" and the case goes on to pass (ilines_are in the #201
+# cases did so). bash 4 and later call this for a command missing in this
+# shell. It runs in a subshell, so it leaves a mark in a file; verdict, expect
+# and the last line of the run fail on it (not_found). The bash a Mac ships
+# (3.2) never calls it, and the run says so.
+command_not_found_handle(){ printf 'tests/run.sh: %s: command not found\n' "$1" >&2
+  printf '%s\n' "$1" >> "$WORK/not-found"; return 127; }
+# not_found - the commands missing since the last check, once each, and the
+# mark taken away; nothing when there were none.
+not_found(){ [ -s "$WORK/not-found" ] || return 0
+  printf 'command not found: %s- a helper used above the line that declares it?' "$(sort -u "$WORK/not-found" | tr '\n' ' ')"
+  rm -f "$WORK/not-found"; }
+[ "${BASH_VERSINFO[0]}" -ge 4 ] || echo "bash $BASH_VERSION: a helper called above the line that declares it is not caught in this run (bash 4 and later catch it)"
+
 pass=0; fail=0; case_dir=""
 
 # A fresh directory per case: a file left by one case cannot satisfy another.
@@ -50,14 +65,15 @@ chain_names(){ local n="$1" i=1 s="flow.json"
 
 # expect <name> <status> <text> <command...> - run the command, compare the
 # status and look for the text in what it printed (colour codes removed).
-expect(){ local name="$1" want="$2" text="$3" out st; shift 3
-  out="$("$@" 2>&1)"; st=$?
+expect(){ local name="$1" want="$2" text="$3" out st nf; shift 3
+  out="$("$@" 2>&1)"; st=$?; nf="$(not_found)"
   out="$(printf '%s' "$out" | sed $'s/\033\\[[0-9;]*m//g')"
-  if [ "$st" -eq "$want" ] && case "$out" in *"$text"*) true;; *) false;; esac; then
+  if [ -z "$nf" ] && [ "$st" -eq "$want" ] && case "$out" in *"$text"*) true;; *) false;; esac; then
     pass=$((pass + 1)); printf 'ok   %s\n' "$name"
   else
     fail=$((fail + 1)); printf 'FAIL %s\n     wanted status %s and "%s"\n     got status %s:\n%s\n' \
       "$name" "$want" "$text" "$st" "$(printf '%s' "$out" | sed 's/^/       /')"
+    [ -z "$nf" ] || printf '     %s\n' "$nf"
   fi; }
 
 check(){ "$YUKTI" flow --check "$1"; }
@@ -167,17 +183,22 @@ ilines_are(){ local got; got="$(grep -cF -- "$2" "$case_dir/out.txt" 2>/dev/null
 # The fake was asked something - otherwise a case that passed against a real
 # adb found first in PATH would look exactly the same.
 fake_used(){ [ -s "$case_dir/adb/log" ] || no "the fake adb was never called"; }
-# A helper called above the line that declares it checks nothing: bash prints
-# "command not found" and the case goes on to pass (ilines_are in the #201
-# cases did so). bash 4 and later call this for a command missing in this
-# shell; it runs in a subshell, so it leaves a file and the verdict fails the
-# case on it. The bash a Mac ships (3.2) never calls it; CI runs a newer one.
-command_not_found_handle(){ printf 'tests/run.sh: %s: command not found\n' "$1" >&2
-  printf '%s\n' "$1" >> "$WORK/not-found"; return 127; }
-verdict(){ [ ! -s "$WORK/not-found" ] || { no "command not found: $(tr '\n' ' ' < "$WORK/not-found")- a helper used above the line that declares it?"
-    rm -f "$WORK/not-found"; }
+verdict(){ local nf; nf="$(not_found)"; [ -z "$nf" ] || no "$nf"
   if [ -z "$why" ]; then pass=$((pass + 1)); printf 'ok   %s\n' "$case_name"
   else fail=$((fail + 1)); printf 'FAIL %s%s\n     output:\n%s\n' "$case_name" "$why" "$(sed 's/^/       /' "$case_dir/out.txt" 2>/dev/null)"; fi; }
+
+# ── the guard against a helper called above its declaration ─────────────────
+# The guard itself: a missing command leaves its mark, and the mark says which.
+# The mark is taken away here, so this case passes and the next is not touched.
+if [ "${BASH_VERSINFO[0]}" -ge 4 ]; then
+  new_case not-found-guard
+  begin "a command missing in this shell leaves the mark that fails a case"
+  no_such_helper_here 2>/dev/null
+  nf="$(not_found)"
+  case "$nf" in "command not found: no_such_helper_here "*) ;; *) no "the mark said '$nf', wanted no_such_helper_here";; esac
+  [ ! -e "$WORK/not-found" ] || no "the mark is still there after not_found"
+  verdict
+fi
 
 # ── a flow variable named like an internal one (#101) ────────────────────────
 # The console colours used to be the shell variables R, B, G, Y and E: an
@@ -6952,5 +6973,6 @@ begin "iOS blank tree from yukti ui on the command line: printed as read, nothin
 status_is 0; has tree.out '"width": 0'
 verdict
 
+nf="$(not_found)"; [ -z "$nf" ] || { fail=$((fail + 1)); printf 'FAIL after the last case\n     %s\n' "$nf"; }
 printf '\n%d passed, %d failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
