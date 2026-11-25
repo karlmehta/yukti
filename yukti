@@ -3493,7 +3493,8 @@ def n(b,*ks):
         try: return float(v)
         except (TypeError,ValueError): return 0.0
     return 0.0
-# The same test as ios_rootonly would make: a labelled root, nothing else sized.
+# Root-only: the Application with a size and a non-empty label, and no other
+# element with a size; elements of zero size beside it do not count.
 root=False
 for e in els:
     if not isinstance(e,dict): continue

@@ -4724,6 +4724,14 @@ has out.txt "when (notVisible 'Nope', notVisibleId 'sheet') held - passed on a r
 has out.txt "negative checks passed on a root-only tree: 1 (#201)"
 verdict
 
+ios_case ios-root-zero-size-child
+tree "$case_dir/idb/desc-1.json" "$IAPP" '{"type":"Button","role_description":"button","AXUniqueId":"other","AXLabel":"Go","frame":{"x":100,"y":300,"width":0,"height":0}}'
+flow_file "$case_dir/flow.json" '{ "do": "assertNotId", "value": "sheet" }'
+run_ios "$case_dir/flow.json"
+begin "iOS root-only tree with an element of zero size beside the root: still root-only, the note is there"
+status_is 0; has out.txt "assertNot id: 'sheet' not on the current screen - passed on a root-only tree: nothing was read (#201)"
+verdict
+
 ios_case ios-root-read-negative
 tree "$case_dir/idb/desc-1.json" "$IAPP" "$(ibutton other)"
 flow_file "$case_dir/flow.json" '{ "do": "assertNotId", "value": "sheet" }' '{ "do": "assertNotText", "value": "Nope" }'
