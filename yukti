@@ -593,9 +593,12 @@ helper_cmd(){ case "${1:-}" in
 # either. The run directory counts them for the line at the end of a flow.
 us_of(){ local s="${1%%.*}" f="000000"; case "$1" in *.*) f="${1#*.}000000"; f="${f:0:6}";; esac
   printf '%s' $(( s * 1000000 + 10#$f )); }
-read_note(){ local d; d="$(run_dir)"
-  printf '  · read %s %d ms\n' "$1" $(( ($(us_of "$(now)") - $(us_of "$2")) / 1000 )) >&2
-  [ -z "$d" ] || printf 'x' >> "$d/reads-$1" 2>/dev/null || true; }
+read_note(){ local d ms; d="$(run_dir)"; ms=$(( ($(us_of "$(now)") - $(us_of "$2")) / 1000 ))
+  printf '  · read %s %d ms\n' "$1" "$ms" >&2
+  [ -z "$d" ] || printf 'x' >> "$d/reads-$1" 2>/dev/null || true
+  # The last iOS read's cost, beside the flow's record, for the pause of a wait
+  # (poll_pause): the read runs in a subshell, so a file carries it out.
+  [ "$1" != idb ] || [ -z "${FLOW_REC:-}" ] || printf '%s' "$ms" > "$FLOW_REC.read-ms" 2>/dev/null || true; }
 read_summary(){ local d h u f i c r b; d="$(run_dir)"; [ -n "$d" ] || return 0
   h="$(cat "$d/reads-helper" 2>/dev/null || true)"; u="$(cat "$d/reads-dump" 2>/dev/null || true)"
   f="$(cat "$d/helper-fallbacks" 2>/dev/null || true)"
@@ -2007,7 +2010,8 @@ else:
 # they are, and a line said from inside would mark the flow as told.
 ios_unstick(){ local u="$1" out="$2" m="${FLOW_REC:-}" d t0 again i
   [ -z "${YUKTI_UNSTICK_BUSY:-}" ] || { printf '%s' "$out"; return 0; }
-  ios_blank "$out" || { printf '%s' "$out"; return 0; }
+  ios_blank "$out" || { read_blank 0; printf '%s' "$out"; return 0; }
+  read_blank 1
   [ -n "$m" ] || { printf '%s' "$out"; return 0; }
   # No threads are taken on this branch: its first blank read is also the app
   # still drawing right after a launch - about 120 flows that passed in the
@@ -2024,7 +2028,7 @@ ios_unstick(){ local u="$1" out="$2" m="${FLOW_REC:-}" d t0 again i
   # One more read first: a tree read while the app is still drawing is blank too,
   # and that one needs no relaunch.
   sleep 1; t0="$(now)"; again="$(idb ui describe-all --udid "$u" 2>/dev/null)" || true
-  if [ -n "$again" ]; then read_note idb "$t0"; out="$again"; ios_blank "$out" || { printf '%s' "$out"; return 0; }; fi
+  if [ -n "$again" ]; then read_note idb "$t0"; out="$again"; ios_blank "$out" || { read_blank 0; printf '%s' "$out"; return 0; }; fi
   # Blank twice a second apart: the threads of this process now, before the
   # relaunch below ends it. A relaunch that does not help is taken again below:
   # the new process has its own pid.
@@ -2042,7 +2046,7 @@ ios_unstick(){ local u="$1" out="$2" m="${FLOW_REC:-}" d t0 again i
     printf '%s' "$out"; return 0; }
   for i in 1 2 3 4 5 6 7 8; do sleep 1; t0="$(now)"; again="$(idb ui describe-all --udid "$u" 2>/dev/null)" || true
     [ -n "$again" ] || continue; read_note idb "$t0"; out="$again"
-    ios_blank "$out" || { printf '%s' "$out"; return 0; }; done
+    ios_blank "$out" || { read_blank 0; printf '%s' "$out"; return 0; }; done
   # Blank in the new process too: its threads as well - the next flow ends it.
   ios_threads "$u" "$out" "after the relaunch, blank as well" say
   ios_blank_say "the app gives a blank tree (no element with a size) after a relaunch as well"
@@ -3543,7 +3547,29 @@ assert_not_id(){ local q="${1:-}" xy st=0
 # $SECONDS counts whole seconds, and the poll starts somewhere inside one, so a
 # "less than" test ends the wait anywhere from t-1 to t seconds in - with a
 # timeout of 1, after a single read. The test is "not more than" instead: the
-# wait lasts at least the timeout it promises, and up to a second longer.
+# wait lasts at least the timeout it promises, and up to a second longer plus
+# one read - poll_pause cuts its pause to the time left. waitForNot, whose test
+# is "not more than", can add one more pause of 0.5 s and one more read.
+# The pause between two reads of a wait. On iOS a read of a heavy screen can run
+# into idb's ceiling of about 3 s and come back as the app's root with no size,
+# while the app's main thread goes on answering it: in the measured run every
+# sample of that thread lay under accessibility requests, and a new full read
+# every 0.5 s keeps it there. So after a read that took more than a second, or
+# came back blank, the next waits max(2 s, what that read took), cut to the
+# time the wait has left (never under 0.5 s); a line says so. Fast reads keep
+# 0.5 s, and Android, and a wait outside a flow, are as before.
+read_blank(){ [ -n "${FLOW_REC:-}" ] || return 0
+  if [ "$1" = 1 ]; then : > "$FLOW_REC.read-blank"; elif [ -e "$FLOW_REC.read-blank" ]; then rm -f "$FLOW_REC.read-blank"; fi 2>/dev/null || true; }
+poll_pause(){ local t0="$1" t="$2" ms p left why
+  if is_android || [ -z "${FLOW_REC:-}" ]; then sleep 0.5; return 0; fi
+  ms="$(cat "$FLOW_REC.read-ms" 2>/dev/null || true)"; case "$ms" in ''|*[!0-9]*) ms=0;; esac
+  [ "$ms" -gt 1000 ] || [ -e "$FLOW_REC.read-blank" ] || { sleep 0.5; return 0; }
+  p=$ms; [ "$p" -ge 2000 ] || p=2000
+  left=$(( (t - (SECONDS - t0)) * 1000 )); [ "$left" -ge 500 ] || left=500
+  [ "$p" -le "$left" ] || p=$left
+  why="took $ms ms"; [ ! -e "$FLOW_REC.read-blank" ] || why="$why and came back blank (no element with a size)"
+  printf '  · next read in %d.%03d s: the last one %s\n' $((p / 1000)) $((p % 1000)) "$why" >&2
+  sleep "$((p / 1000)).$(printf '%03d' $((p % 1000)))"; }
 wait_gone(){ local q="${1:-}" t="${2:-10}" m="${3:-exact}" mode="${4:-assert}" xy="" st=0 last="" readable=0 t0 el name label
   [ "$mode" = id ] && name=waitForNotId || name=waitForNotText
   [ -n "$q" ] || die "$name needs a non-empty value"
@@ -3559,7 +3585,7 @@ wait_gone(){ local q="${1:-}" t="${2:-10}" m="${3:-exact}" mode="${4:-assert}" x
       last="$xy"
     else readable=0; fi
     [ $((SECONDS - t0)) -le "$t" ] || break
-    sleep 0.5
+    poll_pause "$t0" "$t"
   done
   [ "$readable" = 1 ] || die "$label FAILED after ${t}s waiting for '$q' to go: $(lookup_err "$st")"
   die "$label FAILED: '$q' still on the screen at $last after ${t}s"; }
@@ -3616,7 +3642,7 @@ wait_for(){ local q="${1:-}" t="${2:-10}" m="${3:-exact}" mode="${4:-assert}" op
       else readable=0; fi
     fi
     [ $((SECONDS - t0)) -lt "$t" ] || break
-    sleep 0.5
+    poll_pause "$t0" "$t"
   done
   [ "$readable" = 1 ] || die "$label FAILED after ${t}s waiting for '$q': $(lookup_err "$lst")"
   if [ -n "$miss" ]; then
@@ -5322,7 +5348,7 @@ PY
     warn "could not write the results file to '$RESULTS_DIR'"
   fi
   [ "$ro_n" = 0 ] || say "negative checks passed on a root-only tree: $ro_n (#201)"
-  rm -f "$FLOW_REC" "$FLOW_REC.root-only" "$FLOW_REC.acted" "$FLOW_REC.blank-relaunched" "$FLOW_REC.blank-said" "$FLOW_REC.threads" "$FLOW_REC.threads-pids" "$FLOW_CUR" "$FLOW_ERR" "$FLOW_ERR.kind" "$FLOW_ERR.teardown" "$FLOW_TREE" "$FLOW_TREE.step"; FLOW_REC=""
+  rm -f "$FLOW_REC" "$FLOW_REC.root-only" "$FLOW_REC.acted" "$FLOW_REC.blank-relaunched" "$FLOW_REC.blank-said" "$FLOW_REC.threads" "$FLOW_REC.threads-pids" "$FLOW_REC.read-ms" "$FLOW_REC.read-blank" "$FLOW_CUR" "$FLOW_ERR" "$FLOW_ERR.kind" "$FLOW_ERR.teardown" "$FLOW_TREE" "$FLOW_TREE.step"; FLOW_REC=""
   return 0
 }
 
