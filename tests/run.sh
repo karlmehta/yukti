@@ -1525,7 +1525,7 @@ ipoint card 12 640 378 230 GenericElement '["None"]'
 flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "card-disclosure" }'
 run_ios "$case_dir/flow.json"
 begin "tapId on iOS: a plain view that holds part of the target, the point on that part - the tap goes, and says so"
-status_is 0; taps_are 1; has out.txt "the point answers card, a plain view, on the part of the target inside it and the window"
+status_is 0; taps_are 1; has out.txt "the point answers card, a plain view, on the visible part of the target"
 verdict
 
 ios_case ios-tap-part-held-off
@@ -1590,7 +1590,7 @@ flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "item-add" }'
 run_ios "$case_dir/flow.json"
 begin "tapId on iOS: the point answers a labelled card with an id that holds the target - the tap goes, and says so without the label"
 status_is 0; taps_are 1; has idb/log "ui tap --udid FAKE-UDID 351 634"
-has out.txt "'item-add' at 351,634: the point answers item-card, a view with an id and a label that holds it, no other control over it - not covered"
+has out.txt "'item-add' at 351,634: the point answers item-card, a holder (an id and a label, inset, holds it, no other control on it by frames) - not covered"
 lacks out.txt "Item 1 of 8"; lacks out.txt "is covered"; ireads_are 2
 verdict
 
@@ -1618,7 +1618,7 @@ ipoint item-card 2 602 398 257 Button '["Button"]' Items
 flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "item-add" }'
 run_ios "$case_dir/flow.json"
 begin "tapId on iOS: a labelled card 2 pt from both window edges is inset - the tap goes"
-status_is 0; taps_are 1; has out.txt "the point answers item-card, a view with an id and a label that holds it"
+status_is 0; taps_are 1; has out.txt "the point answers item-card, a holder (an id and a label"
 verdict
 
 ios_case ios-tap-holder-crossed
@@ -1664,7 +1664,7 @@ ipoint toast 50 280 300 140 GenericElement '["None"]' Saved
 flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "go" }'
 run_ios "$case_dir/flow.json"
 begin "tapId on iOS (known limit): a labelled pop-up with an id over the whole target passes as a holder, and says so"
-status_is 0; taps_are 1; has out.txt "the point answers toast, a view with an id and a label that holds it"
+status_is 0; taps_are 1; has out.txt "the point answers toast, a holder (an id and a label"
 verdict
 
 ios_case ios-tap-visible-overlap
@@ -1673,7 +1673,7 @@ ipoint footer-wrap 0 340 402 100 GenericElement '["None"]'
 flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "go" }'
 run_ios "$case_dir/flow.json"
 begin "tapId on iOS (known limit): a plain view with an id over part of the target passes on the overlap, and says so"
-status_is 0; taps_are 1; has out.txt "the point answers footer-wrap, a plain view, on the part of the target inside it and the window"
+status_is 0; taps_are 1; has out.txt "the point answers footer-wrap, a plain view, on the visible part of the target"
 verdict
 
 # A plain container that the target sticks out of.
@@ -1683,7 +1683,7 @@ ipoint strip 0 600 402 80 GenericElement '["None"]'
 flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "tab-more" }'
 run_ios "$case_dir/flow.json"
 begin "tapId on iOS: a tab past the window edge, the point on its visible part in a plain container - the tap goes"
-status_is 0; taps_are 1; has out.txt "the point answers strip, a plain view, on the part of the target inside it and the window"
+status_is 0; taps_are 1; has out.txt "the point answers strip, a plain view, on the visible part of the target"
 verdict
 
 ios_case ios-tap-visible-past-container
@@ -1692,7 +1692,7 @@ ipoint screen-body 0 100 402 680 GenericElement '["None"]'
 flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "card-open" }'
 run_ios "$case_dir/flow.json"
 begin "tapId on iOS: a card that runs past its plain container, the point inside both - the tap goes"
-status_is 0; taps_are 1; has out.txt "the point answers screen-body, a plain view, on the part of the target inside it and the window"
+status_is 0; taps_are 1; has out.txt "the point answers screen-body, a plain view, on the visible part of the target"
 verdict
 
 ios_case ios-tap-visible-other-control
@@ -1703,6 +1703,99 @@ flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "card-open" }'
 run_ios "$case_dir/flow.json"
 begin "tapId on iOS: a control of the card with an id of its own at the point - the plain container stays a cover"
 status_is 1; taps_are 0; has out.txt "'card-open' at 201,670 is covered by screen-body - not tapped"
+verdict
+
+# A screen tree bigger than a pipe holds (64 KB) and than a Linux environment
+# string may be (128 KB): the rules get it whole, and the answers of #189 stand.
+# ibig <file> <n> <element>... - a describe-all answer with n filler texts after them.
+ibig(){ local f="$1" n="$2" e i=0; shift 2
+  { printf '['; for e in "$@"; do printf '%s,' "$e"; done
+    while [ "$i" -lt "$n" ]; do [ "$i" -eq 0 ] || printf ','
+      printf '{"type":"StaticText","AXUniqueId":null,"AXLabel":"line %05d of a long list on this screen, filler","traits":["StaticText"],"frame":{"x":0,"y":0,"width":10,"height":10}}' "$i"
+      i=$((i + 1)); done; printf ']\n'; } > "$f"; }
+
+ios_case ios-tap-container-big-tree
+ibig "$case_dir/idb/desc-1.json" 600 "$ISCREEN" "$ICARD" "$ISHARE" "$IDISC"
+ipoint card 12 621 378 249 GenericElement '["None"]'
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "card-disclosure" }'
+run_ios "$case_dir/flow.json"
+begin "tapId on iOS: a tree over 64 KB - the plain view that holds the target still passes as its container"
+[ "$(wc -c < "$case_dir/idb/desc-1.json")" -gt 65536 ] || no "the tree is not over 64 KB"
+status_is 0; taps_are 1; has out.txt "a plain view that holds it - not covered"; lacks out.txt "could not read"
+verdict
+
+ios_case ios-tap-covered-big-tree
+ibig "$case_dir/idb/desc-1.json" 600 "$ISCREEN" "$(ibutton go)"
+ipoint other 0 0 0 0 Button '["Button"]' Other
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "go" }'
+run_ios "$case_dir/flow.json"
+begin "tapId on iOS: a tree over 64 KB - another control at the point still covers the target"
+status_is 1; taps_are 0; has out.txt "is covered by other - not tapped"
+verdict
+
+ios_case ios-tap-container-huge-tree
+ibig "$case_dir/idb/desc-1.json" 1200 "$ISCREEN" "$ICARD" "$ISHARE" "$IDISC"
+ipoint card 12 621 378 249 GenericElement '["None"]'
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "card-disclosure" }'
+run_ios "$case_dir/flow.json"
+begin "tapId on iOS: a tree over 128 KB - the plain view that holds the target still passes as its container"
+[ "$(wc -c < "$case_dir/idb/desc-1.json")" -gt 131072 ] || no "the tree is not over 128 KB"
+status_is 0; taps_are 1; has out.txt "a plain view that holds it - not covered"
+verdict
+
+ios_case ios-tap-holder-left-edge
+tree "$case_dir/idb/desc-1.json" "$ISCREEN" "$(ilabel item-card Button "Items" '["Button"]' 0 602 380 257)" "$IHGO"
+ipoint item-card 0 602 380 257 Button '["Button"]' Items
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "item-add" }'
+run_ios "$case_dir/flow.json"
+begin "tapId on iOS: a labelled card flush with the left window edge only - covered"
+status_is 1; taps_are 0; has out.txt "is covered by item-card - not tapped"
+verdict
+
+ios_case ios-tap-holder-right-edge
+tree "$case_dir/idb/desc-1.json" "$ISCREEN" "$(ilabel item-card Button "Items" '["Button"]' 22 602 380 257)" "$IHGO"
+ipoint item-card 22 602 380 257 Button '["Button"]' Items
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "item-add" }'
+run_ios "$case_dir/flow.json"
+begin "tapId on iOS: a labelled card flush with the right window edge only - covered"
+status_is 1; taps_are 0; has out.txt "is covered by item-card - not tapped"
+verdict
+
+ios_case ios-tap-holder-neighbour-flush
+tree "$case_dir/idb/desc-1.json" "$ISCREEN" "$IHCARD" "$(ilabel item-add Button "Add" '["Button"]' 333.67 616 36 36)" "$(ilabel item-less Button "Less" '["Button"]' 297.67 616 36 36)"
+ipoint item-card 33 602 336 257 Button '["Button"]' "Item 1 of 8"
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "item-add" }'
+run_ios "$case_dir/flow.json"
+begin "tapId on iOS: a neighbour flush with the target in fractions of a point does not cross it - the holder passes"
+status_is 0; taps_are 1; has out.txt "the point answers item-card, a holder"
+verdict
+
+ios_case ios-tap-holder-own-id-at-point
+tree "$case_dir/idb/desc-1.json" "$ISCREEN" "$IHCARD" "$(ilabel item-row Button "Row" '["Button"]' 60 640 280 60)" "$(ilabel item-row-x Button "Remove" '["Button"]' 180 650 40 40)"
+ipoint item-card 33 602 336 257 Button '["Button"]' "Item 1 of 8"
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "item-row" }'
+run_ios "$case_dir/flow.json"
+begin "tapId on iOS: a control with an id of its own inside the target at the point - the holder stays a cover"
+status_is 1; taps_are 0; has out.txt "is covered by item-card - not tapped"
+verdict
+
+ios_case ios-tap-holder-outer-control
+tree "$case_dir/idb/desc-1.json" "$ISCREEN" "$IHCARD" "$IHGO" "$(ilabel item-list Button "List" '["Button"]' 20 590 362 280)"
+ipoint item-card 33 602 336 257 Button '["Button"]' "Item 1 of 8"
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "item-add" }'
+run_ios "$case_dir/flow.json"
+begin "tapId on iOS: a control that holds the target as well is not a control over it - the holder passes"
+status_is 0; taps_are 1; has out.txt "the point answers item-card, a holder"
+verdict
+
+ios_case ios-tap-visible-other-not-inside
+tree "$case_dir/idb/desc-1.json" "$ISCREEN" "$(iel screen-body GenericElement "" 0 100 402 680)" "$(ilabel card-open Button Open '["Button"]' 20 514 362 312)" \
+  "$(ilabel tab-home Button Home '["Button"]' 100 660 300 300)"
+ipoint screen-body 0 100 402 680 GenericElement '["None"]'
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "card-open" }'
+run_ios "$case_dir/flow.json"
+begin "tapId on iOS: another control at the point, not inside the target - the plain container stays a cover"
+status_is 1; taps_are 0; has out.txt "is covered by screen-body - not tapped"
 verdict
 
 # ── a miss by id says what it saw (#64) ──────────────────────────────────────

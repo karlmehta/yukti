@@ -2372,7 +2372,7 @@ tap(){ is_android && { atap "$1" "$2"; return; }; paths; idb ui tap --udid "$(U)
 # target that is not an
 # accessibility element (a plain view with an id) holding a child with an id of
 # its own answers the child at its point, and reads as covered by it; accessible
-# touchables hide their children, so it needs such a container. Answers:
+# touchables hide their children, so it needs such a container.
 # Two more exceptions (#208), judged on the screen tree and the window. The app
 # in its test mode lists a view with a testID as a stand-in with the frame of
 # the whole view, the label of its content and its role: a card with an id, a
@@ -2385,7 +2385,10 @@ tap(){ is_android && { atap "$1" "$2"; return; }; paths; idb ui tap --udid "$(U)
 # point lies in the part of the target inside the view and the window, and no
 # other control is at the point. Limits: a labelled pop-up with an id inset over
 # the whole target passes as a holder, and a plain view with an id over a part of
-# the target passes on that part; each pass says so in the log, with the id.
+# the target passes on that part; a control is told by its role or traits, so a
+# touchable with no role (a GenericElement with an id and a label) on the target
+# is not seen as one, and a pop-up made of such buttons passes as a holder too;
+# each pass says so in the log, with the id.
 # Answers: "ok", "covered <id or type>", "unknown" (idb gave no element); inside
 # ihit also "held", "holder" and "visible" with the id, which ihit logs and turns
 # into "ok".
@@ -2395,6 +2398,9 @@ IHIT_PY='
 import json,os,sys
 n=lambda s: " ".join(str(s or "").split()).lower()
 q=n(sys.argv[1]); mode=sys.argv[2]; box=(sys.argv[3].split() if len(sys.argv)>3 else [])
+# With a box the screen tree comes on stdin (#208): read it whole before any
+# answer, or a tree bigger than the pipe would end the writer on SIGPIPE.
+raw=sys.stdin.read() if box else ""
 try: el=json.loads(os.environ.get("YUKTI_PT") or "")
 except ValueError: el=None
 if isinstance(el,list): el=el[0] if el else None
@@ -2433,9 +2439,10 @@ except ValueError: win=None
 try: px,py=[float(v) for v in os.environ.get("YUKTI_XY","").split()[:2]]
 except ValueError: px=py=None
 if not win or px is None or not (w>0 and h>0): print("covered",cover); sys.exit(0)
-try: els=json.loads(sys.stdin.read() or "[]")
-except ValueError: els=[]
-if not isinstance(els,list): els=[]
+# The rules below judge by the tree: without one they do not apply.
+try: els=json.loads(raw)
+except ValueError: els=None
+if not isinstance(els,list) or not els: print("covered",cover); sys.exit(0)
 def fr(e):
     f=e.get("frame") or {}
     if not isinstance(f,dict): return None
@@ -2472,15 +2479,17 @@ for e in els:
 # role), inset from both side edges of the window, that holds the whole target,
 # while no other control crosses the frame of the target. A sheet or a dimming layer
 # runs the full width of the window and stays a cover.
-cross=lambda f,b: min(f[2],b[2])-max(f[0],b[0])>0 and min(f[3],b[3])-max(f[1],b[1])>0
+# More than a point on both axes: the corners of the target come cut to whole
+# points, and a neighbour flush with it would cross it by a fraction.
+cross=lambda f,b: min(f[2],b[2])-max(f[0],b[0])>1 and min(f[3],b[3])-max(f[1],b[1])>1
+at=lambda f: f[0]<=px<=f[2] and f[1]<=py<=f[3]
 if ident and texts[1] and holds and x-win[0]>1 and win[2]-(x+w)>1 and \
-    not any(cross(f,tgt) for f in others):
+    not any(cross(f,tgt) for f in others) and not any(at(f) for f in atpt):
     print("holder",cover); sys.exit(0)
 # A plain view that the target sticks out of (past the window edge or past the
 # view itself): the touch reaches the target where the point lies in the part of
 # it that is inside both, and no other control is at the point.
 vis=(max(tgt[0],ans[0],win[0]),max(tgt[1],ans[1],win[1]),min(tgt[2],ans[2],win[2]),min(tgt[3],ans[3],win[3]))
-at=lambda f: f[0]<=px<=f[2] and f[1]<=py<=f[3]
 if plain and ident and vis[0]<vis[2] and vis[1]<vis[3] and at(vis) and not any(at(f) for f in others+atpt):
     print("visible",cover); sys.exit(0)
 print("covered",cover)
@@ -2492,13 +2501,17 @@ ihit(){ local q="$1" mode="$2" x="$3" y="$4" in="${5:-}" idx="${6:-}" pt v box t
   case "$v" in covered*)
     # One read serves both: the target's frame and the tree the rules look at.
     tree="$(ui 2>/dev/null)" || tree=""
-    box="$(HELD_TREE="${tree:-$HELD_TREE}" find_el "$q" "$mode" exact box "$in" "$idx" 2>/dev/null)" || box=""
+    # A local, not an assignment before the call: that one would put the tree in
+    # the environment of every process find_el starts, past the size a Linux
+    # environment string may have.
+    local HELD_TREE="${tree:-$HELD_TREE}"
+    box="$(find_el "$q" "$mode" exact box "$in" "$idx" 2>/dev/null)" || box=""
     [ -n "$box" ] && { v="$(printf '%s' "$tree" | YUKTI_PT="$pt" YUKTI_XY="$x $y" "$PY" -c "$IHIT_PY" "$q" "$mode" "$box")" || v=unknown; };;
   esac
   case "$v" in
     held\ *) printf "  · '%s' at %s,%s: the point answers %s, a plain view that holds it - not covered\n" "$q" "$x" "$y" "${v#held }" >&2; v=ok;;
-    holder\ *) printf "  · '%s' at %s,%s: the point answers %s, a view with an id and a label that holds it, no other control over it - not covered\n" "$q" "$x" "$y" "${v#holder }" >&2; v=ok;;
-    visible\ *) printf "  · '%s' at %s,%s: the point answers %s, a plain view, on the part of the target inside it and the window - not covered\n" "$q" "$x" "$y" "${v#visible }" >&2; v=ok;;
+    holder\ *) printf "  · '%s' at %s,%s: the point answers %s, a holder (an id and a label, inset, holds it, no other control on it by frames) - not covered\n" "$q" "$x" "$y" "${v#holder }" >&2; v=ok;;
+    visible\ *) printf "  · '%s' at %s,%s: the point answers %s, a plain view, on the visible part of the target - not covered\n" "$q" "$x" "$y" "${v#visible }" >&2; v=ok;;
   esac
   printf '%s\n' "${v:-unknown}"; }
 # A tap that must land on its target: covered = the step fails and says by what,
