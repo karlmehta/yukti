@@ -2012,7 +2012,7 @@ ios_unstick(){ local u="$1" out="$2" m="${FLOW_REC:-}" d t0 t1 again i
   [ -z "${YUKTI_UNSTICK_BUSY:-}" ] || { printf '%s' "$out"; return 0; }
   # A read with a size after `launch`: the app has drawn, the round below is not
   # for a blank read later on (#207).
-  ios_blank "$out" || { read_blank 0; [ -z "$m" ] || rm -f "$m.launched" 2>/dev/null || true; printf '%s' "$out"; return 0; }
+  ios_blank "$out" || { read_blank 0; [ -z "$m" ] || [ ! -e "$m.launched" ] || rm -f "$m.launched" 2>/dev/null || true; printf '%s' "$out"; return 0; }
   read_blank 1
   [ -n "$m" ] || { printf '%s' "$out"; return 0; }
   # Right after `launch` the app is still drawing, and a read then is blank too
