@@ -6806,6 +6806,57 @@ begin "iOS blank tree when the flow's first step acts: not relaunched, the reaso
 status_is 1; ilaunches_are 0; has out.txt "at or after this flow's first action: not relaunched here"
 verdict
 
+# ── #207: right after `launch` the app is still drawing - read again, once ──
+# The first read after `launch` is blank on a launch that has not drawn yet; a
+# `when` decided on it and the flow stopped. One round of up to 3 reads a second
+# apart, once per `launch`, no relaunch.
+I207FLOW='{ "do": "launch", "value": "app" }'
+I207WHEN='{ "do": "assertId", "value": "a", "when": { "notVisible": "Welcome" } }'
+
+ibg_case launch-drawing
+tree "$case_dir/idb/desc-1.json" "$IEXAPP" "$I3"; printf '2' > "$case_dir/idb/blank"
+flow_file "$case_dir/flow.json" "$I207FLOW" "$I207WHEN"
+run_ibg "$case_dir/flow.json"
+begin "iOS: a when right after launch on a blank read waits for the app to draw - no relaunch, no first-action line"
+status_is 0; ilaunches_are 1; ireads_are 4; lacks out.txt "at or after this flow's first action"; lacks out.txt "relaunching"; stacks_are 0
+verdict
+
+ibg_case launch-blank-stays
+tree "$case_dir/idb/desc-1.json" "$IEXAPP" "$I3"; : > "$case_dir/idb/blank"
+flow_file "$case_dir/flow.json" "$I207FLOW" "$I207WHEN"
+run_ibg "$case_dir/flow.json"
+begin "iOS: blank after launch on every read - 3 more reads, then as before: one line, no relaunch, the step fails"
+status_is 1; ilaunches_are 1; ilines_are 1 "at or after this flow's first action: not relaunched here"
+lacks out.txt "relaunching"
+verdict
+
+# Once per launch: the second read of the flow gets no round of its own.
+ibg_case launch-round-once
+tree "$case_dir/idb/desc-1.json" "$IEXAPP" "$I3"; : > "$case_dir/idb/blank"
+flow_file "$case_dir/flow.json" "$I207FLOW" '{ "do": "assertId", "value": "a", "when": { "notVisible": "Welcome" } }' '{ "do": "screenshot", "value": "x" }'
+run_ibg "$case_dir/flow.json"
+begin "iOS: the round of reads after launch runs once, not on every read after it"
+status_is 1; [ "$(cat "$case_dir/idb/describes" 2>/dev/null)" -le 5 ] || no "the screen was read $(cat "$case_dir/idb/describes") times, wanted at most 5 (one read, 3 more, one more at most)"
+verdict
+
+# Another action between launch and the read takes the mark away.
+ibg_case launch-then-action
+tree "$case_dir/idb/desc-1.json" "$IEXAPP" "$I3"; printf '2' > "$case_dir/idb/blank"
+flow_file "$case_dir/flow.json" "$I207FLOW" '{ "do": "hideKeyboard" }' "$I207WHEN"
+run_ibg "$case_dir/flow.json"
+begin "iOS: an action after launch ends the still-drawing round - a blank read after it is as before"
+has out.txt "at or after this flow's first action: not relaunched here"
+verdict
+
+# A read slower than a second is a busy app: no more reads in the round.
+ibg_case launch-slow-read
+tree "$case_dir/idb/desc-1.json" "$IEXAPP" "$I3"; : > "$case_dir/idb/blank"; printf '1.2' > "$case_dir/idb/slow-2"
+flow_file "$case_dir/flow.json" "$I207FLOW" "$I207WHEN"
+run_ibg "$case_dir/flow.json"
+begin "iOS: a read in the round that takes longer than a second ends the round"
+status_is 1; ilaunches_are 1; [ "$(cat "$case_dir/idb/describes" 2>/dev/null)" -le 3 ] || no "the screen was read $(cat "$case_dir/idb/describes") times, wanted at most 3"
+verdict
+
 # Outside a flow nothing says what was done before the read: an `assert-id` after a
 # `tap-id` from the command line must not relaunch and pass on the first screen.
 ibg_case blank-cli-after-tap
