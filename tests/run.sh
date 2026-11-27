@@ -1516,12 +1516,24 @@ begin "tapId on iOS: traits that are not a list are not read as none - covered"
 status_is 1; taps_are 0; has out.txt "is covered by card - not tapped"; lacks out.txt "could not read"
 verdict
 
+# Since #208 the part of the target inside the view and the window is what
+# counts: a point on it passes, and says so (a limit, see #208); a point off it,
+# or another control at it, stays covered.
 ios_case ios-tap-part-held
 tree "$case_dir/idb/desc-1.json" "$ISCREEN" "$ICARD" "$ISHARE" "$IDISC"
 ipoint card 12 640 378 230 GenericElement '["None"]'
 flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "card-disclosure" }'
 run_ios "$case_dir/flow.json"
-begin "tapId on iOS: a plain view that holds only part of the target's frame covers it"
+begin "tapId on iOS: a plain view that holds part of the target, the point on that part - the tap goes, and says so"
+status_is 0; taps_are 1; has out.txt "the point answers card, a plain view, on the part of the target inside it and the window"
+verdict
+
+ios_case ios-tap-part-held-off
+tree "$case_dir/idb/desc-1.json" "$ISCREEN" "$ICARD" "$ISHARE" "$IDISC"
+ipoint card 12 650 378 220 GenericElement '["None"]'
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "card-disclosure" }'
+run_ios "$case_dir/flow.json"
+begin "tapId on iOS: a plain view that holds part of the target, the point off that part - covered"
 status_is 1; taps_are 0; has out.txt "is covered by card - not tapped"
 verdict
 
@@ -1557,6 +1569,140 @@ flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "card-disclosure" }'
 run_ios "$case_dir/flow.json"
 begin "tapId on iOS (known limit): a plain view with an id over the whole target passes as its container, and says so"
 status_is 0; taps_are 1; has out.txt "the point answers sheet, a plain view that holds it - not covered"
+verdict
+
+# ── a labelled view with an id that holds the target, and a target that sticks
+# out of its container (#208) ─────────────────────────────────────────────────
+# As the app lists them in its test mode: a view with a testID comes as a
+# stand-in with the frame of the whole view, the label of its content and its
+# role, and describe-point answers it for the buttons inside.
+ilabel(){ printf '{"type":"%s","AXUniqueId":%s,"AXLabel":"%s","traits":%s,"frame":{"x":%s,"y":%s,"width":%s,"height":%s}}' \
+  "$2" "$([ -n "$1" ] && printf '"%s"' "$1" || printf 'null')" "$3" "$4" "$5" "$6" "$7" "$8"; }
+IHCARD="$(ilabel item-card Button "Item 1 of 8" '["Button"]' 33 602 336 257)"
+IHGO="$(ilabel item-add Button "Add" '["Button"]' 333 616 36 36)"
+idescribes_point(){ local got; got="$(grep -c '^ui describe-point ' "$case_dir/idb/log" 2>/dev/null)"
+  [ "$got" = "$1" ] || no "describe-point asked $got times, wanted $1"; }
+
+ios_case ios-tap-holder
+tree "$case_dir/idb/desc-1.json" "$ISCREEN" "$IHCARD" "$IHGO"
+ipoint item-card 33 602 336 257 Button '["Button"]' "Item 1 of 8"
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "item-add" }'
+run_ios "$case_dir/flow.json"
+begin "tapId on iOS: the point answers a labelled card with an id that holds the target - the tap goes, and says so without the label"
+status_is 0; taps_are 1; has idb/log "ui tap --udid FAKE-UDID 351 634"
+has out.txt "'item-add' at 351,634: the point answers item-card, a view with an id and a label that holds it, no other control over it - not covered"
+lacks out.txt "Item 1 of 8"; lacks out.txt "is covered"; ireads_are 2
+verdict
+
+ios_case ios-tap-holder-no-id
+tree "$case_dir/idb/desc-1.json" "$ISCREEN" "$(ilabel "" Button "Item 1 of 8" '["Button"]' 33 602 336 257)" "$IHGO"
+ipoint "" 33 602 336 257 Button '["Button"]' "Item 1 of 8"
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "item-add" }'
+run_ios "$case_dir/flow.json"
+begin "tapId on iOS: a labelled card with no id that holds the target still covers it"
+status_is 1; taps_are 0; has out.txt "'item-add' at 351,634 is covered by Button (no id) - not tapped"
+verdict
+
+ios_case ios-tap-holder-edge-1
+tree "$case_dir/idb/desc-1.json" "$ISCREEN" "$(ilabel item-card Button "Items" '["Button"]' 1 602 400 257)" "$IHGO"
+ipoint item-card 1 602 400 257 Button '["Button"]' Items
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "item-add" }'
+run_ios "$case_dir/flow.json"
+begin "tapId on iOS: a labelled card 1 pt from the window edge is not inset - covered"
+status_is 1; taps_are 0; has out.txt "is covered by item-card - not tapped"
+verdict
+
+ios_case ios-tap-holder-edge-2
+tree "$case_dir/idb/desc-1.json" "$ISCREEN" "$(ilabel item-card Button "Items" '["Button"]' 2 602 398 257)" "$IHGO"
+ipoint item-card 2 602 398 257 Button '["Button"]' Items
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "item-add" }'
+run_ios "$case_dir/flow.json"
+begin "tapId on iOS: a labelled card 2 pt from both window edges is inset - the tap goes"
+status_is 0; taps_are 1; has out.txt "the point answers item-card, a view with an id and a label that holds it"
+verdict
+
+ios_case ios-tap-holder-crossed
+tree "$case_dir/idb/desc-1.json" "$ISCREEN" "$IHCARD" "$IHGO" "$(ilabel sheet-save Button Save '["Button"]' 40 630 320 60)"
+ipoint item-card 33 602 336 257 Button '["Button"]' "Item 1 of 8"
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "item-add" }'
+run_ios "$case_dir/flow.json"
+begin "tapId on iOS: another control crosses the target's frame - the labelled card stays a cover"
+status_is 1; taps_are 0; has out.txt "is covered by item-card - not tapped"
+verdict
+
+ios_case ios-tap-sheet-full-width
+tree "$case_dir/idb/desc-1.json" "$ISCREEN" "$(ilabel go Button Go '["Button"]' 100 450 200 100)" "$(ilabel "" Slider "Bottom Sheet" '["Adjustable"]' 0 400 402 474)"
+ipoint "" 0 400 402 474 Slider '["Adjustable"]' "Bottom Sheet"
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "go" }'
+run_ios "$case_dir/flow.json"
+begin "tapId on iOS: a full-width sheet over a screen button stays a cover"
+status_is 1; taps_are 0; has out.txt "'go' at 200,500 is covered by Slider (no id) - not tapped"; lacks out.txt "Bottom Sheet"
+verdict
+
+ios_case ios-tap-dimming-layer
+tree "$case_dir/idb/desc-1.json" "$ISCREEN" "$(ibutton go)" "$(ilabel "" Button Dismiss '["Button"]' 0 0 402 874)"
+ipoint "" 0 0 402 874 Button '["Button"]' Dismiss
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "go" }'
+run_ios "$case_dir/flow.json"
+begin "tapId on iOS: a full-window dimming layer stays a cover, the point is asked once"
+status_is 1; taps_are 0; has out.txt "is covered by Button (no id) - not tapped"; idescribes_point 1
+verdict
+
+ios_case ios-tap-sticky-not-holding
+tree "$case_dir/idb/desc-1.json" "$ISCREEN" "$(ibutton go)" "$(ilabel save-sticky Button Save '["Button"]' 20 330 362 60)"
+ipoint save-sticky 20 330 362 60 Button '["Button"]' Save
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "go" }'
+run_ios "$case_dir/flow.json"
+begin "tapId on iOS: a sticky labelled button that does not hold the target stays a cover"
+status_is 1; taps_are 0; has out.txt "'go' at 200,350 is covered by save-sticky - not tapped"
+verdict
+
+# The limits, pinned so that they are not changed by accident.
+ios_case ios-tap-holder-popup
+tree "$case_dir/idb/desc-1.json" "$ISCREEN" "$(ibutton go)" "$(ilabel toast GenericElement Saved '["None"]' 50 280 300 140)"
+ipoint toast 50 280 300 140 GenericElement '["None"]' Saved
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "go" }'
+run_ios "$case_dir/flow.json"
+begin "tapId on iOS (known limit): a labelled pop-up with an id over the whole target passes as a holder, and says so"
+status_is 0; taps_are 1; has out.txt "the point answers toast, a view with an id and a label that holds it"
+verdict
+
+ios_case ios-tap-visible-overlap
+tree "$case_dir/idb/desc-1.json" "$ISCREEN" "$(ibutton go)" "$(iel footer-wrap GenericElement "" 0 340 402 100)"
+ipoint footer-wrap 0 340 402 100 GenericElement '["None"]'
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "go" }'
+run_ios "$case_dir/flow.json"
+begin "tapId on iOS (known limit): a plain view with an id over part of the target passes on the overlap, and says so"
+status_is 0; taps_are 1; has out.txt "the point answers footer-wrap, a plain view, on the part of the target inside it and the window"
+verdict
+
+# A plain container that the target sticks out of.
+ios_case ios-tap-visible-past-window
+tree "$case_dir/idb/desc-1.json" "$ISCREEN" "$(iel strip GenericElement "" 0 600 402 80)" "$(ilabel tab-more Button More '["Button"]' 338 620 92 40)"
+ipoint strip 0 600 402 80 GenericElement '["None"]'
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "tab-more" }'
+run_ios "$case_dir/flow.json"
+begin "tapId on iOS: a tab past the window edge, the point on its visible part in a plain container - the tap goes"
+status_is 0; taps_are 1; has out.txt "the point answers strip, a plain view, on the part of the target inside it and the window"
+verdict
+
+ios_case ios-tap-visible-past-container
+tree "$case_dir/idb/desc-1.json" "$ISCREEN" "$(iel screen-body GenericElement "" 0 100 402 680)" "$(ilabel card-open Button Open '["Button"]' 20 514 362 312)"
+ipoint screen-body 0 100 402 680 GenericElement '["None"]'
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "card-open" }'
+run_ios "$case_dir/flow.json"
+begin "tapId on iOS: a card that runs past its plain container, the point inside both - the tap goes"
+status_is 0; taps_are 1; has out.txt "the point answers screen-body, a plain view, on the part of the target inside it and the window"
+verdict
+
+ios_case ios-tap-visible-other-control
+tree "$case_dir/idb/desc-1.json" "$ISCREEN" "$(iel screen-body GenericElement "" 0 100 402 680)" "$(ilabel card-open Button Open '["Button"]' 20 514 362 312)" \
+  "$(ilabel card-open-share Button Share '["Button"]' 150 640 120 60)"
+ipoint screen-body 0 100 402 680 GenericElement '["None"]'
+flow_file "$case_dir/flow.json" '{ "do": "tapId", "value": "card-open" }'
+run_ios "$case_dir/flow.json"
+begin "tapId on iOS: a control of the card with an id of its own at the point - the plain container stays a cover"
+status_is 1; taps_are 0; has out.txt "'card-open' at 201,670 is covered by screen-body - not tapped"
 verdict
 
 # ── a miss by id says what it saw (#64) ──────────────────────────────────────

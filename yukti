@@ -2368,14 +2368,27 @@ tap(){ is_android && { atap "$1" "$2"; return; }; paths; idb ui tap --udid "$(U)
 # describe-all --nested lists every element of that screen as a child of the
 # application, with no containers. Known limits: a plain view with an id and no
 # label laid over the whole target (a backdrop, a touchable with an icon and no
-# label) passes as a container - every such pass says so in the log; a
-# container that carries a label of its own still reads as covering what is in
-# it; and a target that is not an
+# label) passes as a container - every such pass says so in the log; and a
+# target that is not an
 # accessibility element (a plain view with an id) holding a child with an id of
 # its own answers the child at its point, and reads as covered by it; accessible
 # touchables hide their children, so it needs such a container. Answers:
-# "ok", "covered <id or type>", "unknown" (idb gave no element); inside ihit
-# also "held <id>", the exception above, which ihit logs and turns into "ok".
+# Two more exceptions (#208), judged on the screen tree and the window. The app
+# in its test mode lists a view with a testID as a stand-in with the frame of
+# the whole view, the label of its content and its role: a card with an id, a
+# label and the role button answers for the buttons inside it (29 such steps in
+# one run, 2026-11-23). It passes as a holder when it is inset from both side
+# edges of the window, holds the whole target, and no other control crosses the
+# target's frame; a sheet or a dimming layer runs the full width of the window
+# and stays a cover. And a plain view with an id that the target sticks out of
+# (a tab past the window edge, a card past its screen container) passes when the
+# point lies in the part of the target inside the view and the window, and no
+# other control is at the point. Limits: a labelled pop-up with an id inset over
+# the whole target passes as a holder, and a plain view with an id over a part of
+# the target passes on that part; each pass says so in the log, with the id.
+# Answers: "ok", "covered <id or type>", "unknown" (idb gave no element); inside
+# ihit also "held", "holder" and "visible" with the id, which ihit logs and turns
+# into "ok".
 # Only the covering element's id or type is printed, never its label: a label
 # can carry what the screen shows.
 IHIT_PY='
@@ -2412,20 +2425,80 @@ plain=n(el.get("type"))=="genericelement" and isinstance(tr,list) and bool(tr) a
 # does not: a point either way.
 holds=bool(bx) and bool(ident) and w>0 and h>0 and \
     x<=bx[0]+1 and y<=bx[1]+1 and x+w>=bx[2]-1 and y+h>=bx[3]-1
-if plain and holds: print("held",cover)
-else: print("covered",cover)
+if plain and holds: print("held",cover); sys.exit(0)
+# #208: with the frame of the target, the window (find_el hands both over) and the
+# screen tree on stdin, two more answers are not covers. The point is YUKTI_XY.
+try: win=[float(v) for v in box[4:8]] if len(box)>=8 else None
+except ValueError: win=None
+try: px,py=[float(v) for v in os.environ.get("YUKTI_XY","").split()[:2]]
+except ValueError: px=py=None
+if not win or px is None or not (w>0 and h>0): print("covered",cover); sys.exit(0)
+try: els=json.loads(sys.stdin.read() or "[]")
+except ValueError: els=[]
+if not isinstance(els,list): els=[]
+def fr(e):
+    f=e.get("frame") or {}
+    if not isinstance(f,dict): return None
+    try: a=[float(f.get(k1) if f.get(k1) is not None else f.get(k2) or 0) for k1,k2 in (("X","x"),("Y","y"),("Width","width"),("Height","height"))]
+    except (TypeError,ValueError): return None
+    return (a[0],a[1],a[0]+a[2],a[1]+a[3]) if a[2]>0 and a[3]>0 else None
+# A control of its own: what takes a touch by its role. A plain view, a text, an
+# image, the window are not.
+CTRL=("button","link","textfield","securetextfield","textview","textarea","switch","slider","searchfield","toggle","checkbox","radiobutton","stepper","picker","pickerwheel","segmentedcontrol","incrementarrow","decrementarrow")
+CTRL_TR=("button","link","adjustable","searchfield","keyboardkey")
+def control(e):
+    tr=e.get("traits"); tr=tr if isinstance(tr,list) else []
+    return n(e.get("type")) in CTRL or any(n(t) in CTRL_TR for t in tr)
+ans=(x,y,x+w,y+h); tgt=tuple(bx[:4])
+def inside(a,b): return b[0]-1<=a[0] and b[1]-1<=a[1] and a[2]<=b[2]+1 and a[3]<=b[3]+1
+def same(a,b): return all(abs(a[i]-b[i])<=1 for i in range(4))
+def mine(e,f):
+    # The answer, the target, what holds the target, what lies in it.
+    if same(f,ans) and n(e.get("AXUniqueId") or e.get("identifier"))==ident: return True
+    if same(f,tgt): return True
+    if mode=="id" and n(e.get("AXUniqueId") or e.get("identifier"))==q: return True
+    return inside(tgt,f) or inside(f,tgt)
+others=[]; atpt=[]
+for e in els:
+    if not isinstance(e,dict) or not control(e): continue
+    f=fr(e)
+    if not f: continue
+    if not mine(e,f): others.append(f)
+    # At the point a control inside the target with an id of its own takes the
+    # touch, as in the rule for the answer above; one with no id is a part.
+    elif inside(f,tgt) and not same(f,tgt) and n(e.get("AXUniqueId") or e.get("identifier")) not in ("",q): atpt.append(f)
+# A holder: a view with an id and a label of its own (React Native in its test
+# mode lists a view with a testID as a stand-in carrying the label of its content and
+# role), inset from both side edges of the window, that holds the whole target,
+# while no other control crosses the frame of the target. A sheet or a dimming layer
+# runs the full width of the window and stays a cover.
+cross=lambda f,b: min(f[2],b[2])-max(f[0],b[0])>0 and min(f[3],b[3])-max(f[1],b[1])>0
+if ident and texts[1] and holds and x-win[0]>1 and win[2]-(x+w)>1 and \
+    not any(cross(f,tgt) for f in others):
+    print("holder",cover); sys.exit(0)
+# A plain view that the target sticks out of (past the window edge or past the
+# view itself): the touch reaches the target where the point lies in the part of
+# it that is inside both, and no other control is at the point.
+vis=(max(tgt[0],ans[0],win[0]),max(tgt[1],ans[1],win[1]),min(tgt[2],ans[2],win[2]),min(tgt[3],ans[3],win[3]))
+at=lambda f: f[0]<=px<=f[2] and f[1]<=py<=f[3]
+if plain and ident and vis[0]<vis[2] and vis[1]<vis[3] and at(vis) and not any(at(f) for f in others+atpt):
+    print("visible",cover); sys.exit(0)
+print("covered",cover)
 '
-ihit(){ local q="$1" mode="$2" x="$3" y="$4" in="${5:-}" idx="${6:-}" pt v box
+ihit(){ local q="$1" mode="$2" x="$3" y="$4" in="${5:-}" idx="${6:-}" pt v box tree
   is_android && { echo ok; return 0; }
   paths; pt="$(idb ui describe-point --udid "$(U)" "$x" "$y" 2>/dev/null)" || pt=""
   v="$(YUKTI_PT="$pt" "$PY" -c "$IHIT_PY" "$q" "$mode")" || v=unknown
   case "$v" in covered*)
-    box="$(find_el "$q" "$mode" exact box "$in" "$idx" 2>/dev/null)" || box=""
-    [ -n "$box" ] && { v="$(YUKTI_PT="$pt" "$PY" -c "$IHIT_PY" "$q" "$mode" "$box")" || v=unknown; };;
+    # One read serves both: the target's frame and the tree the rules look at.
+    tree="$(ui 2>/dev/null)" || tree=""
+    box="$(HELD_TREE="${tree:-$HELD_TREE}" find_el "$q" "$mode" exact box "$in" "$idx" 2>/dev/null)" || box=""
+    [ -n "$box" ] && { v="$(printf '%s' "$tree" | YUKTI_PT="$pt" YUKTI_XY="$x $y" "$PY" -c "$IHIT_PY" "$q" "$mode" "$box")" || v=unknown; };;
   esac
-  case "$v" in held\ *)
-    printf "  · '%s' at %s,%s: the point answers %s, a plain view that holds it - not covered\n" "$q" "$x" "$y" "${v#held }" >&2
-    v=ok;;
+  case "$v" in
+    held\ *) printf "  · '%s' at %s,%s: the point answers %s, a plain view that holds it - not covered\n" "$q" "$x" "$y" "${v#held }" >&2; v=ok;;
+    holder\ *) printf "  · '%s' at %s,%s: the point answers %s, a view with an id and a label that holds it, no other control over it - not covered\n" "$q" "$x" "$y" "${v#holder }" >&2; v=ok;;
+    visible\ *) printf "  · '%s' at %s,%s: the point answers %s, a plain view, on the part of the target inside it and the window - not covered\n" "$q" "$x" "$y" "${v#visible }" >&2; v=ok;;
   esac
   printf '%s\n' "${v:-unknown}"; }
 # A tap that must land on its target: covered = the step fails and says by what,
