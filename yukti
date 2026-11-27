@@ -2008,17 +2008,31 @@ else:
 # the tree. The relaunch reads the screen itself (is the app in front?), and
 # those reads must not come back here: YUKTI_UNSTICK_BUSY lets them through as
 # they are, and a line said from inside would mark the flow as told.
-ios_unstick(){ local u="$1" out="$2" m="${FLOW_REC:-}" d t0 again i
+ios_unstick(){ local u="$1" out="$2" m="${FLOW_REC:-}" d t0 t1 again i
   [ -z "${YUKTI_UNSTICK_BUSY:-}" ] || { printf '%s' "$out"; return 0; }
-  ios_blank "$out" || { read_blank 0; printf '%s' "$out"; return 0; }
+  # A read with a size after `launch`: the app has drawn, the round below is not
+  # for a blank read later on (#207).
+  ios_blank "$out" || { read_blank 0; [ -z "$m" ] || [ ! -e "$m.launched" ] || rm -f "$m.launched" 2>/dev/null || true; printf '%s' "$out"; return 0; }
   read_blank 1
   [ -n "$m" ] || { printf '%s' "$out"; return 0; }
-  # No threads are taken on this branch: its first blank read is also the app
-  # still drawing right after a launch - about 120 flows that passed in the
-  # measured run said this line after `launch` - and stacks there would cost
-  # seconds a flow and show an app that is not stuck. A flow stuck past this
-  # point fails on its wait, and its threads are taken with the failure
-  # (flow_results), still before the next flow relaunches the app.
+  # Right after `launch` the app is still drawing, and a read then is blank too
+  # (#207): 108 flows that passed in one measured run had such a first read
+  # after `launch`, and 2 failed on it, where a `when` decided on that one read.
+  # So once per `launch` - the step leaves a mark, the first blank read after it
+  # takes it away, and so does the next action of the flow - up to 3 more reads
+  # a second apart, with no relaunch. A read that took longer than a second is
+  # an app that is busy, not one still drawing: no more reads then, as the
+  # back-off of a wait asks (#204).
+  if [ -e "$m.launched" ]; then rm -f "$m.launched" 2>/dev/null || true
+    for i in 1 2 3; do sleep 1; t0="$(now)"; again="$(idb ui describe-all --udid "$u" 2>/dev/null)" || true; t1="$(now)"
+      [ -n "$again" ] || continue; read_note idb "$t0"; out="$again"
+      ios_blank "$out" || { read_blank 0; printf '%s' "$out"; return 0; }
+      [ $(( ($(us_of "$t1") - $(us_of "$t0")) / 1000 )) -le 1000 ] || break; done; fi
+  # No threads are taken on this branch: a blank read here is also the app
+  # still drawing after a launch the reads above did not wait out, and stacks
+  # there would cost seconds a flow and show an app that is not stuck. A flow
+  # stuck past this point fails on its wait, and its threads are taken with the
+  # failure (flow_results), still before the next flow relaunches the app.
   if [ -e "$m.acted" ]; then
     ios_blank_say "the app gives a blank tree (no element with a size) at or after this flow's first action: not relaunched here - the flow would go on from the app's first screen; the next flow relaunches it"
     printf '%s' "$out"; return 0; fi
@@ -5438,7 +5452,7 @@ PY
     warn "could not write the results file to '$RESULTS_DIR'"
   fi
   [ "$ro_n" = 0 ] || say "negative checks passed on a root-only tree: $ro_n (#201)"
-  rm -f "$FLOW_REC" "$FLOW_REC.root-only" "$FLOW_REC.acted" "$FLOW_REC.blank-relaunched" "$FLOW_REC.blank-said" "$FLOW_REC.threads" "$FLOW_REC.threads-pids" "$FLOW_REC.read-ms" "$FLOW_REC.read-blank" "$FLOW_CUR" "$FLOW_ERR" "$FLOW_ERR.kind" "$FLOW_ERR.teardown" "$FLOW_TREE" "$FLOW_TREE.step"; FLOW_REC=""
+  rm -f "$FLOW_REC" "$FLOW_REC.root-only" "$FLOW_REC.acted" "$FLOW_REC.launched" "$FLOW_REC.blank-relaunched" "$FLOW_REC.blank-said" "$FLOW_REC.threads" "$FLOW_REC.threads-pids" "$FLOW_REC.read-ms" "$FLOW_REC.read-blank" "$FLOW_CUR" "$FLOW_ERR" "$FLOW_ERR.kind" "$FLOW_ERR.teardown" "$FLOW_TREE" "$FLOW_TREE.step"; FLOW_REC=""
   return 0
 }
 
@@ -6650,7 +6664,10 @@ PY
       # The mark goes down before the step runs: a step that acts reads first and
       # acts after, and a relaunch between the two would act on the first screen.
       case "$do_" in wait|waitFor|waitForId|waitForNotText|waitForNotId|screenshot|assert*|fixture|setPermission) ;;
-        *) [ -z "$FLOW_REC" ] || : > "$FLOW_REC.acted" 2>/dev/null || true;; esac
+        *) [ -z "$FLOW_REC" ] || { : > "$FLOW_REC.acted"
+             # #207: `launch` leaves the mark for one "still drawing" round of
+             # reads (ios_unstick); any other action takes it away.
+             if [ "$do_" = launch ]; then : > "$FLOW_REC.launched"; else rm -f "$FLOW_REC.launched"; fi; } 2>/dev/null || true;; esac
       set +e   # a step must not abort the loop by itself: the status is read
                # right after the dispatcher, so the failure is attributed to
                # THIS step and the flow stops with a message.
